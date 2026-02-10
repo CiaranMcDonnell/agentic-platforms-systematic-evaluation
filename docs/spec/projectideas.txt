@@ -1,0 +1,24 @@
+description
+how do i evaluate it 
+why it matters
+
+justify project selection
+
+why these dimensions
+	and why they are complete
+		industry readiness
+			how big of a project vs prototypes - who uses it, how often its updated.
+		set of functionalities
+			yes - no - partial
+				breakpoints - visualization
+		characterizing features
+		A2A,MCP,Openness - how open to extensions, 
+
+
+
+
+requirements engineering
+	requirements user stories 
+code generation
+testing generation
+building and deploying

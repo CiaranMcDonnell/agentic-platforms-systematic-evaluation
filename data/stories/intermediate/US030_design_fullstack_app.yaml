@@ -1,0 +1,86 @@
+id: US-030
+title: Design Full-Stack Issue Tracker Application
+description: >
+  Produce a complete software design for a full-stack Issue Tracker
+  application. The agent must create architecture documentation, a REST
+  API specification, a database schema, a component breakdown, and
+  PlantUML diagrams (component, class, sequence, ER) — all written
+  as files to docs/design/.
+
+category: design
+difficulty: intermediate
+tags:
+  - design
+  - architecture
+  - api
+  - database
+  - full-stack
+  - uml
+
+prompt_file: prompts/intermediate/US030_design_fullstack_app.md
+gherkin_file: gherkin/intermediate/US030_design_fullstack_app.feature
+
+target_files:
+  - docs/design/architecture.md
+  - docs/design/api_spec.md
+  - docs/design/database_schema.md
+  - docs/design/components.md
+  - docs/design/diagrams/component_diagram.puml
+  - docs/design/diagrams/class_diagram.puml
+  - docs/design/diagrams/sequence_create_issue.puml
+  - docs/design/diagrams/er_diagram.puml
+
+expected_files_created:
+  - docs/design/architecture.md
+  - docs/design/api_spec.md
+  - docs/design/database_schema.md
+  - docs/design/components.md
+  - docs/design/diagrams/component_diagram.puml
+  - docs/design/diagrams/class_diagram.puml
+  - docs/design/diagrams/sequence_create_issue.puml
+  - docs/design/diagrams/er_diagram.puml
+
+expected_files_modified: []
+
+acceptance_criteria:
+  - id: AC-030-1
+    description: Architecture document is complete with system overview, tech stack, deployment topology, and trade-offs
+    verification_method: manual
+
+  - id: AC-030-2
+    description: API specification covers all resources (Issues, Projects, Users, Comments) with methods, schemas, auth, and error handling
+    verification_method: manual
+
+  - id: AC-030-3
+    description: Database schema defines all tables with columns, types, constraints, and relationships
+    verification_method: manual
+
+  - id: AC-030-4
+    description: Component breakdown covers backend modules, frontend pages, background jobs, and integration points
+    verification_method: manual
+
+  - id: AC-030-5
+    description: Design holistically addresses all functional requirements (roles, activity log, search, real-time)
+    verification_method: manual
+
+  - id: AC-030-6
+    description: Component diagram (.puml) shows system components with interfaces and dependencies in valid PlantUML
+    verification_method: automated
+
+  - id: AC-030-7
+    description: Class diagram (.puml) shows all domain entities with attributes, types, and relationships in valid PlantUML
+    verification_method: automated
+
+  - id: AC-030-8
+    description: Sequence diagram (.puml) shows the create-issue flow through all layers in valid PlantUML
+    verification_method: automated
+
+  - id: AC-030-9
+    description: ER diagram (.puml) shows all tables with columns, keys, and cardinality in valid PlantUML
+    verification_method: automated
+
+time_budget_seconds: 900
+max_iterations: 40
+
+version: "1.0"
+author: Ciaran McDonnell

@@ -1,0 +1,375 @@
+\documentclass[aspectratio=169]{beamer}
+
+% Theme and colors
+\usetheme{Madrid}
+\usecolortheme{default}
+
+% UCD Navy Blue color scheme
+\definecolor{ucdblue}{RGB}{0, 60, 113}
+\definecolor{ucdgold}{RGB}{199, 170, 85}
+\definecolor{ucdlightblue}{RGB}{0, 156, 222}
+
+\setbeamercolor{palette primary}{bg=ucdblue,fg=white}
+\setbeamercolor{palette secondary}{bg=ucdblue,fg=white}
+\setbeamercolor{palette tertiary}{bg=ucdblue,fg=white}
+\setbeamercolor{palette quaternary}{bg=ucdblue,fg=white}
+\setbeamercolor{structure}{fg=ucdblue}
+\setbeamercolor{title}{fg=white,bg=ucdblue}
+\setbeamercolor{frametitle}{fg=white,bg=ucdblue}
+\setbeamercolor{block title}{bg=ucdblue,fg=white}
+\setbeamercolor{block body}{bg=ucdblue!10,fg=black}
+\setbeamercolor{item}{fg=ucdblue}
+
+% Packages
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{tikz}
+\usepackage{pgfgantt}
+\usepackage{hyperref}
+
+% Remove navigation symbols
+\setbeamertemplate{navigation symbols}{}
+
+% Add slide numbers
+\setbeamertemplate{footline}[frame number]
+
+% Title information
+\title{Systematic Evaluation of Agentic Platforms}
+\subtitle{DESMET-Based Comparative Analysis}
+\author{Ciaran McDonnell \\ \small{Student ID: 21320201}}
+\institute{University College Dublin \\ School of Computer Science}
+\date{2024/2025}
+
+\begin{document}
+
+% Title slide
+\begin{frame}
+    \titlepage
+\end{frame}
+
+% Outline
+\begin{frame}{Outline}
+    \begin{columns}[t]
+        \begin{column}{0.5\textwidth}
+            \textbf{1. Introduction}
+            \begin{itemize}
+                \item Background \& Motivation
+            \end{itemize}
+
+            \vspace{0.3cm}
+            \textbf{2. Objectives}
+            \begin{itemize}
+                \item Core \& Advanced Goals
+            \end{itemize}
+
+            \vspace{0.3cm}
+            \textbf{3. Methodology}
+            \begin{itemize}
+                \item DESMET Framework
+            \end{itemize}
+
+            \vspace{0.3cm}
+            \textbf{4. Selected Platforms}
+            \begin{itemize}
+                \item 11 Platforms, 4 Categories
+            \end{itemize}
+        \end{column}
+        \begin{column}{0.5\textwidth}
+            \textbf{5. Benchmark Tasks}
+            \begin{itemize}
+                \item 6 Software Engineering Tasks
+            \end{itemize}
+
+            \vspace{0.3cm}
+            \textbf{6. Evaluation Dimensions}
+            \begin{itemize}
+                \item Functionality, Usability, Scalability, Reliability
+            \end{itemize}
+
+            \vspace{0.3cm}
+            \textbf{7. Project Timeline}
+            \begin{itemize}
+                \item Gantt Chart
+            \end{itemize}
+
+            \vspace{0.3cm}
+            \textbf{8. Conclusion}
+            \begin{itemize}
+                \item Expected Contributions
+            \end{itemize}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\section{Introduction}
+
+\begin{frame}{Background \& Motivation}
+    \begin{columns}
+        \begin{column}{0.6\textwidth}
+            \textbf{Agentic Platforms:}
+            \begin{itemize}
+                \item Integrate autonomous/semi-autonomous agents into software development
+                \item Leverage LLMs for code generation, debugging, refactoring, testing
+                \item Growing industry adoption for enhanced developer productivity
+            \end{itemize}
+
+            \vspace{0.5cm}
+            \textbf{The Challenge:}
+            \begin{itemize}
+                \item No systematic comparisons exist
+                \item Practitioners lack evidence-based guidance
+                \item Heterogeneous architectures make comparison difficult
+            \end{itemize}
+        \end{column}
+        \begin{column}{0.35\textwidth}
+            \begin{block}{Key Gap}
+                How do practitioners select the right agentic platform for their needs?
+            \end{block}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\section{Objectives}
+
+\begin{frame}{Project Objectives}
+    \textbf{Core Goals:}
+    \begin{enumerate}
+        \item Construct a systematic DESMET-based evaluation framework
+        \item Evaluate 10+ platforms across multiple dimensions
+        \item Identify comparative strengths and weaknesses
+        \item Provide actionable guidance for practitioners
+    \end{enumerate}
+
+    \vspace{0.5cm}
+    \textbf{Advanced Goals:}
+    \begin{itemize}
+        \item Develop a reusable evaluation framework for future platforms
+        \item Create a taxonomy of agentic platform architectures
+        \item Validate findings through stakeholder consultation
+    \end{itemize}
+\end{frame}
+
+\section{Methodology}
+
+\begin{frame}{DESMET Methodology}
+    \begin{columns}
+        \begin{column}{0.5\textwidth}
+            \textbf{Hybrid Evaluation Approach:}
+            \begin{itemize}
+                \item \textbf{Benchmarking}: Standardised SE tasks across platforms
+                \item \textbf{Qualitative Screening}: Feature-based assessment
+            \end{itemize}
+
+            \vspace{0.3cm}
+            \textbf{Why Hybrid?}
+            \begin{itemize}
+                \item Architectural heterogeneity
+                \item Task variability
+                \item Developer experience matters
+                \item Rapidly evolving landscape
+            \end{itemize}
+        \end{column}
+        \begin{column}{0.45\textwidth}
+            \begin{block}{DESMET Guidance}
+                \small
+                \begin{enumerate}
+                    \item Feature identification
+                    \item Test design (standardised)
+                    \item Platform inclusion criteria
+                    \item Hybrid evaluation framing
+                \end{enumerate}
+            \end{block}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\section{Selected Platforms}
+
+\begin{frame}{Platform Selection}
+    \begin{table}
+        \centering
+        \footnotesize
+        \begin{tabular}{ll}
+            \toprule
+            \textbf{Category}           & \textbf{Platforms}                             \\
+            \midrule
+            Multi-Agent Frameworks      & LangGraph, CrewAI, Microsoft Autogen           \\
+            \midrule
+            Agent SDK Runtimes          & OpenAI Agents SDK, Google ADK, Semantic Kernel \\
+            \midrule
+            Visual / Workflow Platforms & Flowise, LangFlow, Dify, N8n                   \\
+            \midrule
+            Interoperability Protocol   & A2A (Agent-to-Agent)                           \\
+            \bottomrule
+        \end{tabular}
+    \end{table}
+
+    \vspace{0.3cm}
+    \textbf{Selection Criteria:}
+    \begin{columns}
+        \begin{column}{0.5\textwidth}
+            \begin{itemize}
+                \item Maturity \& stability
+                \item Industry adoption
+                \item Category coverage
+            \end{itemize}
+        \end{column}
+        \begin{column}{0.5\textwidth}
+            \begin{itemize}
+                \item SDK availability
+                \item Open-source accessibility
+                \item SE task relevance
+            \end{itemize}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\section{Benchmark Tasks}
+
+\begin{frame}{Benchmark Tasks}
+    \begin{table}
+        \centering
+        \footnotesize
+        \begin{tabular}{lp{5cm}p{4cm}}
+            \toprule
+            \textbf{Task}            & \textbf{Purpose}               & \textbf{Key Metrics}       \\
+            \midrule
+            Code Generation          & Generate code from NL spec     & Correctness, completeness  \\
+            Bug Fixing               & Identify and fix bugs          & Accuracy, fix correctness  \\
+            Refactoring              & Improve code structure         & Behaviour preservation     \\
+            Tool-use Workflow        & Execute APIs, transform data   & Invocation success rate    \\
+            Multi-agent Coordination & Coordinate agent collaboration & Coordination effectiveness \\
+            Memory \& Context        & Maintain extended context      & Retention accuracy         \\
+            \bottomrule
+        \end{tabular}
+    \end{table}
+\end{frame}
+
+\section{Evaluation Dimensions}
+
+\begin{frame}{Evaluation Dimensions}
+    \begin{columns}
+        \begin{column}{0.5\textwidth}
+            \textbf{1. Functionality}
+            \begin{itemize}
+                \item Tool support \& integration
+                \item Agent orchestration patterns
+                \item Code execution capabilities
+            \end{itemize}
+
+            \vspace{0.3cm}
+            \textbf{2. Usability}
+            \begin{itemize}
+                \item Onboarding complexity
+                \item Documentation quality
+                \item Debugging experience
+            \end{itemize}
+        \end{column}
+        \begin{column}{0.5\textwidth}
+            \textbf{3. Scalability \& Performance}
+            \begin{itemize}
+                \item Execution time
+                \item Resource consumption
+                \item Concurrent execution
+            \end{itemize}
+
+            \vspace{0.3cm}
+            \textbf{4. Reliability}
+            \begin{itemize}
+                \item Error tolerance
+                \item Output reproducibility
+                \item Observability \& logging
+            \end{itemize}
+        \end{column}
+    \end{columns}
+
+    \vspace{0.3cm}
+    \centering
+    \textit{5-point Likert scale scoring with normalised quantitative metrics}
+\end{frame}
+
+\section{Project Timeline}
+
+\begin{frame}{Project Timeline}
+    % ============================================
+    % GANTT CHART - Customize tasks to match your timeline
+    % ============================================
+
+    \begin{center}
+        \resizebox{0.95\textwidth}{0.65\textheight}{%
+            \begin{ganttchart}[
+                    hgrid,
+                    vgrid,
+                    x unit=0.55cm,
+                    y unit chart=0.45cm,
+                    title height=1,
+                    bar height=0.6,
+                    bar top shift=0.2,
+                    title label font=\scriptsize,
+                    bar label font=\scriptsize,
+                    group label font=\scriptsize\bfseries,
+                    milestone label font=\scriptsize,
+                    bar/.append style={fill=ucdblue},
+                    group/.append style={fill=ucdgold},
+                    milestone/.append style={fill=ucdlightblue}
+                ]{1}{12}
+                \gantttitle{2024}{4}\gantttitle{2025}{8} \\
+                \gantttitle{Sep}{1}\gantttitle{Oct}{1}\gantttitle{Nov}{1}\gantttitle{Dec}{1}%
+                \gantttitle{Jan}{1}\gantttitle{Feb}{1}\gantttitle{Mar}{1}\gantttitle{Apr}{1}%
+                \gantttitle{May}{1}\gantttitle{Jun}{1}\gantttitle{Jul}{1}\gantttitle{Aug}{1} \\
+
+                % TODO: Customize these tasks to match your actual timeline
+                \ganttbar{Literature Review}{1}{3} \\
+                \ganttbar{Platform Setup}{3}{5} \\
+                \ganttbar{Benchmark Development}{4}{6} \\
+                \ganttbar{Evaluation Execution}{6}{9} \\
+                \ganttbar{Results Analysis}{8}{10} \\
+                \ganttbar{Report Writing}{9}{12} \\
+
+                \ganttmilestone{Interim Report}{4}
+                \ganttmilestone{Final Report}{12}
+            \end{ganttchart}
+        }
+    \end{center}
+\end{frame}
+
+\section{Conclusion}
+
+\begin{frame}{Expected Contributions}
+    \textbf{Research Contributions:}
+    \begin{itemize}
+        \item First systematic DESMET-based evaluation of agentic platforms
+        \item Comparative analysis across 3 architectural categories
+        \item Reusable evaluation framework for emerging platforms
+    \end{itemize}
+
+    \vspace{0.5cm}
+    \textbf{Practical Impact:}
+    \begin{itemize}
+        \item Evidence-based platform selection guidance
+        \item Identification of capability gaps across tool categories
+        \item Taxonomy of agentic platform architectures
+    \end{itemize}
+
+    \vspace{0.5cm}
+    \begin{block}{Repository}
+        \centering
+        \url{https://csgitlab.ucd.ie/cmd/agentic-platforms-systematic-evaluation}
+    \end{block}
+\end{frame}
+
+\begin{frame}
+    \centering
+    \Huge\textbf{Questions?}
+
+    \vspace{1cm}
+    \normalsize
+    Ciaran McDonnell \\
+    \texttt{ciaran.mcdonnell1@ucdconnect.ie}
+
+    \vspace{0.5cm}
+    Supervisor: Alessio Ferrari
+\end{frame}
+
+\end{document}

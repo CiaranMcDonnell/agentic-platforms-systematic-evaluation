@@ -1,0 +1,82 @@
+# ── Ignore everything by default ─────────────────────────────────────────────
+# Then explicitly allow directories/files you want tracked.
+# This keeps the repo clean — only opted-in content gets committed.
+*
+
+# ── Allow these top-level files ──────────────────────────────────────────────
+!.gitignore
+!.python-version
+!.env.example
+!pyproject.toml
+!uv.lock
+!README.md
+
+# ── Allow these directories (and everything inside them) ─────────────────────
+!src/
+!src/**
+!config/
+!config/**
+!data/
+!data/**
+!docs/
+!docs/**
+!infrastructure/
+!infrastructure/**
+!tests/
+!tests/**
+
+# ── Directories NOT allowed (ignored) ───────────────────────────────────────
+# results/        — generated evaluation outputs
+# notebooks/      — local analysis notebooks
+# platforms/      — deep-dive explorations
+# oldcustom/      — legacy files
+
+# ── Always ignore these regardless of above rules ───────────────────────────
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+nul
+
+# Secrets
+.env
+*.pem
+*.key
+
+# Typst build artifacts
+*.pdf
+
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.nav
+*.out
+*.snm
+*.synctex.gz
+*.toc

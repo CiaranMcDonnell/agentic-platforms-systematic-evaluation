@@ -1,0 +1,54 @@
+id: US-010
+title: Add REST API Endpoint for User Profiles
+description: >
+  Add GET and PUT endpoints for user profile management at
+  /api/users/{user_id}/profile with Pydantic validation,
+  error handling, and unit tests.
+
+category: code_generation
+difficulty: intermediate
+tags:
+  - api
+  - rest
+  - fastapi
+  - pydantic
+  - testing
+
+prompt_file: prompts/intermediate/US010_add_api_endpoint.md
+gherkin_file: gherkin/intermediate/US010_add_api_endpoint.feature
+
+target_files:
+  - app/routers/profiles.py
+  - app/schemas/profile.py
+  - tests/test_profiles.py
+
+expected_files_created:
+  - app/routers/profiles.py
+  - app/schemas/profile.py
+  - tests/test_profiles.py
+
+expected_files_modified:
+  - app/main.py
+
+acceptance_criteria:
+  - id: AC-010-1
+    description: GET endpoint returns profile for valid user
+    verification_method: test
+
+  - id: AC-010-2
+    description: GET endpoint returns 404 for unknown user
+    verification_method: test
+
+  - id: AC-010-3
+    description: PUT endpoint updates profile
+    verification_method: test
+
+  - id: AC-010-4
+    description: Pydantic validation rejects invalid input
+    verification_method: test
+
+time_budget_seconds: 1200
+max_iterations: 40
+
+version: "1.0"
+author: Ciaran McDonnell

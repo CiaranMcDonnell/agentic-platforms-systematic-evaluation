@@ -1,0 +1,23 @@
+@startuml
+
+actor Client
+participant "API Gateway" as APIG
+participant "Auth Middleware" as Auth
+participant "Issue Service" as IssueS
+participant "Database" as DB
+participant "Activity Log" as AL
+participant "WebSocket Server" as WS
+
+Client -> APIG: POST /issues
+APIG -> Auth: Validate JWT
+Auth --> APIG: JWT valid
+APIG -> IssueS: Create Issue
+IssueS -> DB: Insert Issue
+DB --> IssueS: Issue ID
+IssueS -> AL: Log Activity
+AL -> DB: Insert Log
+DB --> AL: Log ID
+IssueS -> WS: Broadcast New Issue
+WS --> Client: Issue Created
+
+@enduml

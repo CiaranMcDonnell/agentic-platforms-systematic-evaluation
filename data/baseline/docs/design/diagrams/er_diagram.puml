@@ -1,0 +1,67 @@
+@startuml
+
+entity "Users" as users {
+  *id : UUID
+  --
+  username : VARCHAR(255)
+  email : VARCHAR(255)
+  password_hash : VARCHAR(255)
+  role : ENUM
+}
+
+entity "Projects" as projects {
+  *id : UUID
+  --
+  name : VARCHAR(255)
+  description : TEXT
+  owner_id : UUID
+}
+
+entity "Issues" as issues {
+  *id : UUID
+  --
+  title : VARCHAR(255)
+  description : TEXT
+  status : ENUM
+  priority : ENUM
+  assignee_id : UUID
+  project_id : UUID
+}
+
+entity "Comments" as comments {
+  *id : UUID
+  --
+  content : TEXT
+  author_id : UUID
+  issue_id : UUID
+}
+
+entity "Labels" as labels {
+  *id : UUID
+  --
+  name : VARCHAR(255)
+}
+
+entity "Issue_Labels" as issue_labels {
+  *issue_id : UUID
+  *label_id : UUID
+}
+
+entity "Activity_Log" as activity_log {
+  *id : UUID
+  --
+  issue_id : UUID
+  action : VARCHAR(255)
+  timestamp : TIMESTAMP
+  user_id : UUID
+}
+
+users ||--o{ projects : "owns"
+users ||--o{ issues : "assigned"
+projects ||--o{ issues : "contains"
+issues ||--o{ comments : "has"
+issues ||--o{ issue_labels : "tagged"
+issues ||--o{ activity_log : "logs"
+labels ||--o{ issue_labels : ""
+
+@enduml

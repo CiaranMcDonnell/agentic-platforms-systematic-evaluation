@@ -1,0 +1,369 @@
+# =============================================================================
+# DESMET Agentic Platforms - Platform Configuration
+# =============================================================================
+# Defines the 10 agentic platforms evaluated under the DESMET framework,
+# grouped by category: Multi-Agent Frameworks, Agent SDK Runtimes, and
+# Visual / Workflow Platforms.
+# =============================================================================
+
+platforms:
+  # ---------------------------------------------------------------------------
+  # Category 1: Multi-Agent Frameworks
+  # ---------------------------------------------------------------------------
+
+  - name: LangGraph
+    id: langgraph
+    vendor: LangChain / LangGraph Team
+    license: Apache-2.0
+    category: multi_agent_framework
+    runtime: Python
+    version_constraints:
+      min: "0.2.0"
+      max: "~1.x"
+      tested: "0.2.60"
+    repo_url: https://github.com/langchain-ai/langgraph
+    docs_url: https://langchain-ai.github.io/langgraph/
+    features:
+      - stateful_graph_orchestration
+      - cyclic_and_acyclic_workflows
+      - built_in_persistence
+      - human_in_the_loop
+      - streaming_support
+      - tool_calling
+      - sub_graph_composition
+      - checkpointing
+    model_providers:
+      - openai
+      - anthropic
+      - google_genai
+      - azure_openai
+      - aws_bedrock
+      - ollama
+    dependencies:
+      - langgraph
+      - langchain-core
+      - langchain-openai
+      - langchain-anthropic
+
+  - name: CrewAI
+    id: crewai
+    vendor: CrewAI Inc
+    license: MIT
+    category: multi_agent_framework
+    runtime: Python
+    version_constraints:
+      min: "0.80.0"
+      max: "~1.x"
+      tested: "0.108.0"
+    repo_url: https://github.com/crewAIInc/crewAI
+    docs_url: https://docs.crewai.com/
+    features:
+      - role_based_agent_design
+      - sequential_and_hierarchical_processes
+      - task_delegation
+      - memory_and_context_sharing
+      - tool_integration
+      - async_execution
+      - output_parsing
+      - agent_collaboration
+    model_providers:
+      - openai
+      - anthropic
+      - google_genai
+      - azure_openai
+      - ollama
+      - huggingface
+    dependencies:
+      - crewai
+      - crewai-tools
+
+  - name: Microsoft AutoGen
+    id: microsoft_autogen
+    vendor: Microsoft
+    license: MIT
+    category: multi_agent_framework
+    runtime: Python
+    version_constraints:
+      min: "0.4.0"
+      max: "~0.5.x"
+      tested: "0.4.9"
+    repo_url: https://github.com/microsoft/autogen
+    docs_url: https://microsoft.github.io/autogen/
+    features:
+      - multi_agent_conversation
+      - customizable_agents
+      - code_execution
+      - function_calling
+      - group_chat_orchestration
+      - nested_conversations
+      - teachable_agents
+      - human_in_the_loop
+    model_providers:
+      - openai
+      - anthropic
+      - azure_openai
+      - google_genai
+      - mistral
+      - ollama
+    dependencies:
+      - autogen-agentchat
+      - autogen-core
+      - autogen-ext
+
+  # ---------------------------------------------------------------------------
+  # Category 2: Agent SDK Runtimes
+  # ---------------------------------------------------------------------------
+
+  - name: OpenAI Agents SDK
+    id: openai_agents_sdk
+    vendor: OpenAI
+    license: MIT
+    category: agent_sdk_runtime
+    runtime: Python
+    version_constraints:
+      min: "0.1.0"
+      max: "~0.x"
+      tested: "0.5.0"
+    repo_url: https://github.com/openai/openai-agents-python
+    docs_url: https://openai.github.io/openai-agents-python/
+    features:
+      - agent_loop
+      - tool_calling
+      - handoffs
+      - guardrails
+      - tracing
+      - structured_output
+      - context_management
+      - model_agnostic_design
+    model_providers:
+      - openai
+    dependencies:
+      - openai-agents
+
+  - name: Google ADK
+    id: google_adk
+    vendor: Google
+    license: Apache-2.0
+    category: agent_sdk_runtime
+    runtime: Python
+    version_constraints:
+      min: "0.1.0"
+      max: "~1.x"
+      tested: "1.1.1"
+    repo_url: https://github.com/google/adk-python
+    docs_url: https://google.github.io/adk-docs/
+    features:
+      - multi_agent_orchestration
+      - tool_integration
+      - session_management
+      - artifact_handling
+      - streaming_support
+      - built_in_evaluation
+      - deployment_ready
+      - callback_system
+    model_providers:
+      - google_genai
+      - anthropic
+      - ollama
+    dependencies:
+      - google-adk
+
+  - name: Semantic Kernel
+    id: semantic_kernel
+    vendor: Microsoft
+    license: MIT
+    category: agent_sdk_runtime
+    runtime: Python
+    version_constraints:
+      min: "1.0.0"
+      max: "~1.x"
+      tested: "1.20.0"
+    repo_url: https://github.com/microsoft/semantic-kernel
+    docs_url: https://learn.microsoft.com/en-us/semantic-kernel/
+    features:
+      - plugin_architecture
+      - planner_system
+      - memory_connectors
+      - prompt_templating
+      - function_calling
+      - kernel_filters
+      - multi_agent_support
+      - enterprise_ready
+    model_providers:
+      - openai
+      - azure_openai
+      - anthropic
+      - google_genai
+      - huggingface
+      - ollama
+    dependencies:
+      - semantic-kernel
+
+  # ---------------------------------------------------------------------------
+  # Category 3: Visual / Workflow Platforms
+  # ---------------------------------------------------------------------------
+
+  - name: Flowise
+    id: flowise
+    vendor: FlowiseAI
+    license: Apache-2.0
+    category: visual_workflow_platform
+    runtime: Node.js / Docker
+    version_constraints:
+      min: "2.0.0"
+      max: "~2.x"
+      tested: "2.2.7"
+    repo_url: https://github.com/FlowiseAI/Flowise
+    docs_url: https://docs.flowiseai.com/
+    features:
+      - drag_and_drop_builder
+      - langchain_integration
+      - chatflow_and_agentflow
+      - api_endpoints
+      - credential_management
+      - document_loaders
+      - vector_store_integration
+      - custom_tool_creation
+    model_providers:
+      - openai
+      - anthropic
+      - google_genai
+      - azure_openai
+      - aws_bedrock
+      - ollama
+      - huggingface
+    dependencies:
+      - flowise
+      - docker (optional)
+
+  - name: LangFlow
+    id: langflow
+    vendor: Langflow AI
+    license: MIT
+    category: visual_workflow_platform
+    runtime: Python
+    version_constraints:
+      min: "1.0.0"
+      max: "~1.x"
+      tested: "1.3.0"
+    repo_url: https://github.com/langflow-ai/langflow
+    docs_url: https://docs.langflow.org/
+    features:
+      - visual_flow_editor
+      - component_based_design
+      - langchain_native
+      - api_generation
+      - prompt_management
+      - multi_modal_support
+      - playground_interface
+      - custom_component_creation
+    model_providers:
+      - openai
+      - anthropic
+      - google_genai
+      - azure_openai
+      - aws_bedrock
+      - ollama
+      - huggingface
+    dependencies:
+      - langflow
+
+  - name: Dify
+    id: dify
+    vendor: LangGenius
+    license: Custom Open-Source
+    category: visual_workflow_platform
+    runtime: Docker
+    version_constraints:
+      min: "0.10.0"
+      max: "~1.x"
+      tested: "0.15.3"
+    repo_url: https://github.com/langgenius/dify
+    docs_url: https://docs.dify.ai/
+    features:
+      - visual_workflow_orchestration
+      - rag_pipeline
+      - agent_mode
+      - prompt_ide
+      - dataset_management
+      - api_backend_as_service
+      - observability_and_logging
+      - plugin_marketplace
+    model_providers:
+      - openai
+      - anthropic
+      - google_genai
+      - azure_openai
+      - aws_bedrock
+      - ollama
+      - huggingface
+      - cohere
+    dependencies:
+      - docker
+      - docker-compose
+
+  - name: n8n
+    id: n8n
+    vendor: n8n GmbH
+    license: Sustainable Use License
+    category: visual_workflow_platform
+    runtime: Node.js / Docker
+    version_constraints:
+      min: "1.60.0"
+      max: "~1.x"
+      tested: "1.76.1"
+    repo_url: https://github.com/n8n-io/n8n
+    docs_url: https://docs.n8n.io/
+    features:
+      - visual_workflow_automation
+      - ai_agent_nodes
+      - extensive_integrations
+      - code_nodes
+      - webhook_triggers
+      - credential_management
+      - sub_workflow_support
+      - error_handling_and_retries
+    model_providers:
+      - openai
+      - anthropic
+      - google_genai
+      - azure_openai
+      - ollama
+      - huggingface
+    dependencies:
+      - n8n
+      - docker (optional)
+
+# =============================================================================
+# Evaluation Settings
+# =============================================================================
+# Global settings that govern how evaluations are run across all platforms.
+# =============================================================================
+
+evaluation_settings:
+  time_budgets:
+    basic: 600 # seconds (10 minutes)
+    intermediate: 1200 # seconds (20 minutes)
+    advanced: 2400 # seconds (40 minutes)
+
+  retry_policy:
+    max_retries: 3
+    backoff_seconds: 30
+    backoff_strategy: linear # linear | exponential
+    retry_on:
+      - timeout
+      - rate_limit
+      - transient_error
+
+  iteration_limits:
+    basic: 25
+    intermediate: 40
+    advanced: 60
+
+  default_model_settings:
+    primary_model: gpt-5.2
+    fallback_model: gpt-5.2
+    temperature: 0.0
+    max_tokens: 4096
+    timeout_per_call: 120 # seconds per individual LLM call
+    rate_limit_rpm: 60 # requests per minute ceiling
