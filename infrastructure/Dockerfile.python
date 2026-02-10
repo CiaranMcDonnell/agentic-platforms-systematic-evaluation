@@ -1,0 +1,29 @@
+# Dockerfile for Python-based Agentic Platforms Evaluation
+# Supports: LangGraph, CrewAI, AutoGen, OpenAI Agents, Google ADK, Semantic Kernel, LangFlow
+
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+WORKDIR /workspace
+
+# Copy project files
+COPY pyproject.toml uv.lock* .python-version ./
+COPY src/ src/
+
+# Install dependencies (frozen if lockfile exists, otherwise resolve)
+RUN uv sync --frozen 2>/dev/null || uv sync
+
+CMD ["bash"]

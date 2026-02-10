@@ -1,0 +1,806 @@
+\documentclass[]
+{UCD_CS_FYP_Report}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{xcolor}
+
+
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+\usepackage{color}
+\definecolor{lightgray}{rgb}{0.95, 0.95, 0.95}
+\definecolor{darkgray}{rgb}{0.4, 0.4, 0.4}
+%\definecolor{purple}{rgb}{0.65, 0.12, 0.82}
+\definecolor{editorGray}{rgb}{0.95, 0.95, 0.95}
+\definecolor{editorOcher}{rgb}{1, 0.5, 0} % #FF7F00 -> rgb(239, 169, 0)
+\definecolor{editorGreen}{rgb}{0, 0.5, 0} % #007C00 -> rgb(0, 124, 0)
+\definecolor{orange}{rgb}{1,0.45,0.13}
+\definecolor{olive}{rgb}{0.17,0.59,0.20}
+\definecolor{brown}{rgb}{0.69,0.31,0.31}
+\definecolor{purple}{rgb}{0.38,0.18,0.81}
+\definecolor{lightblue}{rgb}{0.1,0.57,0.7}
+\definecolor{lightred}{rgb}{1,0.4,0.5}
+\usepackage{upquote}
+\usepackage{textcomp}
+\usepackage{float}
+\usepackage{multirow}
+\setcounter{secnumdepth}{3}
+\setcounter{tocdepth}{3}
+
+
+
+% CSS
+\lstdefinelanguage{CSS}{
+  keywords={color,background-image:,margin,padding,font,weight,display,position,top,left,right,bottom,list,style,border,size,white,space,min,width, transition:, transform:, transition-property, transition-duration, transition-timing-function},
+  sensitive=true,
+  morecomment=[l]{//},
+  morecomment=[s]{/*}{*/},
+  morestring=[b]',
+  morestring=[b]",
+  alsoletter={:},
+  alsodigit={-}
+}
+
+% JavaScript
+\lstdefinelanguage{JavaScript}{
+  morekeywords={typeof, new, true, false, catch, function, return, null, switch, var, let, const, if, in, while, do, else, case, break, await, async},
+  morecomment=[s]{/*}{*/},
+  morecomment=[l]//,
+  morestring=[b]",
+  morestring=[b]',
+  morestring=[b]`,
+  literate={\$}{{$$$$}}1
+}
+
+
+
+
+\lstdefinelanguage{HTML5}{
+  language=html,
+  sensitive=true,
+  alsoletter={<>=-},
+  morecomment=[s]{<!-}{-->},
+  tag=[s],
+  otherkeywords={
+  % General
+  >,
+  % Standard tags
+	<!DOCTYPE,
+  </html, <html, <head, <title, </title, <style, </style, <link, </head, <meta, />,
+	% body
+	</body, <body,
+	% Divs
+	</div, <div, </div>,
+	% Paragraphs
+	</p, <p, </p>,
+	% scripts
+	</script, <script,
+  % More tags...
+  <canvas, /canvas>, <svg, <rect, <animateTransform, </rect>, </svg>, <video, <source, <iframe, </iframe>, </video>, <image, </image>, <header, </header, <article, </article
+  },
+  ndkeywords={
+  % General
+  =,
+  % HTML attributes
+  charset=, src=, id=, width=, height=, style=, type=, rel=, href=,
+  % SVG attributes
+  fill=, attributeName=, begin=, dur=, from=, to=, poster=, controls=, x=, y=, repeatCount=, xlink:href=,
+  % properties
+  margin:, padding:, background-image:, border:, top:, left:, position:, width:, height:, margin-top:, margin-bottom:, font-size:, line-height:,
+	% CSS3 properties
+  transform:, -moz-transform:, -webkit-transform:,
+  animation:, -webkit-animation:,
+  transition:,  transition-duration:, transition-property:, transition-timing-function:,
+  }
+}
+
+\lstdefinestyle{htmlcssjs} {%
+  % General design
+%  backgroundcolor=\color{editorGray},
+  basicstyle={\footnotesize\ttfamily},
+  frame=b,
+  % line-numbers
+  xleftmargin={0.75cm},
+  numbers=left,
+  stepnumber=1,
+  firstnumber=1,
+  numberfirstline=true,
+  % Code design
+  identifierstyle=\color{black},
+  keywordstyle=\color{blue}\bfseries,
+  ndkeywordstyle=\color{editorGreen}\bfseries,
+  stringstyle=\color{editorOcher}\ttfamily,
+  commentstyle=\color{brown}\ttfamily,
+  % Code
+  language=HTML5,
+  alsolanguage=JavaScript,
+  alsodigit={.:;},
+  tabsize=2,
+  showtabs=false,
+  showspaces=false,
+  showstringspaces=false,
+  extendedchars=true,
+  breaklines=true,
+  % German umlauts
+  literate=%
+  {Ö}{{\"O}}1
+  {Ä}{{\"A}}1
+  {Ü}{{\"U}}1
+  {ß}{{\ss}}1
+  {ü}{{\"u}}1
+  {ä}{{\"a}}1
+  {ö}{{\"o}}1
+}
+%
+\lstdefinestyle{py} {%
+language=python,
+literate=%
+*{0}{{{\color{lightred}0}}}1
+{1}{{{\color{lightred}1}}}1
+{2}{{{\color{lightred}2}}}1
+{3}{{{\color{lightred}3}}}1
+{4}{{{\color{lightred}4}}}1
+{5}{{{\color{lightred}5}}}1
+{6}{{{\color{lightred}6}}}1
+{7}{{{\color{lightred}7}}}1
+{8}{{{\color{lightred}8}}}1
+{9}{{{\color{lightred}9}}}1,
+basicstyle=\footnotesize\ttfamily, % Standardschrift
+numbers=left,               % Ort der Zeilennummern
+%numberstyle=\tiny,          % Stil der Zeilennummern
+%stepnumber=2,               % Abstand zwischen den Zeilennummern
+numbersep=5pt,              % Abstand der Nummern zum Text
+tabsize=4,                  % Groesse von Tabs
+extendedchars=true,         %
+breaklines=true,            % Zeilen werden Umgebrochen
+keywordstyle=\color{blue}\bfseries,
+frame=b,
+commentstyle=\color{brown}\itshape,
+stringstyle=\color{editorOcher}\ttfamily, % Farbe der String
+showspaces=false,           % Leerzeichen anzeigen ?
+showtabs=false,             % Tabs anzeigen ?
+xleftmargin=17pt,
+framexleftmargin=17pt,
+framexrightmargin=5pt,
+framexbottommargin=4pt,
+%backgroundcolor=\color{lightgray},
+showstringspaces=false,      % Leerzeichen in Strings anzeigen ?
+}%
+%
+
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,
+    breaklines=true,
+    captionpos=b,
+    keepspaces=true,
+    numbers=left,
+    numbersep=5pt,
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=2
+}
+
+\lstset{style=htmlcssjs}
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    filecolor=magenta,
+    urlcolor=blue,
+    citecolor=black,
+}
+\lstset{
+    mathescape=true,
+    basicstyle = \ttfamily
+}
+
+
+%\usepackage[backend=biber,style=chicago-authordate]{biblatex}
+\usepackage[backend=biber,style=nature]{biblatex}
+\addbibresource{references.bib}
+
+
+%%%%%%%%%%%%%%%%%%%%%%
+%%% Input project details
+
+\def\studentname{Ciaran McDonnell}
+\def\studentid{21320201}
+\def\projecttitle{Systematic Evaluation of Agentic Platforms}
+\def\supervisorname{Alessio Ferrari}
+
+
+\begin{document}
+\maketitle
+
+%%%%%%%%%%%%%%%%%%%%%%
+%%% Table of Content
+
+\tableofcontents
+%\pdfbookmark[0]{Table of Contents}{toc}\newpage
+%\newpage
+
+\begin{abstract}
+  Agentic platforms are emerging as transformative tools in software engineering, integrating autonomous or semi-autonomous agents into the development lifecycle to enhance productivity and code quality. However, existing literature provides limited comparative evaluation across heterogeneous agentic frameworks, multi-agent systems, and workflow-based LLM platforms, leaving practitioners without clear guidance for tool selection. This study applies a systematic DESMET-based evaluation framework to compare agentic platforms across dimensions such as functionality, usability, collaboration support, scalability, and reliability. The evaluation covers ten platforms representing three architectural categories: multi-agent frameworks (LangGraph, CrewAI, Microsoft Autogen), agent SDK runtimes (OpenAI Agents SDK, Google ADK, Semantic Kernel), and visual workflow platforms (Flowise, LangFlow, Dify, N8n). Each platform is assessed using representative software engineering tasks, including code generation, debugging, refactoring, tool-use workflows, and agent coordination. The results aim to provide practical guidance for practitioners, highlight capability gaps across different tool categories, and offer a structured methodology for evaluating emerging agentic technologies.
+\end{abstract}
+
+
+\chapter{Project Description}
+
+\section{Core Goals}
+\begin{enumerate}
+  \item Define sources for the initial search of agentic platforms (Google, Reddit, specialised forums, X, LinkedIn, academic papers)
+  \item Define selection criteria for identifying the most mature or promising platforms (approximately 10)
+  \item Apply search and selection criteria to identify the platforms for evaluation
+  \item Define analysis criteria following DESMET guidelines, informed by stakeholder consultation
+  \item Define representative software engineering problems to exercise and compare the tools
+  \item Conduct systematic evaluation of selected platforms across defined dimensions (functionality, usability, extensibility, collaboration support, scalability, reliability)
+  \item Produce comparative analysis and evidence-based recommendations for practitioners
+\end{enumerate}
+
+\section{Advanced Goals}
+\begin{enumerate}
+  \item Develop a reusable evaluation framework that can be applied to future agentic platforms
+  \item Create a taxonomy of agentic platforms categorising architectural approaches
+  \item Extend evaluation to include emerging platforms or protocols not in the initial selection
+  \item Conduct user studies or expert interviews to validate evaluation criteria and findings
+  \item Publish findings as a contribution to the software engineering research community
+\end{enumerate}
+
+\section{Selected Platforms}
+
+\begin{table}[H]
+  \centering
+  \begin{tabular}{|l|l|}
+    \hline
+    \textbf{Category}           & \textbf{Platforms}                             \\
+    \hline
+    Multi-Agent Frameworks      & LangGraph, CrewAI, Microsoft Autogen           \\
+    \hline
+    Agent SDK Runtimes          & OpenAI Agents SDK, Google ADK, Semantic Kernel \\
+    \hline
+    Visual / Workflow Platforms & Flowise, LangFlow, Dify, N8n                   \\
+    \hline
+  \end{tabular}
+  \caption{Selected Agentic Platforms by Category}
+\end{table}
+
+\textbf{Link to Repository:}
+\href{https://csgitlab.ucd.ie/cmd/agentic-platforms-systematic-evaluation}{Agentic Platforms Systematic Evaluation}
+
+
+%%%%%%
+\chapter{Introduction}
+
+\section{Background \& Motivation}
+
+Agentic platforms represent a new paradigm in software engineering tooling, integrating autonomous or semi-autonomous agents capable of performing complex development tasks with minimal human intervention. These platforms leverage advances in large language models and artificial intelligence to assist with code generation, debugging, refactoring, testing, and documentation. As organisations increasingly adopt these tools to enhance developer productivity and code quality, understanding their capabilities and limitations becomes critical.
+
+\section{Problem Statement}
+
+Despite the growing adoption of agentic platforms, there is a lack of systematic comparisons to guide practitioners in selecting appropriate tools for their specific needs. The relative capabilities of different platforms remain unclear, and practitioners lack evidence-based guidance for making informed adoption decisions. This gap presents challenges for organisations seeking to integrate agentic tools into their development workflows.
+
+\section{Aims \& Objectives}
+
+This project aims to:
+\begin{enumerate}
+  \item Construct a systematic evaluation framework for comparing agentic platforms
+  \item Evaluate multiple platforms across dimensions of functionality, usability, extensibility, collaboration support, scalability, and reliability
+  \item Identify the comparative strengths and weaknesses of each platform
+  \item Provide actionable guidance for practitioners selecting agentic tools
+\end{enumerate}
+
+\section{Scope}
+
+\textbf{In Scope:}
+\begin{itemize}
+  \item Comparative evaluation of ten selected agentic platforms representing multi-agent systems, SDK runtimes, and workflow builders
+  \item Assessment across defined dimensions using DESMET methodology
+  \item Testing against representative software engineering tasks: code generation, debugging, refactoring, tool-use workflows, and multi-agent coordination
+  \item Stakeholder consultation to inform evaluation criteria
+\end{itemize}
+
+\textbf{Out of Scope:}
+\begin{itemize}
+  \item Exhaustive evaluation of all available agentic platforms
+  \item Long-term longitudinal studies of platform evolution
+  \item Economic cost-benefit analysis of platform adoption
+  \item Proprietary internal tools with restricted access (e.g., Devin internal architecture)
+\end{itemize}
+
+\textbf{Constraints:}
+\begin{itemize}
+  \item Timeline limited to the academic year
+  \item Platform availability and access restrictions
+  \item Rapidly evolving landscape of agentic tools may cause changes post-evaluation
+\end{itemize}
+
+\section{Methodological Overview}
+
+The DESMET (Determining an Evaluation Method for Software Engineering Methods and Tools) methodology provides the foundation for this evaluation. DESMET offers a structured approach to systematically assess software engineering tools, ensuring rigorous and reproducible evaluation. The methodology guides the selection of evaluation criteria, the design of assessment procedures, and the analysis of results. This approach is well-suited to comparing agentic platforms as it accommodates both quantitative metrics and qualitative assessments of usability and collaboration support.
+
+%%%%%%%%
+\chapter{Related Work and Ideas}
+
+This chapter surveys prior research relevant to the systematic evaluation of agentic platforms. The review is organised into three thematic areas. First, it presents established methodologies for evaluating software engineering tools, focusing on the DESMET framework and subsequent systematic evaluation practices that form the methodological foundation of this study. Second, it examines comparative analyses of GenAI-enabled workflow platforms, highlighting system-level and interaction-level evaluation dimensions identified in recent literature. Third, it reviews emerging research on agentic orchestration, multi-agent system architectures, and interoperability protocols, encompassing workflow generation, model and tool routing, cross-agent communication standards, and multi-agent coordination approaches that inform the design of the evaluation framework used in this project.
+
+\section{The DESMET Methodology}
+
+The DESMET (Determining an Evaluation Method for Software Engineering Methods and Tools) methodology was developed by Kitchenham et al. as a DTI-backed project to provide a scientifically-based and practical approach to evaluation in software engineering \cite{kitchenham1997desmet}. DESMET addresses a fundamental challenge: how to rigorously compare tools and methods when controlled experiments are difficult to conduct and context varies widely across organisations. The methodology has been successfully applied in subsequent studies, including Ferrari et al.'s systematic evaluation and usability analysis of formal methods tools for railway signaling system design \cite{ferrari2021systematic}, which demonstrated the value of combining quantitative benchmarking with qualitative usability assessments when evaluating specialised software engineering tools.
+
+\subsection{Evaluation Types}
+
+DESMET separates evaluation exercises into two main types:
+
+\begin{itemize}
+  \item \textbf{Quantitative (objective) evaluations}: Aimed at establishing measurable effects of using a method or tool, typically based on observed changes in production time, rework costs, or maintenance effort. These evaluations identify expected benefits in measurable terms and collect data to determine whether benefits are actually delivered.
+  \item \textbf{Qualitative (subjective) evaluations}: Aimed at establishing method/tool appropriateness---how well a method or tool fits the needs and culture of an organisation. This is typically assessed through \textit{feature analysis}, examining the features provided, supplier characteristics, and training requirements.
+  \item \textbf{Hybrid methods}: Combine both subjective and objective elements, including qualitative effects analysis (expert opinion on quantitative effects) and benchmarking (standard tests comparing tools).
+\end{itemize}
+
+\subsection{Nine Evaluation Methods}
+
+DESMET identifies nine distinct evaluation methods organised by type and approach:
+
+\textbf{Quantitative methods:}
+\begin{enumerate}
+  \item \textit{Quantitative experiment}: Investigation of quantitative impact organised as a formal experiment with subjects assigned to methods/tools using statistical techniques.
+  \item \textit{Quantitative case study}: Investigation of quantitative impact on a real project using standard development procedures.
+  \item \textit{Quantitative survey}: Investigation of quantitative impact through data collection from staff/organisations with past project experience.
+\end{enumerate}
+
+\textbf{Qualitative methods:}
+\begin{enumerate}
+  \setcounter{enumi}{3}
+  \item \textit{Qualitative screening}: Feature-based evaluation by a single individual who determines features, rating scales, and performs assessment---typically based on literature rather than actual use.
+  \item \textit{Qualitative experiment}: Feature-based evaluation by potential users who try out methods/tools on typical tasks before evaluation.
+  \item \textit{Qualitative case study}: Feature-based evaluation by staff who have used the method/tool on a real project.
+  \item \textit{Qualitative survey}: Feature-based evaluation by people with experience using or studying the method/tool, where participation is at the subject's discretion.
+\end{enumerate}
+
+\textbf{Hybrid methods:}
+\begin{enumerate}
+  \setcounter{enumi}{7}
+  \item \textit{Qualitative effects analysis}: Subjective assessment of quantitative effects based on expert opinion.
+  \item \textit{Benchmarking}: Running standard tests using alternative tools and assessing relative performance against those tests.
+\end{enumerate}
+
+\subsection{Evaluation Method Selection}
+
+DESMET provides criteria to help evaluators select an appropriate method based on their specific circumstances. Key selection factors include:
+
+\begin{itemize}
+  \item Whether benefits are clearly quantifiable
+  \item Availability of staff for experiments
+  \item Stability of development procedures
+  \item Timescales available for evaluation
+  \item Size of the tool/method user population
+  \item Whether benefits are observable from task output
+\end{itemize}
+
+\subsection{Challenges in Software Engineering Evaluation}
+
+The DESMET project identified several persistent challenges in evaluation exercises:
+
+\begin{itemize}
+  \item \textbf{Defining appropriate controls}: The `control' situation is often undefined or context-dependent, making results difficult to generalise.
+  \item \textbf{Scaling problems}: Formal experiments typically use small applications, while case studies on real projects are too costly to replicate adequately.
+  \item \textbf{Evaluation costs}: No mandatory requirements exist for method/tool developers to validate their products.
+  \item \textbf{Immature measures}: Few universally agreed measures of software quality and productivity exist, making replication difficult.
+  \item \textbf{Confounding factors}: Variability in staff capability, learning-curve effects, and expectation effects complicate evaluation.
+\end{itemize}
+
+The most significant insight from DESMET is that no single evaluation method is always best---different methods are appropriate in different circumstances, necessitating a taxonomy of approaches and guidance for selection.
+
+\section{Comparative Analysis of Agentic Workflow Platforms}
+
+Broccia et al. \cite{broccia2025humainflow} provide a systematic comparison of GenAI-enabled workflow platforms, analysing tools across system-level and interaction-level features. Their study examines eight platforms: Langflow, Flowise AI, n8n, Dive, Dify, Haystack UI, AgenticFlow, and AutoGen Studio---several of which overlap with the platforms selected for this evaluation.
+
+\textbf{System-level features} examined include:
+\begin{itemize}
+  \item MCP (Model Context Protocol) support for interoperability
+  \item Local versus remote LLM execution capabilities
+  \item SDK dependence and its implications for extensibility
+  \item Licensing models (MIT, Apache 2.0, Fair-code, proprietary)
+  \item Execution monitoring and observability
+\end{itemize}
+
+\textbf{Interaction-level features} examined include:
+\begin{itemize}
+  \item No-code versus low-code interface accessibility
+  \item Team collaboration support (shared workflows, version control)
+  \item Human-in-the-loop modelling as first-class workflow elements
+  \item Human role simulation via LLMs for prototyping
+\end{itemize}
+
+The analysis reveals several gaps in the current landscape. While many platforms offer no-code interfaces and remote LLM integration, few combine interoperability, extensibility, and explicit human-in-the-loop modelling. Most tools remain tightly coupled to specific SDKs such as LangChain, limiting long-term adaptability. Execution monitoring remains limited across most platforms, with only basic logging available rather than full observability. Critically, human-in-the-loop functionality is restricted in most tools---while some allow pausing for manual input, these capabilities are not modelled as first-class workflow elements.
+
+This comparative framework informs the evaluation dimensions used in the present study, particularly the emphasis on SDK independence, extensibility, and collaboration support alongside traditional functionality metrics.
+
+% TODO: Add additional comparative studies as they are found
+
+\section{Summary and Research Gap}
+
+The literature reviewed establishes two complementary foundations for this study. First, the DESMET methodology provides a rigorous, taxonomy-based approach to evaluating software engineering tools, offering nine distinct evaluation methods spanning quantitative, qualitative, and hybrid approaches \cite{kitchenham1997desmet}. Ferrari et al. \cite{ferrari2021systematic} demonstrated the practical application of systematic evaluation combining benchmarking with usability analysis for specialised tools, validating that such hybrid approaches yield actionable insights for practitioners. Second, recent comparative analyses of GenAI-enabled workflow platforms \cite{broccia2025humainflow} have identified critical evaluation dimensions---including SDK independence, interoperability, extensibility, and human-in-the-loop support---that extend beyond traditional functionality metrics.
+
+However, gaps remain in the current body of research. While Ferrari et al. and Broccia et al. provide valuable systematic evaluation frameworks, neither addresses tools that integrate autonomous or semi-autonomous agents into the software development lifecycle. No systematic evaluation currently spans the heterogeneous landscape of agentic platforms, which encompasses architecturally distinct categories including multi-agent frameworks, agent SDK runtimes, and visual workflow builders. Practitioners seeking to adopt agentic tools lack evidence-based guidance for comparing platforms across these categories, as existing evaluations do not address the cross-category trade-offs between programmatic control, ease of use, and collaboration support.
+
+This project addresses these gaps by applying a DESMET-based evaluation framework to ten agentic platforms spanning three architectural categories. The evaluation combines benchmarking against representative software engineering tasks with qualitative assessment of usability, extensibility, and collaboration features. By systematically comparing multi-agent frameworks, SDK runtimes, and visual platforms using consistent evaluation criteria, this study aims to provide practitioners with actionable guidance for tool selection and to contribute a reusable methodology for evaluating emerging agentic technologies.
+
+%%%%%%%%
+\chapter{Data Considerations}
+
+
+%%%%%%%%
+
+%%%%%%%%
+\chapter{Project Approach and Design}
+
+This chapter presents the methodology, platform selection, benchmark design, evaluation dimensions, and implementation plan for the systematic evaluation of agentic platforms.
+
+\section{Evaluation Methodology Selection (DESMET Application)}
+
+This study adopts a hybrid evaluation approach combining benchmarking with qualitative screening, following DESMET guidelines for selecting appropriate evaluation methods based on context and constraints.
+
+\subsection{Chosen Evaluation Type}
+
+The evaluation employs two complementary DESMET methods:
+
+\begin{itemize}
+  \item \textbf{Benchmarking}: Running standardised software engineering tasks across all platforms and measuring performance against consistent criteria. This provides objective, comparable data on platform capabilities.
+  \item \textbf{Qualitative Screening}: Feature-based evaluation examining platform characteristics, documentation quality, extensibility, and developer experience. This captures aspects that quantitative benchmarks cannot fully address.
+\end{itemize}
+
+\subsection{Justification for Hybrid Approach}
+
+A purely quantitative evaluation is unsuitable for comparing agentic platforms for several reasons:
+
+\begin{itemize}
+  \item \textbf{Architectural heterogeneity}: Multi-agent frameworks, SDK runtimes, and visual workflow builders differ fundamentally in their design paradigms, making direct quantitative comparison across categories challenging.
+  \item \textbf{Task variability}: Software engineering tasks vary in complexity and structure; some platforms excel at specific task types while underperforming on others.
+  \item \textbf{Qualitative factors}: Developer experience, onboarding complexity, and extensibility significantly influence platform adoption but resist purely quantitative measurement.
+  \item \textbf{Rapidly evolving landscape}: Agentic platforms are under active development; qualitative assessment captures maturity and stability factors that benchmarks alone may miss.
+\end{itemize}
+
+\subsection{DESMET Guidance in This Study}
+
+DESMET principles guide four aspects of this evaluation:
+
+\begin{enumerate}
+  \item \textbf{Feature identification}: Evaluation dimensions are derived from DESMET's emphasis on both objective capabilities and subjective appropriateness, ensuring comprehensive coverage of functionality, usability, scalability, and reliability.
+  \item \textbf{Test design}: Benchmark tasks are designed as standardised tests that can be consistently applied across platforms, following DESMET's benchmarking method requirements.
+  \item \textbf{Platform inclusion}: Selection criteria ensure sufficient diversity for meaningful comparison while maintaining practical scope, addressing DESMET's guidance on evaluation feasibility.
+  \item \textbf{Hybrid evaluation framing}: The combination of quantitative benchmarks with qualitative screening aligns with DESMET's recognition that different evaluation methods suit different circumstances and can be combined for comprehensive assessment.
+\end{enumerate}
+
+\section{Platform Selection and Categorisation}
+
+This section presents the platforms selected for evaluation and the criteria guiding their selection.
+
+\subsection{Selected Platforms}
+
+Eleven platforms are included in this evaluation, spanning four architectural categories:
+
+\begin{table}[H]
+  \centering
+  \begin{tabular}{|l|l|p{6cm}|}
+    \hline
+    \textbf{Category}                            & \textbf{Platform}    & \textbf{Description}                               \\
+    \hline
+    \multirow{3}{*}{Multi-Agent Frameworks}      & LangGraph            & Graph-based agent orchestration built on LangChain \\
+    \cline{2-3}
+                                                 & CrewAI               & Role-based multi-agent collaboration framework     \\
+    \cline{2-3}
+                                                 & Microsoft Autogen    & Conversational multi-agent framework               \\
+    \hline
+    \multirow{3}{*}{Agent SDK Runtimes}          & OpenAI Agents SDK    & OpenAI's native agent development kit              \\
+    \cline{2-3}
+                                                 & Google ADK           & Google's Agent Development Kit                     \\
+    \cline{2-3}
+                                                 & Semantic Kernel      & Microsoft's AI orchestration SDK                   \\
+    \hline
+    \multirow{4}{*}{Visual / Workflow Platforms} & Flowise              & Drag-and-drop LLM flow builder                     \\
+    \cline{2-3}
+                                                 & LangFlow             & Visual IDE for LangChain applications              \\
+    \cline{2-3}
+                                                 & Dify                 & LLM application development platform               \\
+    \cline{2-3}
+                                                 & N8n                  & Workflow automation with AI capabilities           \\
+    \hline
+    Interoperability Protocol                    & A2A (Agent-to-Agent) & Google's agent interoperability protocol           \\
+    \hline
+  \end{tabular}
+  \caption{Selected Agentic Platforms by Category}
+\end{table}
+
+\subsection{Selection Criteria}
+
+Platforms were selected based on the following criteria:
+
+\begin{itemize}
+  \item \textbf{Maturity}: Preference for platforms with stable releases, active maintenance, and established documentation.
+  \item \textbf{Industry adoption}: Consideration of community size, GitHub activity, and real-world usage evidence.
+  \item \textbf{Category coverage}: Ensuring representation across multi-agent frameworks, SDK runtimes, workflow builders, and interoperability protocols.
+  \item \textbf{SDK availability}: Platforms must provide programmatic access for consistent benchmark execution.
+  \item \textbf{Accessibility}: Preference for open-source tools or those with accessible free tiers for evaluation purposes.
+  \item \textbf{Relevance to software engineering}: Platforms must support tasks representative of software development workflows.
+\end{itemize}
+
+\subsection{Category Rationale}
+
+The four-category taxonomy reflects distinct architectural approaches to agentic systems:
+
+\begin{itemize}
+  \item \textbf{Multi-Agent Frameworks} provide programmatic control over agent coordination, enabling complex multi-agent workflows with explicit orchestration logic.
+  \item \textbf{Agent SDK Runtimes} offer vendor-supported development kits optimised for their respective LLM providers, emphasising integration and developer experience.
+  \item \textbf{Visual / Workflow Platforms} prioritise accessibility through no-code or low-code interfaces, enabling rapid prototyping and non-developer usage.
+  \item \textbf{Interoperability Protocols} address cross-platform agent communication, enabling agents built on different frameworks to collaborate.
+\end{itemize}
+
+\section{Test Tasks and Benchmark Design}
+
+This section specifies the software engineering tasks used to evaluate platform capabilities. Tasks are designed to be realistic, consistently executable across platforms, and diagnostic of agent orchestration strengths and weaknesses.
+
+\subsection{Task Overview}
+
+Six benchmark tasks are defined, each targeting different aspects of agentic platform capability:
+
+\begin{table}[H]
+  \centering
+  \begin{tabular}{|l|p{4cm}|p{5cm}|}
+    \hline
+    \textbf{Task}               & \textbf{Purpose}                                             & \textbf{Key Metrics}                                  \\
+    \hline
+    Code Generation             & Generate functional code from natural language specification & Correctness, completeness, code quality               \\
+    \hline
+    Bug Fixing / Debugging      & Identify and fix bugs in provided code                       & Accuracy, fix correctness, explanation quality        \\
+    \hline
+    Refactoring                 & Improve code structure while preserving behaviour            & Behavioural preservation, improvement quality         \\
+    \hline
+    Tool-use Workflow           & Execute API calls and transform results                      & Tool invocation success, data transformation accuracy \\
+    \hline
+    Multi-agent Coordination    & Coordinate multiple agents on a collaborative task           & Coordination effectiveness, task completion           \\
+    \hline
+    Memory and Context Handling & Maintain context across extended interactions                & Context retention, retrieval accuracy                 \\
+    \hline
+  \end{tabular}
+  \caption{Benchmark Tasks Overview}
+\end{table}
+
+\subsection{Task Specifications}
+
+\subsubsection{Code Generation Task}
+
+\begin{itemize}
+  \item \textbf{Input}: Natural language description of a function or module to implement (e.g., ``Implement a function that validates email addresses using regex'').
+  \item \textbf{Expected Output}: Syntactically correct, functional code that satisfies the specification.
+  \item \textbf{Metrics}: Syntactic correctness, test pass rate, adherence to specification, code style quality.
+\end{itemize}
+
+\subsubsection{Bug Fixing / Debugging Task}
+
+\begin{itemize}
+  \item \textbf{Input}: Code containing one or more bugs, with a description of expected versus actual behaviour.
+  \item \textbf{Expected Output}: Corrected code with explanation of the bug(s) identified and fixes applied.
+  \item \textbf{Metrics}: Bug identification accuracy, fix correctness, explanation clarity.
+\end{itemize}
+
+\subsubsection{Refactoring Task}
+
+\begin{itemize}
+  \item \textbf{Input}: Functional but poorly structured code with refactoring goals (e.g., ``Extract repeated logic into helper functions'').
+  \item \textbf{Expected Output}: Refactored code that preserves original behaviour while improving structure.
+  \item \textbf{Metrics}: Behavioural equivalence, structural improvement, maintainability gain.
+\end{itemize}
+
+\subsubsection{Tool-use Workflow Task}
+
+\begin{itemize}
+  \item \textbf{Input}: A multi-step task requiring external tool invocation (e.g., ``Fetch weather data from API, parse the response, and format a summary'').
+  \item \textbf{Expected Output}: Correctly executed workflow with accurate data transformation.
+  \item \textbf{Metrics}: Tool invocation success rate, data transformation accuracy, workflow completion.
+\end{itemize}
+
+\subsubsection{Multi-agent Coordination Task}
+
+\begin{itemize}
+  \item \textbf{Input}: A task requiring collaboration between multiple agents with distinct roles (e.g., researcher agent gathers information, writer agent drafts content, reviewer agent provides feedback).
+  \item \textbf{Expected Output}: Completed collaborative output demonstrating effective agent coordination.
+  \item \textbf{Metrics}: Role adherence, handoff effectiveness, final output quality, coordination overhead.
+\end{itemize}
+
+\subsubsection{Memory and Context Handling Task}
+
+\begin{itemize}
+  \item \textbf{Input}: Extended multi-turn interaction requiring recall of earlier context (e.g., referencing variables or decisions from previous exchanges).
+  \item \textbf{Expected Output}: Responses demonstrating accurate context retention and retrieval.
+  \item \textbf{Metrics}: Context retention accuracy, retrieval precision, graceful degradation over extended sessions.
+\end{itemize}
+
+\section{Evaluation Dimensions and Metrics}
+
+This section defines the evaluation dimensions and scoring methodology used to assess platforms across both quantitative and qualitative axes.
+
+\subsection{Evaluation Dimensions}
+
+Four core dimensions structure the evaluation:
+
+\subsubsection{Functionality}
+
+Assessment of platform capabilities for software engineering tasks:
+
+\begin{itemize}
+  \item Tool support and integration capabilities
+  \item Agent orchestration features (sequential, parallel, hierarchical)
+  \item Supported workflow patterns
+  \item External API and service integration
+  \item Code execution and sandboxing capabilities
+\end{itemize}
+
+\subsubsection{Usability}
+
+Assessment of developer experience and accessibility:
+
+\begin{itemize}
+  \item Onboarding complexity and time-to-first-workflow
+  \item Documentation quality and completeness
+  \item Required code versus configuration balance
+  \item Debugging and error message clarity
+  \item IDE integration and developer tooling
+\end{itemize}
+
+\subsubsection{Scalability and Performance}
+
+Assessment of platform behaviour under load and resource constraints:
+
+\begin{itemize}
+  \item Execution time for benchmark tasks
+  \item Resource consumption (memory, compute)
+  \item Architecture suitability for production deployment
+  \item Model routing and load balancing capabilities
+  \item Concurrent agent execution support
+\end{itemize}
+
+\subsubsection{Reliability}
+
+Assessment of platform robustness and consistency:
+
+\begin{itemize}
+  \item Error tolerance and recovery mechanisms
+  \item Output reproducibility across runs
+  \item Determinism in agent behaviour
+  \item Observability, logging, and tracing capabilities
+  \item Graceful degradation under adverse conditions
+\end{itemize}
+
+\subsection{Scoring Methodology}
+
+Each evaluation criterion is scored using a five-point Likert scale:
+
+\begin{table}[H]
+  \centering
+  \begin{tabular}{|c|l|p{7cm}|}
+    \hline
+    \textbf{Score} & \textbf{Rating} & \textbf{Description}                                      \\
+    \hline
+    1              & Poor            & Feature absent or non-functional; significant limitations \\
+    \hline
+    2              & Below Average   & Feature present but with notable deficiencies             \\
+    \hline
+    3              & Adequate        & Feature functional with minor limitations                 \\
+    \hline
+    4              & Good            & Feature well-implemented with few limitations             \\
+    \hline
+    5              & Excellent       & Feature exemplary; best-in-class implementation           \\
+    \hline
+  \end{tabular}
+  \caption{Likert Scale Scoring Rubric}
+\end{table}
+
+Quantitative metrics from benchmark tasks (execution time, success rate, accuracy) are normalised and converted to this scale for integration with qualitative assessments.
+
+\subsection{Aggregation and Weighting}
+
+Dimension scores are aggregated to produce overall platform assessments. Equal weighting is applied by default, with sensitivity analysis exploring alternative weightings based on practitioner priorities (e.g., usability-weighted for rapid prototyping scenarios, reliability-weighted for production deployment scenarios).
+
+\section{Implementation Plan and Tooling Setup}
+
+This section describes the technical environment, repository structure, and execution methodology for conducting the evaluation.
+
+\subsection{Runtime Environment}
+
+The evaluation environment comprises:
+
+\begin{itemize}
+  \item \textbf{Python}: Version 3.13 for SDK-based platforms (LangGraph, CrewAI, Autogen, OpenAI Agents SDK, Google ADK, Semantic Kernel)
+  \item \textbf{Node.js}: Latest LTS version for JavaScript-based workflow platforms (N8n, Flowise, LangFlow)
+  \item \textbf{Docker}: Containerised deployments for platforms requiring isolated environments
+  \item \textbf{LLM Access}: API keys for OpenAI, Anthropic, and Google models as required by platforms
+\end{itemize}
+
+\subsection{Development Environment}
+
+\begin{itemize}
+  \item \textbf{Hardware}: Local development machine with sufficient resources for concurrent platform execution
+  \item \textbf{Operating System}: Cross-platform compatibility (macOS, Windows, Linux)
+  \item \textbf{Version Control}: Git repository with structured organisation for reproducibility
+  \item \textbf{Package Management}: UV for Python dependencies, PNPM for Node.js dependencies
+\end{itemize}
+
+\subsection{Repository Structure}
+
+\begin{verbatim}
+DESMET_Agentic_Platforms/
+├── analysis/           # Evaluation analysis scripts
+├── config/             # Platform configurations
+├── data/               # Input data for benchmarks
+├── docker/             # Docker configurations
+├── documentation/      # Project report and documentation
+├── platforms/          # Platform-specific implementations
+│   ├── langgraph/
+│   ├── crewai/
+│   ├── autogen/
+│   ├── openai-agents/
+│   ├── google-adk/
+│   ├── semantic-kernel/
+│   ├── flowise/
+│   ├── langflow/
+│   ├── dify/
+│   ├── n8n/
+│   └── a2a/
+├── results/            # Benchmark results and metrics
+└── Resources/          # Additional resources
+\end{verbatim}
+
+\subsection{Execution Methodology}
+
+Each platform undergoes the following evaluation process:
+
+\begin{enumerate}
+  \item \textbf{Installation}: Platform installed following official documentation; installation complexity noted.
+  \item \textbf{Configuration}: Platform configured with required API keys, models, and settings; configuration complexity noted.
+  \item \textbf{Benchmark execution}: Standardised benchmark tasks executed using automation scripts to ensure consistency.
+  \item \textbf{Metric collection}: Quantitative metrics (timing, success rates) automatically captured; qualitative observations documented.
+  \item \textbf{Result recording}: All results logged to structured output format for analysis.
+\end{enumerate}
+
+\subsection{Automation and Reproducibility}
+
+To ensure reproducibility and reduce evaluator bias:
+
+\begin{itemize}
+  \item Standardised prompt templates are used across all platforms where applicable
+  \item Benchmark execution scripts automate task submission and result collection
+  \item Random seeds are fixed where platforms support deterministic execution
+  \item All configurations, prompts, and results are version-controlled
+\end{itemize}
+
+\chapter{Implementation}
+\chapter{Evaluation}
+\section{Goals Completed}
+
+\chapter{Conclusions}
+
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%
+%%% Acknowledgements
+\chapter*{Acknowledgements}
+
+%%%% ADD YOUR BIBLIOGRAPHY HERE
+
+
+
+\printbibliography
+
+\end{document}
+%\end{article}

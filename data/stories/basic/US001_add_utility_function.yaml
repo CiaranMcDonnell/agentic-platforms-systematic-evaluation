@@ -1,0 +1,45 @@
+id: US-001
+title: Add Email Validation Utility Function
+description: >
+  Add a validate_email function to the project's utility module that
+  validates email addresses using regex, handles edge cases, and
+  returns a boolean.
+
+category: code_generation
+difficulty: basic
+tags:
+  - utility
+  - validation
+  - regex
+
+prompt_file: prompts/basic/US001_add_utility_function.md
+gherkin_file: gherkin/basic/US001_add_utility_function.feature
+
+target_files:
+  - utils/validation.py
+
+expected_files_modified:
+  - utils/validation.py
+
+acceptance_criteria:
+  - id: AC-001-1
+    description: Function exists with correct signature and type hints
+    verification_method: automated
+
+  - id: AC-001-2
+    description: Valid emails return True
+    verification_method: test
+
+  - id: AC-001-3
+    description: Invalid emails return False
+    verification_method: test
+
+  - id: AC-001-4
+    description: Edge cases handled gracefully
+    verification_method: test
+
+time_budget_seconds: 300
+max_iterations: 25
+
+version: "1.0"
+author: Ciaran McDonnell

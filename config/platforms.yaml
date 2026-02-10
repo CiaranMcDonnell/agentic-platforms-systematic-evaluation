@@ -1,0 +1,80 @@
+# =============================================================================
+# DESMET Agentic Platforms - Platform Configuration
+# =============================================================================
+# Defines the 10 agentic platforms evaluated under the DESMET framework.
+# TODO: Wire into CLI/loader so adapters and runner read from here
+#       instead of hardcoding platform info and evaluation settings.
+# =============================================================================
+
+platforms:
+  # Multi-Agent Frameworks
+  - id: langgraph
+    name: LangGraph
+    category: multi_agent_framework
+    runtime: Python
+
+  - id: crewai
+    name: CrewAI
+    category: multi_agent_framework
+    runtime: Python
+
+  - id: microsoft_autogen
+    name: Microsoft AutoGen
+    category: multi_agent_framework
+    runtime: Python
+
+  # Agent SDK Runtimes
+  - id: openai_agents_sdk
+    name: OpenAI Agents SDK
+    category: agent_sdk_runtime
+    runtime: Python
+
+  - id: google_adk
+    name: Google ADK
+    category: agent_sdk_runtime
+    runtime: Python
+
+  - id: semantic_kernel
+    name: Semantic Kernel
+    category: agent_sdk_runtime
+    runtime: Python
+
+  # Visual / Workflow Platforms
+  - id: flowise
+    name: Flowise
+    category: visual_workflow_platform
+    runtime: Docker
+
+  - id: langflow
+    name: LangFlow
+    category: visual_workflow_platform
+    runtime: Python
+
+  - id: dify
+    name: Dify
+    category: visual_workflow_platform
+    runtime: Docker
+
+  - id: n8n
+    name: n8n
+    category: visual_workflow_platform
+    runtime: Docker
+
+# =============================================================================
+# Evaluation Settings
+# =============================================================================
+# TODO: Have RunnerConfig and story loader read these defaults.
+# =============================================================================
+
+evaluation_settings:
+  time_budgets:
+    basic: 600
+    intermediate: 1200
+    advanced: 2400
+
+  iteration_limits:
+    basic: 25
+    intermediate: 40
+    advanced: 60
+
+  default_model: gpt-5.2

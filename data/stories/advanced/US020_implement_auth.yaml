@@ -1,0 +1,73 @@
+id: US-020
+title: Implement JWT Authentication System
+description: >
+  Implement a complete JWT-based authentication system with
+  register, login, token refresh, and logout endpoints.
+  Includes password hashing, token management, rate limiting,
+  and comprehensive tests.
+
+category: code_generation
+difficulty: advanced
+tags:
+  - auth
+  - jwt
+  - security
+  - api
+  - testing
+
+prompt_file: prompts/advanced/US020_implement_auth.md
+gherkin_file: gherkin/advanced/US020_implement_auth.feature
+
+target_files:
+  - app/routers/auth.py
+  - app/schemas/auth.py
+  - app/services/auth_service.py
+  - app/models/user.py
+  - app/dependencies/auth.py
+  - tests/test_auth.py
+
+expected_files_created:
+  - app/routers/auth.py
+  - app/schemas/auth.py
+  - app/services/auth_service.py
+  - app/dependencies/auth.py
+  - tests/test_auth.py
+
+expected_files_modified:
+  - app/main.py
+  - app/models/user.py
+
+acceptance_criteria:
+  - id: AC-020-1
+    description: Registration creates user and returns tokens
+    verification_method: test
+
+  - id: AC-020-2
+    description: Login returns valid JWT tokens
+    verification_method: test
+
+  - id: AC-020-3
+    description: Token refresh issues new access token
+    verification_method: test
+
+  - id: AC-020-4
+    description: Logout invalidates refresh token
+    verification_method: test
+
+  - id: AC-020-5
+    description: Password validation enforces strength rules
+    verification_method: test
+
+  - id: AC-020-6
+    description: Rate limiting blocks excessive login attempts
+    verification_method: test
+
+  - id: AC-020-7
+    description: Protected routes require valid access token
+    verification_method: test
+
+time_budget_seconds: 2400
+max_iterations: 60
+
+version: "1.0"
+author: Ciaran McDonnell
