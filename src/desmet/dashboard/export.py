@@ -1,7 +1,8 @@
 """
 Chart export helpers for the DESMET dashboard.
+
 Exports Plotly figures as PNG or SVG for the Typst report.
-Requires the kaleido package.
+Uses kaleido for image rendering. Falls back to interactive HTML if kaleido fails.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ def export_figure(
     ----------
     fig : The Plotly figure to export.
     name : Filename stem (e.g. "radar_all_platforms").
-    fmt : "png" or "svg".
+    fmt : "png", "svg", or "html".
     preset : Size preset: "full_width", "half_width", or "default".
     width, height : Override preset dimensions (pixels).
     output_dir : Where to save. Defaults to docs/report/figures/.
@@ -51,12 +52,24 @@ def export_figure(
     w = width or dims["width"]
     h = height or dims["height"]
 
+    if fmt == "html":
+        path = out / f"{name}.html"
+        fig.write_html(str(path), include_plotlyjs="cdn")
+        return path
+
     path = out / f"{name}.{fmt}"
-    fig.write_image(
-        str(path),
-        format=fmt,
-        width=w,
-        height=h,
-        scale=2 if fmt == "png" else 1,
-    )
+    try:
+        fig.write_image(
+            str(path),
+            format=fmt,
+            width=w,
+            height=h,
+            scale=2 if fmt == "png" else 1,
+        )
+    except Exception:
+        # Kaleido may fail in some environments (headless Windows).
+        # Fall back to HTML export.
+        path = out / f"{name}.html"
+        fig.write_html(str(path), include_plotlyjs="cdn")
+
     return path

@@ -76,7 +76,7 @@ observability = [
 dashboard = [
     "streamlit>=1.30.0",
     "plotly>=5.18.0",
-    "kaleido>=0.2.1",
+    "kaleido>=0.2.1,<1.0",
 ]
 
 [dependency-groups]
