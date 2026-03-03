@@ -393,6 +393,131 @@ class BasePlatformAdapter(ABC):
         """
         pass
 
+    # =========================================================================
+    # SDLC Stage Methods (Adapter-Centric Pipeline)
+    # =========================================================================
+
+    @abstractmethod
+    async def generate_requirements(
+        self,
+        context: StageContext,
+    ) -> RequirementsResult:
+        """
+        Stage 2 -- Requirements Analysis.
+
+        Analyse the user story provided in *context.story* and produce a
+        structured requirements specification.  The platform adapter should
+        use its agentic capabilities to:
+
+        1. Decompose the story into functional and non-functional requirements.
+        2. Identify domain entities, relationships and API endpoints.
+        3. Produce one or more UML diagrams (class, sequence, use-case, etc.)
+           captured as ``UMLDiagram`` instances.
+
+        The returned ``RequirementsResult`` is stored on the context via
+        ``context.add_artifacts("requirements", result)`` by the runner so
+        that subsequent stages can access it.
+
+        Args:
+            context: A ``StageContext`` carrying the user story, workspace
+                path, model configuration, tool allowlist and any artifacts
+                produced by earlier stages.
+
+        Returns:
+            A ``RequirementsResult`` containing the extracted functional /
+            non-functional requirements, use-cases, entities, API endpoints
+            and UML diagrams together with execution metrics (timing,
+            token usage, tool-call counts).
+        """
+        pass
+
+    @abstractmethod
+    async def generate_code(
+        self,
+        context: StageContext,
+    ) -> CodeResult:
+        """
+        Stage 3 -- Code Generation.
+
+        Using the user story and the requirements artefacts produced by
+        ``generate_requirements`` (available via
+        ``context.get_prior_result("requirements")``), implement the
+        solution code.  The platform adapter should:
+
+        1. Read the requirements and UML diagrams from the prior stage.
+        2. Generate source files that satisfy the requirements.
+        3. Write the files into *context.workspace*.
+        4. Record a git diff or file listing of what was produced.
+
+        Args:
+            context: A ``StageContext`` carrying the user story, workspace
+                path, model configuration, tool allowlist and accumulated
+                artefacts (including the ``RequirementsResult`` from Stage 2).
+
+        Returns:
+            A ``CodeResult`` containing the list of output files, an
+            optional git diff, and execution metrics.
+        """
+        pass
+
+    @abstractmethod
+    async def generate_tests(
+        self,
+        context: StageContext,
+    ) -> TestResult:
+        """
+        Stage 4 -- Test Generation & Execution.
+
+        Using the user story, requirements, and generated code, produce a
+        test suite and execute it.  The platform adapter should:
+
+        1. Read the code artefacts from ``context.get_prior_result("codegen")``.
+        2. Generate unit / integration tests that verify the requirements.
+        3. Execute the test suite inside the workspace.
+        4. Collect pass/fail counts and, where possible, coverage data.
+
+        Args:
+            context: A ``StageContext`` carrying the user story, workspace
+                path, model configuration, tool allowlist and accumulated
+                artefacts (including ``RequirementsResult`` and ``CodeResult``
+                from earlier stages).
+
+        Returns:
+            A ``TestResult`` containing the test file list, counts of tests
+            run / passed / failed, coverage percentage and execution metrics.
+        """
+        pass
+
+    @abstractmethod
+    async def build_and_deploy(
+        self,
+        context: StageContext,
+    ) -> DeployResult:
+        """
+        Stage 5 -- Build & Deployment Verification.
+
+        Attempt to build the generated code and verify it is deployment-ready.
+        The platform adapter should:
+
+        1. Install / resolve dependencies inside the workspace.
+        2. Run a build step (compilation, bundling, Docker build, etc.).
+        3. Verify the build artefact starts or passes a smoke test.
+        4. Record any dependency or build issues encountered.
+
+        This stage does **not** deploy to a live environment; it only checks
+        that the artefact *could* be deployed.
+
+        Args:
+            context: A ``StageContext`` carrying the user story, workspace
+                path, model configuration, tool allowlist and accumulated
+                artefacts from all prior stages.
+
+        Returns:
+            A ``DeployResult`` indicating build success, deployment readiness,
+            a build log, any dependency issues and execution metrics.
+        """
+        pass
+
     @abstractmethod
     async def health_check(self) -> bool:
         """
