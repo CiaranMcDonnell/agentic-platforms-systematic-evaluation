@@ -119,7 +119,7 @@ def render() -> None:
             rename_map[col] = dim.replace("_", " ").title()
 
     table_df = story_df[display_cols].rename(columns=rename_map).reset_index(drop=True)
-    st.dataframe(table_df, use_container_width=True, hide_index=True)
+    st.dataframe(table_df, width="stretch", hide_index=True)
 
     # ------------------------------------------------------------------
     # Metric Comparison Charts
@@ -134,7 +134,7 @@ def render() -> None:
                 story_df, "wall_clock_seconds", title="Wall Clock Time (s)"
             )
             st.plotly_chart(
-                fig_time, use_container_width=True, key="story_detail_wall_clock"
+                fig_time, width="stretch", key="story_detail_wall_clock"
             )
         else:
             st.info("No wall clock data available.")
@@ -145,7 +145,7 @@ def render() -> None:
                 story_df, "iterations", title="Iterations"
             )
             st.plotly_chart(
-                fig_iter, use_container_width=True, key="story_detail_iterations"
+                fig_iter, width="stretch", key="story_detail_iterations"
             )
         else:
             st.info("No iteration data available.")

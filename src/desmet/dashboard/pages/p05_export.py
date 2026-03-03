@@ -132,7 +132,7 @@ def render() -> None:
             checked = st.checkbox(label, value=True, key=f"chk_{key}")
 
         with col_preview:
-            st.plotly_chart(fig, use_container_width=True, key=f"preview_{key}")
+            st.plotly_chart(fig, width="stretch", key=f"preview_{key}")
 
         if checked:
             selected.append((key, label, fig))

@@ -80,7 +80,7 @@ def render() -> None:
 
         fig_radar = radar_dimensions(dim_dict, title="DESMET Dimension Scores")
         st.plotly_chart(
-            fig_radar, use_container_width=True, key="comparison_radar"
+            fig_radar, width="stretch", key="comparison_radar"
         )
 
         # --------------------------------------------------------------
@@ -101,7 +101,7 @@ def render() -> None:
                     )
                     st.plotly_chart(
                         fig_bar,
-                        use_container_width=True,
+                        width="stretch",
                         key=f"comparison_dim_{dim_name}",
                     )
 
@@ -126,7 +126,7 @@ def render() -> None:
             title=f"{selected_metric.replace('_', ' ').title()} by Story",
         )
         st.plotly_chart(
-            fig_story, use_container_width=True, key="comparison_story"
+            fig_story, width="stretch", key="comparison_story"
         )
 
     # ------------------------------------------------------------------
@@ -141,7 +141,7 @@ def render() -> None:
             story_df, title="Average Efficiency Metrics"
         )
         st.plotly_chart(
-            fig_eff, use_container_width=True, key="comparison_efficiency"
+            fig_eff, width="stretch", key="comparison_efficiency"
         )
 
     # ------------------------------------------------------------------

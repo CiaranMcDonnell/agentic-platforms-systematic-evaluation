@@ -79,7 +79,7 @@ def render() -> None:
         )[["Platform", "Category", "Score", "Completion"]]
     )
 
-    st.dataframe(table_df, use_container_width=True, hide_index=True)
+    st.dataframe(table_df, width="stretch", hide_index=True)
 
     # ------------------------------------------------------------------
     # Charts: Rankings & Completion side-by-side
@@ -88,14 +88,14 @@ def render() -> None:
 
     with left:
         fig_rankings = bar_platform_rankings(summary_df, title="Platform Rankings")
-        st.plotly_chart(fig_rankings, use_container_width=True, key="overview_rankings")
+        st.plotly_chart(fig_rankings, width="stretch", key="overview_rankings")
 
     with right:
         fig_completion = bar_completion_rates(
             summary_df, title="Story Completion Rates"
         )
         st.plotly_chart(
-            fig_completion, use_container_width=True, key="overview_completion"
+            fig_completion, width="stretch", key="overview_completion"
         )
 
     # ------------------------------------------------------------------
@@ -114,4 +114,4 @@ def render() -> None:
             dim_dict.setdefault(pid, {})[row["dimension"]] = row["score"]
 
         fig_radar = radar_dimensions(dim_dict, title="DESMET Dimension Scores")
-        st.plotly_chart(fig_radar, use_container_width=True, key="overview_radar")
+        st.plotly_chart(fig_radar, width="stretch", key="overview_radar")
