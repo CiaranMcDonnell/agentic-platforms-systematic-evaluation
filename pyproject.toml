@@ -134,7 +134,7 @@ strict = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-v --cov=src/desmet --cov-report=html"
+addopts = "-v --cov=src/desmet --cov-report=html -W ignore::pytest.PytestCollectionWarning"
 
 [tool.coverage.run]
 source = ["src/desmet"]

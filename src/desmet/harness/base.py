@@ -279,11 +279,11 @@ class StageContext:
 class RequirementsResult(StageResult):
     """Result of the requirements-analysis stage."""
 
-    functional_requirements: list[dict] = field(default_factory=list)
-    non_functional_requirements: list[dict] = field(default_factory=list)
-    use_cases: list[dict] = field(default_factory=list)
-    entities: list[dict] = field(default_factory=list)
-    api_endpoints: list[dict] = field(default_factory=list)
+    functional_requirements: list[dict[str, Any]] = field(default_factory=list)
+    non_functional_requirements: list[dict[str, Any]] = field(default_factory=list)
+    use_cases: list[dict[str, Any]] = field(default_factory=list)
+    entities: list[dict[str, Any]] = field(default_factory=list)
+    api_endpoints: list[dict[str, Any]] = field(default_factory=list)
     uml_diagrams: list[UMLDiagram] = field(default_factory=list)
 
 
