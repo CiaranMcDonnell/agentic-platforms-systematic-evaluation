@@ -1,8 +1,15 @@
 """
 DESMET Evaluation CLI
 
+Pipeline stages (executed in order):
+    requirements  -- Generate requirements & UML from user stories
+    codegen       -- Generate code from story and requirements
+    testing       -- Generate and run tests against generated code
+    deploy        -- Build the project and verify deployment readiness
+
 Usage:
     desmet-eval run --platform langgraph --story US-001
+    desmet-eval run --platform langgraph --story US-001 --stage codegen
     desmet-eval run --all --dry-run
     desmet-eval list-platforms
     desmet-eval list-stories
@@ -33,6 +40,9 @@ from desmet.harness.runner import EvaluationRunner, RunnerConfig
 from desmet.harness.story import DifficultyLevel
 from desmet.observability import configure_logging, init_langfuse, shutdown_langfuse
 
+# Valid pipeline stage names (matches runner._STAGES keys)
+VALID_STAGES = ("requirements", "codegen", "testing", "deploy", "all")
+
 app = typer.Typer(
     name="desmet-eval",
     help="DESMET Agentic Platforms Evaluation Framework",
@@ -51,12 +61,21 @@ def run(
     story: str = typer.Option(None, help="Story ID to run"),
     all_platforms: bool = typer.Option(False, "--all", help="Run all implemented platforms"),
     difficulty: str = typer.Option(None, help="Filter by difficulty: basic, intermediate, advanced"),
+    stage: str = typer.Option(
+        "all",
+        help="Pipeline stage to run: requirements, codegen, testing, deploy, or all (default: all)",
+    ),
     dry_run: bool = typer.Option(False, help="Dry run without executing"),
     verbose: bool = typer.Option(False, "-v", help="Verbose output"),
     baseline_dir: str = typer.Option(None, help="Path to baseline repository (default: data/baseline/)"),
     results_dir: str = typer.Option(None, help="Path to results directory (default: ./results)"),
 ):
-    """Run evaluation on one or more platforms."""
+    """Run the SDLC evaluation pipeline on one or more platforms.
+
+    The pipeline consists of four stages executed in order:
+    requirements -> codegen -> testing -> deploy.
+    Use --stage to run only a specific stage instead of the full pipeline.
+    """
     # -- Validate args -------------------------------------------------------
     if not platform and not all_platforms:
         console.print("[red]Error:[/red] Provide --platform <id> or --all")
@@ -66,6 +85,14 @@ def run(
         raise typer.Exit(code=1)
     if story and all_platforms:
         console.print("[red]Error:[/red] --story cannot be combined with --all")
+        raise typer.Exit(code=1)
+
+    stage_lower = stage.lower()
+    if stage_lower not in VALID_STAGES:
+        console.print(
+            f"[red]Error:[/red] Invalid --stage '{stage}'. "
+            f"Valid values: {', '.join(VALID_STAGES)}"
+        )
         raise typer.Exit(code=1)
 
     # -- Environment & observability ------------------------------------------
@@ -108,9 +135,11 @@ def run(
             raise typer.Exit(code=1) from exc
 
     # -- Build runner config -------------------------------------------------
+    resolved_stage = None if stage_lower == "all" else stage_lower
     config = RunnerConfig(
         dry_run=dry_run,
         verbose=verbose,
+        stage=resolved_stage,
     )
     if results_dir:
         config.results_dir = Path(results_dir)
@@ -120,7 +149,7 @@ def run(
         config.difficulty_levels = [DifficultyLevel(difficulty)]
 
     # -- Print summary -------------------------------------------------------
-    _print_run_header(platform_ids, stories, story, dry_run, baseline)
+    _print_run_header(platform_ids, stories, story, dry_run, baseline, resolved_stage)
 
     # -- Execute -------------------------------------------------------------
     runner = EvaluationRunner(
@@ -216,6 +245,7 @@ def _print_run_header(
     story_filter: str | None,
     dry_run: bool,
     baseline: Path,
+    stage: str | None = None,
 ):
     console.rule("[bold]DESMET Evaluation Runner[/bold]")
     console.print(f"  Platforms : {', '.join(platform_ids)}")
@@ -223,6 +253,7 @@ def _print_run_header(
         console.print(f"  Story     : {story_filter}")
     else:
         console.print(f"  Stories   : {len(stories)}")
+    console.print(f"  Stage     : {stage or 'all'}")
     console.print(f"  Baseline  : {baseline}")
     if dry_run:
         console.print("  [yellow]DRY RUN — no execution[/yellow]")

@@ -70,6 +70,9 @@ class RunnerConfig:
     stories: list[str] | None = None  # None = all stories
     difficulty_levels: list[DifficultyLevel] | None = None
 
+    # Stage filtering (None = all stages)
+    stage: str | None = None  # e.g. "codegen", "testing"; None runs all
+
     # Options
     dry_run: bool = False
     verbose: bool = False
@@ -331,8 +334,16 @@ class EvaluationRunner:
                 # Accumulator for per-stage results
                 stage_results: dict[str, StageResult] = {}
 
-                # Stages 2-5: call each adapter method sequentially
-                for stage_key, method_name in self._STAGES:
+                # Determine which stages to execute
+                if self.config.stage:
+                    stages_to_run = [
+                        (k, m) for k, m in self._STAGES if k == self.config.stage
+                    ]
+                else:
+                    stages_to_run = self._STAGES
+
+                # Execute selected stages sequentially
+                for stage_key, method_name in stages_to_run:
                     stage_method = getattr(adapter, method_name)
                     try:
                         with langfuse_span(
