@@ -4,6 +4,7 @@ Base Platform Adapter Interface
 All agentic platforms must implement this interface to be evaluated
 in the DESMET framework. This ensures fair, consistent comparison.
 """
+from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
@@ -11,7 +12,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .story import UserStory
 
 
 class PlatformCategory(Enum):
@@ -168,6 +172,155 @@ class ExecutionResult:
 
     # Raw platform output
     raw_output: Any = None
+
+
+# =========================================================================
+# Pipeline Stage Data Models
+# =========================================================================
+
+
+@dataclass
+class UMLDiagram:
+    """A UML diagram produced during requirements analysis."""
+
+    diagram_type: str  # e.g., "class", "sequence", "activity", "use_case"
+    title: str
+    content: str  # Raw diagram source (PlantUML, Mermaid, etc.)
+    format: str = "plantuml"
+
+
+@dataclass
+class StageResult:
+    """
+    Base result for all pipeline stage executions.
+
+    Every stage (requirements, codegen, testing, deploy) returns
+    a subclass of this with additional stage-specific fields.
+    """
+
+    # Identification
+    platform_id: str
+    stage_name: str
+
+    # Outcome
+    success: bool = False
+    completed: bool = False
+    error_message: Optional[str] = None
+
+    # Execution trace
+    trace: AgentTrace = field(default_factory=AgentTrace)
+
+    # Timing & resource usage
+    wall_clock_seconds: float = 0.0
+    iterations: int = 0
+    tool_calls_count: int = 0
+    tokens_input: int = 0
+    tokens_output: int = 0
+    human_interventions: int = 0
+
+    # Timestamps
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+
+    # Raw platform output
+    raw_output: Any = None
+
+
+@dataclass
+class StageContext:
+    """
+    Context provided to each pipeline stage.
+
+    Replaces EvaluationContext for the new multi-stage pipeline.
+    Carries the user story, workspace, constraints, and accumulated
+    artifacts from prior stages.
+    """
+
+    # Story information
+    story: UserStory
+    workspace: Path
+
+    # Constraints
+    time_budget_seconds: int = 600
+    max_iterations: int = 50
+    max_tool_calls: int = 100
+
+    # Available tools
+    allowed_tools: list[str] = field(
+        default_factory=lambda: [
+            "read_file",
+            "write_file",
+            "list_directory",
+            "execute_shell",
+            "search_code",
+        ]
+    )
+
+    # Model configuration
+    model: str = "gpt-4.1"
+    temperature: float = 0.0
+
+    # Accumulated stage results
+    artifacts: dict[str, StageResult] = field(default_factory=dict)
+
+    # Metadata
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def add_artifacts(self, stage_name: str, result: StageResult) -> None:
+        """Store the result of a completed stage."""
+        self.artifacts[stage_name] = result
+
+    def get_prior_result(self, stage_name: str) -> Optional[StageResult]:
+        """Retrieve the result of a previously completed stage."""
+        return self.artifacts.get(stage_name)
+
+
+@dataclass
+class RequirementsResult(StageResult):
+    """Result of the requirements-analysis stage."""
+
+    functional_requirements: list[dict] = field(default_factory=list)
+    non_functional_requirements: list[dict] = field(default_factory=list)
+    use_cases: list[dict] = field(default_factory=list)
+    entities: list[dict] = field(default_factory=list)
+    api_endpoints: list[dict] = field(default_factory=list)
+    uml_diagrams: list[UMLDiagram] = field(default_factory=list)
+
+
+@dataclass
+class CodeResult(StageResult):
+    """Result of the code-generation stage."""
+
+    output_files: list[str] = field(default_factory=list)
+    git_diff: Optional[str] = None
+
+
+@dataclass
+class TestResult(StageResult):
+    """Result of the testing stage."""
+
+    test_files: list[str] = field(default_factory=list)
+    tests_run: int = 0
+    tests_passed: int = 0
+    tests_failed: int = 0
+    coverage_percentage: float = 0.0
+
+    @property
+    def test_pass_rate(self) -> float:
+        """Percentage of tests that passed."""
+        if self.tests_run == 0:
+            return 0.0
+        return (self.tests_passed / self.tests_run) * 100
+
+
+@dataclass
+class DeployResult(StageResult):
+    """Result of the deployment stage."""
+
+    build_success: bool = False
+    deployment_ready: bool = False
+    build_log: str = ""
+    dependency_issues: list[str] = field(default_factory=list)
 
 
 class BasePlatformAdapter(ABC):
