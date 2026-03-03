@@ -1,1 +1,1 @@
-"""Stage 4: Testing Generation — Evaluate ability to generate meaningful, valid tests."""
+"""Stage 4: Testing — Platform generates and runs tests against generated code."""

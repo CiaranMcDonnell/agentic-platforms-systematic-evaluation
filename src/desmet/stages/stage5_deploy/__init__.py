@@ -1,1 +1,1 @@
-"""Stage 5: Building & Deploying — Verify agent-generated code builds and deploys."""
+"""Stage 5: Build & Deploy — Platform builds the project and verifies deployment readiness."""

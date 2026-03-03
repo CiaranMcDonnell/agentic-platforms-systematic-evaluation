@@ -1,8 +1,6 @@
-"""
-Requirements Stage
+"""Stage 2: Requirements Engineering — Platform generates requirements and UML from user stories.
 
-The first stage of the software engineering pipeline that processes
-natural language requirements and produces structured outputs including:
+Processes natural language requirements and produces structured outputs including:
 
 - User Stories with acceptance criteria
 - Functional and Non-Functional Requirements
@@ -13,7 +11,7 @@ natural language requirements and produces structured outputs including:
 - PlantUML diagrams (Use Case, Class, Component, ER, Sequence, etc.)
 
 Usage:
-    from stages.requirements import (
+    from desmet.stages.stage2_requirements import (
         RequirementsInput,
         RequirementsOutput,
         RequirementsStageRunner,
