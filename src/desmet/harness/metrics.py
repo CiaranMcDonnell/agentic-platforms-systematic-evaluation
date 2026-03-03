@@ -62,6 +62,26 @@ class SetupMetrics:
 
 
 @dataclass
+class StageMetrics:
+    """Metrics for a single stage execution."""
+    story_id: str
+    platform_id: str
+    stage_name: str  # "requirements", "codegen", "testing", "deploy"
+
+    success: bool = False
+    wall_clock_seconds: float = 0.0
+    iterations: int = 0
+    tool_calls: int = 0
+    tokens_input: int = 0
+    tokens_output: int = 0
+    human_interventions: int = 0
+
+    correctness_score: float = 0.0
+    completeness_score: float = 0.0
+    quality_score: float = 0.0
+
+
+@dataclass
 class StoryMetrics:
     """Metrics from a single story execution."""
     story_id: str
@@ -119,6 +139,9 @@ class EvaluationMetrics:
 
     # Story metrics
     story_metrics: list[StoryMetrics] = field(default_factory=list)
+
+    # Stage metrics
+    stage_metrics: list[StageMetrics] = field(default_factory=list)
 
     # Dimension scores
     dimension_scores: list[DimensionScore] = field(default_factory=list)
@@ -279,6 +302,15 @@ class MetricsCollector:
         """Record setup metrics for a platform."""
         if platform_id in self.platform_metrics:
             self.platform_metrics[platform_id].setup_metrics = metrics
+
+    def record_stage_metrics(
+        self,
+        platform_id: str,
+        metrics: StageMetrics,
+    ):
+        """Record metrics for a single stage execution."""
+        if platform_id in self.platform_metrics:
+            self.platform_metrics[platform_id].stage_metrics.append(metrics)
 
     def record_story_metrics(
         self,
