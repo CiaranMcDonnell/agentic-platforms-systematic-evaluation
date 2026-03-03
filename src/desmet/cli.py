@@ -236,6 +236,22 @@ def list_stories(
 
 
 # ---------------------------------------------------------------------------
+# dashboard
+# ---------------------------------------------------------------------------
+
+@app.command()
+def dashboard():
+    """Launch the Streamlit evaluation dashboard."""
+    import subprocess
+    import sys
+
+    from desmet.dashboard.data import REPO_ROOT
+
+    app_path = REPO_ROOT / "src" / "desmet" / "dashboard" / "app.py"
+    subprocess.run([sys.executable, "-m", "streamlit", "run", str(app_path)], check=True)
+
+
+# ---------------------------------------------------------------------------
 # Output helpers
 # ---------------------------------------------------------------------------
 
