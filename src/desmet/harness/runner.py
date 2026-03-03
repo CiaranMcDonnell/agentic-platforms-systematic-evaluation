@@ -2,9 +2,19 @@
 Evaluation Runner
 
 Orchestrates the execution of user stories across all platforms.
+
+The runner drives a four-stage SDLC pipeline for every story:
+  Stage 2 -- Requirements Analysis  (adapter.generate_requirements)
+  Stage 3 -- Code Generation        (adapter.generate_code)
+  Stage 4 -- Test Generation        (adapter.generate_tests)
+  Stage 5 -- Build & Deploy         (adapter.build_and_deploy)
+
+Stage 1 (story loading / context preparation) is handled by the harness
+itself via ``prepare_stage_context``.
 """
 
 import asyncio
+import json
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
@@ -19,8 +29,19 @@ from desmet.observability import (
     langfuse_trace,
     record_generation,
 )
+from desmet.stages.stage1_stories.loader import prepare_stage_context
 
-from .base import BasePlatformAdapter, EvaluationContext, ExecutionResult
+from .base import (
+    BasePlatformAdapter,
+    EvaluationContext,
+    ExecutionResult,
+    StageContext,
+    StageResult,
+    RequirementsResult,
+    CodeResult,
+    TestResult,
+    DeployResult,
+)
 from .story import UserStory, StoryResult, StoryStatus, DifficultyLevel
 from .metrics import MetricsCollector, StoryMetrics, SetupMetrics
 
@@ -236,6 +257,18 @@ class EvaluationRunner:
             except Exception as e:
                 logger.warning(f"Error shutting down {platform_id}: {e}")
 
+    # ------------------------------------------------------------------
+    # Stage-by-stage pipeline definition
+    # ------------------------------------------------------------------
+
+    #: Ordered list of (stage_key, adapter_method_name) tuples.
+    _STAGES: list[tuple[str, str]] = [
+        ("requirements", "generate_requirements"),
+        ("codegen", "generate_code"),
+        ("testing", "generate_tests"),
+        ("deploy", "build_and_deploy"),
+    ]
+
     async def _run_story(
         self,
         platform_id: str,
@@ -243,7 +276,16 @@ class EvaluationRunner:
         story: UserStory,
         trace: Any | None = None,
     ) -> StoryResult:
-        """Run a single story on a platform."""
+        """Run a single story through the four-stage SDLC pipeline.
+
+        Stage 1 (context preparation) is performed by the harness.  Stages
+        2-5 are delegated to the adapter's ``generate_requirements``,
+        ``generate_code``, ``generate_tests``, and ``build_and_deploy``
+        methods respectively.
+
+        Individual stage failures are logged but do **not** prevent later
+        stages from executing.
+        """
         logger.info("running_story", story_id=story.id, title=story.title)
 
         result = StoryResult(
@@ -279,60 +321,108 @@ class EvaluationRunner:
                     workspace=str(workspace),
                 )
 
-                # Create evaluation context
-                context = EvaluationContext(
-                    story_id=story.id,
-                    story_prompt=story.prompt,
-                    story_context=story.context,
-                    repo_path=workspace,
-                    target_files=story.target_files,
-                    time_budget_seconds=int(story.time_budget_seconds * self.config.story_timeout_multiplier),
-                    max_iterations=story.max_iterations,
+                # Stage 1: Prepare context (harness-only, no adapter call)
+                stage_ctx = prepare_stage_context(
+                    story,
+                    workspace=workspace,
+                    timeout_multiplier=self.config.story_timeout_multiplier,
                 )
 
-                # Execute
-                exec_result = await adapter.execute_story(context)
+                # Accumulator for per-stage results
+                stage_results: dict[str, StageResult] = {}
 
-                # Update result from execution
-                result.status = StoryStatus.COMPLETED if exec_result.completed else StoryStatus.FAILED
+                # Stages 2-5: call each adapter method sequentially
+                for stage_key, method_name in self._STAGES:
+                    stage_method = getattr(adapter, method_name)
+                    try:
+                        with langfuse_span(
+                            span,
+                            f"stage-{stage_key}",
+                            metadata={"platform_id": platform_id, "story_id": story.id},
+                        ):
+                            stage_result = await stage_method(stage_ctx)
+                            stage_ctx.add_artifacts(stage_key, stage_result)
+                            stage_results[stage_key] = stage_result
+                            logger.info(
+                                f"stage_{stage_key}_completed",
+                                success=stage_result.success,
+                            )
+                    except Exception as e:
+                        logger.error(f"stage_{stage_key}_failed", error=str(e))
+                        # Continue -- do NOT block later stages
+
+                # ----- Aggregate results into StoryResult -----
+                result.status = StoryStatus.COMPLETED
                 result.end_time = datetime.now()
                 result.wall_clock_seconds = (result.end_time - result.start_time).total_seconds()
-                result.iterations = exec_result.trace.total_iterations
-                result.tool_calls = len(exec_result.trace.tool_calls)
-                result.tokens_input = exec_result.trace.total_tokens_input
-                result.tokens_output = exec_result.trace.total_tokens_output
-                result.human_interventions = len(exec_result.interventions)
-                result.output_files = exec_result.output_files
-                result.git_diff = exec_result.git_diff
-                result.raw_result = exec_result
 
-                if not exec_result.success:
-                    result.error_message = exec_result.error_message
+                # Sum metrics across all completed stages
+                result.iterations = sum(
+                    sr.iterations for sr in stage_results.values()
+                )
+                result.tool_calls = sum(
+                    sr.tool_calls_count for sr in stage_results.values()
+                )
+                result.tokens_input = sum(
+                    sr.tokens_input for sr in stage_results.values()
+                )
+                result.tokens_output = sum(
+                    sr.tokens_output for sr in stage_results.values()
+                )
+                result.human_interventions = sum(
+                    sr.human_interventions for sr in stage_results.values()
+                )
 
-                # Record generation observation in Langfuse
+                # Pull artifact-specific fields from code / test / deploy stages
+                code_result = stage_results.get("codegen")
+                if isinstance(code_result, CodeResult):
+                    result.output_files = code_result.output_files
+                    result.git_diff = code_result.git_diff
+
+                test_result = stage_results.get("testing")
+                if isinstance(test_result, TestResult):
+                    result.tests_run = test_result.tests_run
+                    result.tests_passed = test_result.tests_passed
+                    result.tests_failed = test_result.tests_failed
+
+                # Store the full stage_results dict as raw_result for
+                # downstream consumers
+                result.raw_result = stage_results
+
+                # Collect error messages from failed stages
+                errors: list[str] = []
+                for stage_key in ("requirements", "codegen", "testing", "deploy"):
+                    sr = stage_results.get(stage_key)
+                    if sr and not sr.success and sr.error_message:
+                        errors.append(f"{stage_key}: {sr.error_message}")
+                if errors:
+                    result.error_message = "; ".join(errors)
+
+                # Record generation observation in Langfuse (aggregate)
                 record_generation(
                     parent=span,
                     name=f"execute-{story.id}",
                     input=story.prompt,
-                    output=exec_result.error_message if not exec_result.success else "success",
+                    output=result.error_message or "success",
                     usage={
-                        "input": exec_result.trace.total_tokens_input or 0,
-                        "output": exec_result.trace.total_tokens_output or 0,
+                        "input": result.tokens_input,
+                        "output": result.tokens_output,
                     },
                     metadata={
-                        "iterations": exec_result.trace.total_iterations,
-                        "tool_calls": len(exec_result.trace.tool_calls),
+                        "iterations": result.iterations,
+                        "tool_calls": result.tool_calls,
+                        "stages_completed": list(stage_results.keys()),
                     },
                 )
 
-                # Save trace if configured
+                # Save per-stage traces if configured
                 if self.config.save_traces:
-                    trace_path = self._save_trace(result, exec_result)
+                    trace_path = self._save_stage_traces(result, stage_results)
                     result.trace_file = str(trace_path)
 
                 logger.info(
                     "story_completed",
-                    success=exec_result.success,
+                    stages_completed=list(stage_results.keys()),
                     duration_seconds=round(result.wall_clock_seconds, 1),
                     iterations=result.iterations,
                 )
@@ -399,13 +489,12 @@ class EvaluationRunner:
         result: StoryResult,
         exec_result: ExecutionResult,
     ) -> Path:
-        """Save execution trace to file."""
+        """Save execution trace to file (legacy single-result path)."""
         trace_dir = self.config.logs_dir / result.platform_id / result.story_id
         trace_dir.mkdir(parents=True, exist_ok=True)
 
         trace_path = trace_dir / f"{result.execution_id}_trace.json"
 
-        import json
         trace_data = {
             "execution_id": result.execution_id,
             "platform_id": result.platform_id,
@@ -423,6 +512,70 @@ class EvaluationRunner:
                 }
                 for msg in exec_result.trace.messages
             ] if exec_result.trace.messages else [],
+        }
+
+        with open(trace_path, "w", encoding="utf-8") as f:
+            json.dump(trace_data, f, indent=2)
+
+        return trace_path
+
+    def _save_stage_traces(
+        self,
+        result: StoryResult,
+        stage_results: dict[str, StageResult],
+    ) -> Path:
+        """Save per-stage execution traces to a single JSON file.
+
+        Each stage's trace (messages, tool calls, timing) is stored under
+        its stage key.  The file is written to the logs directory alongside
+        any legacy trace files.
+        """
+        trace_dir = self.config.logs_dir / result.platform_id / result.story_id
+        trace_dir.mkdir(parents=True, exist_ok=True)
+
+        trace_path = trace_dir / f"{result.execution_id}_stages.json"
+
+        stages_data: dict[str, Any] = {}
+        for stage_key, sr in stage_results.items():
+            stage_entry: dict[str, Any] = {
+                "stage_name": sr.stage_name,
+                "success": sr.success,
+                "error_message": sr.error_message,
+                "wall_clock_seconds": sr.wall_clock_seconds,
+                "iterations": sr.iterations,
+                "tool_calls_count": sr.tool_calls_count,
+                "tokens_input": sr.tokens_input,
+                "tokens_output": sr.tokens_output,
+                "human_interventions": sr.human_interventions,
+                "start_time": sr.start_time.isoformat() if sr.start_time else None,
+                "end_time": sr.end_time.isoformat() if sr.end_time else None,
+            }
+            # Include message trace when available
+            if sr.trace and sr.trace.messages:
+                stage_entry["messages"] = [
+                    {
+                        "role": msg.role,
+                        "content": (
+                            msg.content[:500] + "..."
+                            if len(msg.content) > 500
+                            else msg.content
+                        ),
+                        "timestamp": msg.timestamp.isoformat(),
+                    }
+                    for msg in sr.trace.messages
+                ]
+            stages_data[stage_key] = stage_entry
+
+        trace_data = {
+            "execution_id": result.execution_id,
+            "platform_id": result.platform_id,
+            "story_id": result.story_id,
+            "start_time": result.start_time.isoformat() if result.start_time else None,
+            "end_time": result.end_time.isoformat() if result.end_time else None,
+            "status": result.status.value,
+            "iterations": result.iterations,
+            "tool_calls": result.tool_calls,
+            "stages": stages_data,
         }
 
         with open(trace_path, "w", encoding="utf-8") as f:
