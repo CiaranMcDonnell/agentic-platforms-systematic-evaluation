@@ -56,20 +56,20 @@ FIGURES_DIR = RESULTS_DIR / "figures"
 
 CATEGORY_COLOURS: dict[str, dict[str, str]] = {
     "multi_agent_framework": {
-        "langgraph": "#1f77b4",
-        "crewai": "#4a90d9",
-        "microsoft_autogen": "#7eb8e4",
+        "langgraph": "#6366f1",          # indigo
+        "crewai": "#f472b6",             # pink
+        "microsoft_autogen": "#38bdf8",  # sky blue
     },
     "agent_sdk_runtime": {
-        "openai_agents_sdk": "#2ca02c",
-        "google_adk": "#5cbf5c",
-        "semantic_kernel": "#8dd98d",
+        "openai_agents_sdk": "#22d3ee",  # cyan
+        "google_adk": "#4ade80",         # green
+        "semantic_kernel": "#a78bfa",    # purple
     },
     "visual_workflow_platform": {
-        "flowise": "#ff7f0e",
-        "langflow": "#ffa64d",
-        "dify": "#ffc98c",
-        "n8n": "#ffe0b2",
+        "flowise": "#fb923c",            # orange
+        "langflow": "#facc15",           # yellow
+        "dify": "#f87171",              # red
+        "n8n": "#34d399",               # emerald
     },
 }
 
