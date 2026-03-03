@@ -72,6 +72,13 @@ observability = [
     "langfuse>=2.0.0",
 ]
 
+# ── Dashboard ──
+dashboard = [
+    "streamlit>=1.30.0",
+    "plotly>=5.18.0",
+    "kaleido>=0.2.1",
+]
+
 [dependency-groups]
 dev = [
     "ruff>=0.1.0",
