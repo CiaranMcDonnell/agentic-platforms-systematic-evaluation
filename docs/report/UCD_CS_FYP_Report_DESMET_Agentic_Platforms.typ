@@ -412,13 +412,79 @@ The four-category taxonomy reflects distinct architectural approaches to agentic
 - *Visual / Workflow Platforms* prioritise accessibility through no-code or low-code interfaces, enabling rapid prototyping and non-developer usage.
 - *Interoperability Protocols* address cross-platform agent communication, enabling agents built on different frameworks to collaborate.
 
-== Test Tasks and Benchmark Design
+== Evaluation Pipeline and Benchmark Design
 
-This section specifies the software engineering tasks used to evaluate platform capabilities. Tasks are designed to be realistic, consistently executable across platforms, and diagnostic of agent orchestration strengths and weaknesses.
+This section specifies the software engineering pipeline used to evaluate platform capabilities and the user stories that exercise it. Rather than evaluating platforms on isolated tasks (code generation, debugging, refactoring), this study adopts a pipeline-based approach: each platform is given a user story and must produce working software through a sequence of stages. This design mirrors how practitioners actually use agentic platforms and provides a more holistic assessment of end-to-end capability.
 
-=== Task Overview
+=== Pipeline Stages
 
-Six benchmark tasks are defined, each targeting different aspects of agentic platform capability:
+Each platform attempts a four-stage software engineering pipeline. Design (UML diagram generation) is folded into the first stage, following the approach in Broccia et al. @broccia2025humainflow where requirements extraction and structural modelling form a single artefact-generation step.
+
+#figure(
+  table(
+    columns: 4,
+    stroke: 0.5pt,
+    inset: 8pt,
+    align: left,
+    table.header(
+      [*Stage*], [*Input*], [*Output*], [*Key Metrics*],
+    ),
+    [1. Requirements \& Design],
+    [User story (YAML)],
+    [Structured requirements, acceptance criteria, UML diagrams (PlantUML)],
+    [Completeness, quality, traceability, parseable UML],
+
+    [2. Code Generation],
+    [Requirements + UML design],
+    [Source code],
+    [Functional correctness, completeness, code quality, design adherence],
+
+    [3. Test Generation],
+    [Requirements + source code],
+    [Test suite],
+    [Test pass rate, coverage, test quality],
+
+    [4. Build \& Deploy],
+    [Source code + tests],
+    [Passing build, deployable artifact],
+    [Build success, deploy success, configuration effort],
+  ),
+  caption: [Pipeline Stages Overview],
+)
+
+For each stage, two tiers are recorded:
+
+- *Capability Tier*: Whether the platform can perform the stage at all (Supported / Partial / Not Supported).
+- *Performance Tier*: For stages the platform completes, quantitative and qualitative metrics are recorded.
+
+#figure(
+  table(
+    columns: 2,
+    stroke: 0.5pt,
+    inset: 8pt,
+    align: left,
+    table.header(
+      [*Rating*], [*Criteria*],
+    ),
+    [Supported], [Stage completes autonomously or with minimal prompting. Output is usable without manual rewriting.],
+    [Partial], [Stage produces output but requires significant human intervention (more than two corrections) or output is only partially usable.],
+    [Not Supported], [Platform cannot attempt this stage, or output is unusable or empty despite attempts.],
+  ),
+  caption: [Capability Tier Definitions],
+)
+
+=== Common Per-Stage Metrics
+
+Every pipeline stage records the following resource consumption metrics alongside its stage-specific quality metrics:
+
+- *Token Usage*: Input, output, and total tokens consumed
+- *API Cost*: Estimated cost in USD based on provider pricing
+- *Wall-clock Time*: Seconds from stage invocation to completion
+- *Human Interventions*: Count of manual corrections required during execution
+
+=== User Stories
+
+Four user stories of increasing complexity are run through the pipeline, providing a range of difficulty levels to differentiate platform capabilities:
 
 #figure(
   table(
@@ -427,107 +493,108 @@ Six benchmark tasks are defined, each targeting different aspects of agentic pla
     inset: 8pt,
     align: left,
     table.header(
-      [*Task*], [*Purpose*], [*Key Metrics*],
+      [*Story*], [*Complexity*], [*Purpose*],
     ),
-    [Code Generation], [Generate functional code from natural language specification], [Correctness, completeness, code quality],
-    [Bug Fixing / Debugging], [Identify and fix bugs in provided code], [Accuracy, fix correctness, explanation quality],
-    [Refactoring], [Improve code structure while preserving behaviour], [Behavioural preservation, improvement quality],
-    [Tool-use Workflow], [Execute API calls and transform results], [Tool invocation success, data transformation accuracy],
-    [Multi-agent Coordination], [Coordinate multiple agents on a collaborative task], [Coordination effectiveness, task completion],
-    [Memory and Context Handling], [Maintain context across extended interactions], [Context retention, retrieval accuracy],
+    [US001 (utility function)], [Basic], [Tests pipeline end-to-end with minimal complexity],
+    [US010 (API endpoint)], [Intermediate], [Tests API integration and multi-file generation],
+    [US030 (fullstack app)], [Intermediate], [Tests frontend and backend coordination],
+    [US020 (auth system)], [Advanced], [Tests complex requirements, security concerns, multi-component coordination],
   ),
-  caption: [Benchmark Tasks Overview],
+  caption: [User Stories for Pipeline Evaluation],
 )
 
-=== Task Specifications
+This yields a total of 10 platforms × 4 stories × 4 stages = 160 stage-level evaluations.
 
-==== Code Generation Task
+== Three-Layer Evaluation Framework
 
-- *Input*: Natural language description of a function or module to implement (e.g., "Implement a function that validates email addresses using regex").
-- *Expected Output*: Syntactically correct, functional code that satisfies the specification.
-- *Metrics*: Syntactic correctness, test pass rate, adherence to specification, code style quality.
+This section defines the evaluation framework used to assess platforms. The framework comprises three complementary layers, each answering a distinct practitioner question. Together, they cover platform viability, capability, and performance---providing a complete evaluation from initial consideration through empirical benchmarking.
 
-==== Bug Fixing / Debugging Task
+=== Layer 1: Industry Readiness
 
-- *Input*: Code containing one or more bugs, with a description of expected versus actual behaviour.
-- *Expected Output*: Corrected code with explanation of the bug(s) identified and fixes applied.
-- *Metrics*: Bug identification accuracy, fix correctness, explanation clarity.
+*Purpose:* Establish baseline platform viability. Answers: _"Is this platform mature enough to evaluate seriously?"_
 
-==== Refactoring Task
+Agentic platforms are a rapidly evolving space where some tools are production-grade while others remain experimental. This layer establishes a factual maturity profile for each platform before investing effort in deeper evaluation.
 
-- *Input*: Functional but poorly structured code with refactoring goals (e.g., "Extract repeated logic into helper functions").
-- *Expected Output*: Refactored code that preserves original behaviour while improving structure.
-- *Metrics*: Behavioural equivalence, structural improvement, maintainability gain.
+#figure(
+  table(
+    columns: 2,
+    stroke: 0.5pt,
+    inset: 8pt,
+    align: left,
+    table.header(
+      [*Criterion*], [*What It Measures*],
+    ),
+    [Release Maturity], [Stable release (v1.0+)? Pre-release, alpha, or beta?],
+    [Maintenance Activity], [Commits in last 6 months, open issues response time, release cadence],
+    [Community Size], [GitHub stars, contributors, Discord/Slack activity, Stack Overflow presence],
+    [Documentation Quality], [Official docs exist? Tutorials? API reference? Completeness and accuracy],
+    [Industry Adoption], [Evidence of production use: case studies, enterprise mentions, job postings],
+    [Licensing], [Open-source (MIT/Apache)? Fair-code? Proprietary? Implications for extensibility],
+  ),
+  caption: [Layer 1: Industry Readiness Criteria],
+)
 
-==== Tool-use Workflow Task
+Layer 1 produces a factual maturity profile per platform rather than a numeric score. This contextualises all subsequent findings: a high-performing but abandoned platform is not useful guidance for practitioners.
 
-- *Input*: A multi-step task requiring external tool invocation (e.g., "Fetch weather data from API, parse the response, and format a summary").
-- *Expected Output*: Correctly executed workflow with accurate data transformation.
-- *Metrics*: Tool invocation success rate, data transformation accuracy, workflow completion.
+=== Layer 2: Platform Characteristics
 
-==== Multi-agent Coordination Task
+*Purpose:* Map what each platform _can_ do, independent of how well it performs on benchmarks. Answers: _"What features and architectural properties does this platform have?"_
 
-- *Input*: A task requiring collaboration between multiple agents with distinct roles (e.g., researcher agent gathers information, writer agent drafts content, reviewer agent provides feedback).
-- *Expected Output*: Completed collaborative output demonstrating effective agent coordination.
-- *Metrics*: Role adherence, handoff effectiveness, final output quality, coordination overhead.
+This layer directly extends the system-level and interaction-level comparison framework from Broccia et al. @broccia2025humainflow, expanding it from eight visual workflow tools to ten platforms spanning three architectural categories. Additional criteria (A2A protocol support, sandboxing, workflow patterns, memory management, multi-agent coordination) reflect the broader scope of this evaluation.
 
-==== Memory and Context Handling Task
+==== System-level Features
 
-- *Input*: Extended multi-turn interaction requiring recall of earlier context (e.g., referencing variables or decisions from previous exchanges).
-- *Expected Output*: Responses demonstrating accurate context retention and retrieval.
-- *Metrics*: Context retention accuracy, retrieval precision, graceful degradation over extended sessions.
+#figure(
+  table(
+    columns: 2,
+    stroke: 0.5pt,
+    inset: 8pt,
+    align: left,
+    table.header(
+      [*Criterion*], [*What It Measures*],
+    ),
+    [MCP Support], [Model Context Protocol integration for interoperability],
+    [A2A Support], [Google Agent-to-Agent protocol support],
+    [SDK Independence], [Tightly coupled to a specific SDK (e.g., LangChain) or agnostic?],
+    [Local LLM Execution], [Can run models locally (e.g., Ollama) for privacy and cost reduction],
+    [Remote LLM Providers], [Which commercial APIs are supported (OpenAI, Anthropic, Google, etc.)],
+    [Extensibility], [Plugin system? Custom tool registration? Third-party integrations?],
+    [Execution Monitoring], [Built-in observability: tracing, logging, node-level inspection],
+    [Sandboxing / Safety], [Code execution isolation, permission boundaries],
+  ),
+  caption: [Layer 2: System-level Feature Criteria],
+)
 
-== Evaluation Dimensions and Metrics
+==== Interaction-level Features
 
-This section defines the evaluation dimensions and scoring methodology used to assess platforms across both quantitative and qualitative axes.
+#figure(
+  table(
+    columns: 2,
+    stroke: 0.5pt,
+    inset: 8pt,
+    align: left,
+    table.header(
+      [*Criterion*], [*What It Measures*],
+    ),
+    [Code Level], [No-code, low-code, or full-code interface accessibility],
+    [Team Collaboration], [Shared workflows, version control, multi-user editing],
+    [Human-in-the-Loop], [Can humans intervene in workflow execution? First-class or ad-hoc?],
+    [Workflow Patterns], [Sequential, parallel, hierarchical, conditional branching support],
+    [Memory / State Management], [Conversation memory, persistent state across agent turns],
+    [Multi-Agent Coordination], [Can multiple agents collaborate? Role assignment and handoffs?],
+  ),
+  caption: [Layer 2: Interaction-level Feature Criteria],
+)
 
-=== Evaluation Dimensions
+Each criterion is scored as Yes, Partial, or No based on documentation review and hands-on verification. The output is two feature matrices (one per feature category) with one row per platform and one column per criterion.
 
-Four core dimensions structure the evaluation:
+=== Layer 3: Pipeline Benchmarking
 
-==== Functionality
+*Purpose:* Measure how well each platform performs on real software engineering tasks. Answers: _"Given a user story, how effectively can this platform produce working software?"_
 
-Assessment of platform capabilities for software engineering tasks:
+Layer 3 is the novel empirical contribution of this study. Each platform is evaluated by running the four-stage pipeline described in Section 5.3 across four user stories of increasing complexity. Stage-specific quality metrics are defined in the subsections below.
 
-- Tool support and integration capabilities
-- Agent orchestration features (sequential, parallel, hierarchical)
-- Supported workflow patterns
-- External API and service integration
-- Code execution and sandboxing capabilities
-
-==== Usability
-
-Assessment of developer experience and accessibility:
-
-- Onboarding complexity and time-to-first-workflow
-- Documentation quality and completeness
-- Required code versus configuration balance
-- Debugging and error message clarity
-- IDE integration and developer tooling
-
-==== Scalability and Performance
-
-Assessment of platform behaviour under load and resource constraints:
-
-- Execution time for benchmark tasks
-- Resource consumption (memory, compute)
-- Architecture suitability for production deployment
-- Model routing and load balancing capabilities
-- Concurrent agent execution support
-
-==== Reliability
-
-Assessment of platform robustness and consistency:
-
-- Error tolerance and recovery mechanisms
-- Output reproducibility across runs
-- Determinism in agent behaviour
-- Observability, logging, and tracing capabilities
-- Graceful degradation under adverse conditions
-
-=== Scoring Methodology
-
-Each evaluation criterion is scored using a five-point Likert scale:
+==== Requirements \& Design Metrics
 
 #figure(
   table(
@@ -536,22 +603,145 @@ Each evaluation criterion is scored using a five-point Likert scale:
     inset: 8pt,
     align: left,
     table.header(
-      [*Score*], [*Rating*], [*Description*],
+      [*Metric*], [*Type*], [*Measurement*],
     ),
-    [1], [Poor], [Feature absent or non-functional; significant limitations],
-    [2], [Below Average], [Feature present but with notable deficiencies],
-    [3], [Adequate], [Feature functional with minor limitations],
-    [4], [Good], [Feature well-implemented with few limitations],
-    [5], [Excellent], [Feature exemplary; best-in-class implementation],
+    [Requirement Completeness], [Quantitative], [Percentage of expected requirements captured (ground truth: acceptance criteria from user story)],
+    [Requirement Quality], [Qualitative], [Free of smells: ambiguity, vagueness, incompleteness (rubric 0--3)],
+    [Traceability], [Qualitative], [Requirements traceable back to user story (rubric 0--3)],
+    [Design Completeness], [Qualitative], [All key entities and relationships captured in UML (rubric 0--3)],
+    [Design Correctness], [Qualitative], [Diagrams consistent with requirements (rubric 0--3)],
+    [Parseable UML], [Quantitative], [Does the PlantUML output compile? (binary)],
   ),
-  caption: [Likert Scale Scoring Rubric],
+  caption: [Stage 1 Metrics: Requirements \& Design],
 )
 
-Quantitative metrics from benchmark tasks (execution time, success rate, accuracy) are normalised and converted to this scale for integration with qualitative assessments.
+==== Code Generation Metrics
 
-=== Aggregation and Weighting
+#figure(
+  table(
+    columns: 3,
+    stroke: 0.5pt,
+    inset: 8pt,
+    align: left,
+    table.header(
+      [*Metric*], [*Type*], [*Measurement*],
+    ),
+    [Functional Correctness], [Quantitative], [Does the code run and produce expected output?],
+    [Completeness], [Quantitative], [Percentage of requirements with corresponding implementation],
+    [Code Quality], [Qualitative], [Structure, naming, style, maintainability (rubric 0--3)],
+    [Adherence to Design], [Qualitative], [Code reflects the UML structure (rubric 0--3)],
+  ),
+  caption: [Stage 2 Metrics: Code Generation],
+)
 
-Dimension scores are aggregated to produce overall platform assessments. Equal weighting is applied by default, with sensitivity analysis exploring alternative weightings based on practitioner priorities (e.g., usability-weighted for rapid prototyping scenarios, reliability-weighted for production deployment scenarios).
+==== Test Generation Metrics
+
+#figure(
+  table(
+    columns: 3,
+    stroke: 0.5pt,
+    inset: 8pt,
+    align: left,
+    table.header(
+      [*Metric*], [*Type*], [*Measurement*],
+    ),
+    [Test Pass Rate], [Quantitative], [Percentage of generated tests that pass against generated code],
+    [Test Coverage], [Quantitative], [Statement and branch coverage of generated tests],
+    [Test Quality], [Qualitative], [Meaningful assertions and edge cases (rubric 0--3)],
+  ),
+  caption: [Stage 3 Metrics: Test Generation],
+)
+
+==== Build \& Deploy Metrics
+
+#figure(
+  table(
+    columns: 3,
+    stroke: 0.5pt,
+    inset: 8pt,
+    align: left,
+    table.header(
+      [*Metric*], [*Type*], [*Measurement*],
+    ),
+    [Build Success], [Quantitative], [Does the code build without errors? (binary)],
+    [Deploy Success], [Quantitative], [Does the health check pass? (binary)],
+    [Configuration Effort], [Qualitative], [How much manual setup was needed (rubric 0--3)],
+  ),
+  caption: [Stage 4 Metrics: Build \& Deploy],
+)
+
+=== Qualitative Scoring Rubric
+
+All qualitative metrics use a consistent four-point rubric:
+
+#figure(
+  table(
+    columns: 3,
+    stroke: 0.5pt,
+    inset: 8pt,
+    align: left,
+    table.header(
+      [*Score*], [*Label*], [*Definition*],
+    ),
+    [0], [Absent], [No meaningful output, or output is completely wrong or unusable],
+    [1], [Poor], [Output exists but has major deficiencies; requires substantial rework],
+    [2], [Adequate], [Output is functional with minor issues; usable with light corrections],
+    [3], [Good], [Output is correct, complete, and well-structured; no corrections needed],
+  ),
+  caption: [Qualitative Scoring Rubric (0--3 Scale)],
+)
+
+=== Cross-cutting Aggregations
+
+Per-stage metrics are aggregated into four cross-cutting scores per platform, each normalised to a 1--5 Likert scale:
+
+#figure(
+  table(
+    columns: 3,
+    stroke: 0.5pt,
+    inset: 8pt,
+    align: left,
+    table.header(
+      [*Dimension*], [*Aggregated From*], [*Formula*],
+    ),
+    [Effectiveness],
+    [Capability tier across all stages, correctness, and completeness scores],
+    [$(S_"supported" / S_"total") times 0.4 + overline(C_"correctness") times 0.3 + overline(C_"completeness") times 0.3$, scaled to 1--5],
+
+    [Efficiency],
+    [Total token usage, wall-clock time, and API cost],
+    [Rank-normalised across platforms: lowest resource consumption = 5, highest = 1],
+
+    [Quality],
+    [All qualitative rubric scores across stages],
+    [$overline(R_"all") times 5 / 3$, where $R$ is the average of all 0--3 rubric scores],
+
+    [Autonomy],
+    [Human interventions across all stages],
+    [$5 - min(4, overline(I_"per-stage"))$; fewer interventions yields a higher score],
+  ),
+  caption: [Cross-cutting Evaluation Dimensions],
+)
+
+These four dimensions provide the basis for radar charts and ranked cross-platform comparisons in the results analysis. Equal weighting is applied by default, with sensitivity analysis exploring alternative weightings for different practitioner scenarios (e.g., usability-weighted for rapid prototyping, reliability-weighted for production deployment).
+
+=== Data Collection Methods
+
+#figure(
+  table(
+    columns: 3,
+    stroke: 0.5pt,
+    inset: 8pt,
+    align: left,
+    table.header(
+      [*Layer*], [*Method*], [*Tooling*],
+    ),
+    [Layer 1], [Desk research: GitHub API for repository statistics, manual review of documentation and adoption evidence], [Standardised template per platform],
+    [Layer 2], [Documentation review and hands-on verification: install each platform, attempt feature use, record Yes/Partial/No], [Feature matrix with evidence notes per cell],
+    [Layer 3], [Automated pipeline execution via the evaluation harness; manual scoring for qualitative rubrics post-execution], [Per-stage JSON artifacts stored in results directory],
+  ),
+  caption: [Data Collection Methods by Layer],
+)
 
 == Implementation Plan and Tooling Setup
 
@@ -602,20 +792,20 @@ DESMET_Agentic_Platforms/
 
 Each platform undergoes the following evaluation process:
 
-+ *Installation*: Platform installed following official documentation; installation complexity noted.
-+ *Configuration*: Platform configured with required API keys, models, and settings; configuration complexity noted.
-+ *Benchmark execution*: Standardised benchmark tasks executed using automation scripts to ensure consistency.
-+ *Metric collection*: Quantitative metrics (timing, success rates) automatically captured; qualitative observations documented.
-+ *Result recording*: All results logged to structured output format for analysis.
++ *Layer 1 Assessment*: Platform maturity profile compiled from GitHub data, documentation review, and industry adoption evidence.
++ *Layer 2 Assessment*: Feature matrices populated through documentation review and hands-on verification of each criterion.
++ *Layer 3 Benchmarking*: Four user stories executed through the four-stage pipeline using the `desmet-eval` CLI harness. Quantitative metrics (token usage, timing, costs) captured automatically; qualitative rubric scores assigned post-execution.
++ *Result recording*: All results logged to structured JSON output in `results/{platform}/{story_id}/` for analysis.
 
 === Automation and Reproducibility
 
 To ensure reproducibility and reduce evaluator bias:
 
 - Standardised prompt templates are used across all platforms where applicable
-- Benchmark execution scripts automate task submission and result collection
-- Random seeds are fixed where platforms support deterministic execution
+- The evaluation harness automates pipeline execution, metric collection, and result storage
+- Token usage and API costs are recorded programmatically at each pipeline stage
 - All configurations, prompts, and results are version-controlled
+- Qualitative rubric scores are assigned against the defined 0--3 scale to minimise subjectivity
 
 // =========================================================================
 // Chapter 6 — Implementation
