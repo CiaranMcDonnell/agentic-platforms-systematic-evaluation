@@ -103,7 +103,7 @@
     University College Dublin
   ]
   #v(1fr)
-  #text(size: 12pt)[#datetime.today().display("[month repr:long] [day], [year]")]
+  #text(size: 12pt)[March 2026]
   #v(1fr)
 ]
 
@@ -301,8 +301,6 @@ The analysis reveals several gaps in the current landscape. While many platforms
 
 This comparative framework informs the evaluation dimensions used in the present study, particularly the emphasis on SDK independence, extensibility, and collaboration support alongside traditional functionality metrics.
 
-// TODO: Add additional comparative studies as they are found
-
 == Summary and Research Gap
 
 The literature reviewed establishes two complementary foundations for this study. First, the DESMET methodology provides a rigorous, taxonomy-based approach to evaluating software engineering tools, offering nine distinct evaluation methods spanning quantitative, qualitative, and hybrid approaches @kitchenham1997desmet. Ferrari et al. @ferrari2021systematic demonstrated the practical application of systematic evaluation combining benchmarking with usability analysis for specialised tools, validating that such hybrid approaches yield actionable insights for practitioners. Second, recent comparative analyses of GenAI-enabled workflow platforms @broccia2025humainflow have identified critical evaluation dimensions---including SDK independence, interoperability, extensibility, and human-in-the-loop support---that extend beyond traditional functionality metrics.
@@ -405,12 +403,13 @@ Platforms were selected based on the following criteria:
 
 === Category Rationale
 
-The four-category taxonomy reflects distinct architectural approaches to agentic systems:
+The three-category taxonomy reflects distinct architectural approaches to agentic systems:
 
 - *Multi-Agent Frameworks* provide programmatic control over agent coordination, enabling complex multi-agent workflows with explicit orchestration logic.
 - *Agent SDK Runtimes* offer vendor-supported development kits optimised for their respective LLM providers, emphasising integration and developer experience.
 - *Visual / Workflow Platforms* prioritise accessibility through no-code or low-code interfaces, enabling rapid prototyping and non-developer usage.
-- *Interoperability Protocols* address cross-platform agent communication, enabling agents built on different frameworks to collaborate.
+
+Agent-to-Agent (A2A) interoperability is assessed as a cross-cutting feature in the Layer 2 feature matrix rather than as a standalone platform category.
 
 == Evaluation Pipeline and Benchmark Design
 
@@ -751,8 +750,8 @@ This section describes the technical environment, repository structure, and exec
 
 The evaluation environment comprises:
 
-- *Python*: Version 3.13 for SDK-based platforms (LangGraph, CrewAI, Autogen, OpenAI Agents SDK, Google ADK, Semantic Kernel)
-- *Node.js*: Latest LTS version for JavaScript-based workflow platforms (N8n, Flowise, LangFlow)
+- *Python*: Version 3.13 for SDK-based platforms (LangGraph, CrewAI, Autogen, OpenAI Agents SDK, Google ADK, Semantic Kernel, LangFlow)
+- *Node.js*: Latest LTS version for JavaScript-based workflow platforms (N8n, Flowise)
 - *Docker*: Containerised deployments for platforms requiring isolated environments
 - *LLM Access*: API keys for OpenAI, Anthropic, and Google models as required by platforms
 
@@ -767,25 +766,20 @@ The evaluation environment comprises:
 
 ```
 DESMET_Agentic_Platforms/
-├── analysis/           # Evaluation analysis scripts
 ├── config/             # Platform configurations
-├── data/               # Input data for benchmarks
-├── docker/             # Docker configurations
-├── documentation/      # Project report and documentation
-├── platforms/          # Platform-specific implementations
-│   ├── langgraph/
-│   ├── crewai/
-│   ├── autogen/
-│   ├── openai-agents/
-│   ├── google-adk/
-│   ├── semantic-kernel/
-│   ├── flowise/
-│   ├── langflow/
-│   ├── dify/
-│   ├── n8n/
-│   └── a2a/
-├── results/            # Benchmark results and metrics
-└── Resources/          # Additional resources
+├── data/               # User stories, prompts, gherkin specs, baselines
+├── docs/               # Report, specs, literature
+├── infrastructure/     # Docker Compose, Dockerfiles
+├── platforms/          # Platform-specific explorations
+├── results/            # Evaluation output per platform per story
+├── src/desmet/         # Python evaluation harness
+│   ├── adapters/       # Platform adapter implementations
+│   ├── harness/        # Core evaluation engine
+│   ├── stages/         # Pipeline stage modules
+│   ├── dashboard/      # Streamlit results dashboard
+│   ├── cli.py          # CLI entrypoint
+│   └── observability.py
+└── tests/              # Test suite
 ```
 
 === Execution Methodology
