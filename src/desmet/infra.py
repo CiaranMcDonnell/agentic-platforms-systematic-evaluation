@@ -1,0 +1,201 @@
+"""
+Infrastructure management for DESMET evaluation.
+
+Handles Docker Compose interaction and platform readiness checks.
+"""
+
+from __future__ import annotations
+
+import importlib
+import os
+import subprocess
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from desmet.llm_config import DEFAULT_MODEL
+
+COMPOSE_FILE = (
+    Path(__file__).resolve().parent.parent.parent
+    / "infrastructure"
+    / "docker-compose.yaml"
+)
+
+PROFILE_TARGETS: dict[str, list[str]] = {
+    "flowise": ["flowise"],
+    "langflow": ["langflow"],
+    "dify": ["dify"],
+    "n8n": ["n8n"],
+    "langfuse": ["langfuse"],
+    "all": ["flowise", "langflow", "dify", "n8n", "langfuse"],
+}
+
+PLATFORM_PACKAGES: dict[str, str | None] = {
+    "langgraph": "langgraph",
+    "crewai": "crewai",
+    "microsoft_autogen": "autogen",
+    "openai_agents_sdk": "agents",
+    "google_adk": "google.adk",
+    "semantic_kernel": "semantic_kernel",
+    "flowise": None,
+    "langflow": None,
+    "dify": None,
+    "n8n": None,
+}
+
+PLATFORM_CONTAINERS: dict[str, str | None] = {
+    "langgraph": None,
+    "crewai": None,
+    "microsoft_autogen": None,
+    "openai_agents_sdk": None,
+    "google_adk": None,
+    "semantic_kernel": None,
+    "flowise": "desmet-flowise",
+    "langflow": "desmet-langflow",
+    "dify": "desmet-dify-api",
+    "n8n": "desmet-n8n",
+}
+
+PLATFORM_NAMES: dict[str, str] = {
+    "langgraph": "LangGraph",
+    "crewai": "CrewAI",
+    "microsoft_autogen": "AutoGen",
+    "openai_agents_sdk": "OpenAI Agents SDK",
+    "google_adk": "Google ADK",
+    "semantic_kernel": "Semantic Kernel",
+    "flowise": "Flowise",
+    "langflow": "LangFlow",
+    "dify": "Dify",
+    "n8n": "n8n",
+}
+
+_API_KEY_VARS = (
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GOOGLE_API_KEY",
+    "OPENROUTER_API_KEY",
+)
+
+
+@dataclass
+class PlatformStatus:
+    platform_id: str
+    name: str
+    infra_type: str
+    status: str
+
+
+@dataclass
+class ConfigStatus:
+    model: str
+    api_keys_set: list[str] = field(default_factory=list)
+    langfuse_status: str = "not configured"
+
+
+def is_package_importable(package_name: str) -> bool:
+    try:
+        importlib.import_module(package_name)
+        return True
+    except ImportError:
+        return False
+
+
+def get_container_status(container_name: str) -> str:
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "--format", "{{.State.Status}}", container_name],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return "not started"
+        return result.stdout.strip()
+    except FileNotFoundError:
+        return "docker not found"
+    except subprocess.TimeoutExpired:
+        return "not started"
+
+
+def get_platform_statuses() -> list[PlatformStatus]:
+    statuses = []
+    for pid in PLATFORM_PACKAGES:
+        name = PLATFORM_NAMES[pid]
+        package = PLATFORM_PACKAGES[pid]
+        container = PLATFORM_CONTAINERS[pid]
+
+        if package is not None:
+            installed = is_package_importable(package)
+            statuses.append(PlatformStatus(
+                platform_id=pid,
+                name=name,
+                infra_type="none needed",
+                status="ready" if installed else "not installed",
+            ))
+        else:
+            container_status = get_container_status(container) if container else "not started"
+            statuses.append(PlatformStatus(
+                platform_id=pid,
+                name=name,
+                infra_type="Docker",
+                status=container_status,
+            ))
+
+    return statuses
+
+
+def get_config_status() -> ConfigStatus:
+    model = (
+        os.getenv("DESMET_MODEL")
+        or os.getenv("DEFAULT_MODEL")
+        or DEFAULT_MODEL
+    )
+
+    api_keys_set = [var for var in _API_KEY_VARS if os.getenv(var)]
+
+    langfuse_pub = os.getenv("LANGFUSE_PUBLIC_KEY")
+    langfuse_sec = os.getenv("LANGFUSE_SECRET_KEY")
+    if langfuse_pub and langfuse_sec:
+        langfuse_status = "configured"
+    elif is_package_importable("langfuse"):
+        langfuse_status = "installed, not configured"
+    else:
+        langfuse_status = "not installed"
+
+    return ConfigStatus(
+        model=model,
+        api_keys_set=api_keys_set,
+        langfuse_status=langfuse_status,
+    )
+
+
+def compose_up(target: str) -> subprocess.CompletedProcess:
+    if target not in PROFILE_TARGETS:
+        raise ValueError(
+            f"Unknown target '{target}'. "
+            f"Available: {', '.join(sorted(PROFILE_TARGETS))}"
+        )
+
+    profiles = PROFILE_TARGETS[target]
+    cmd = ["docker", "compose", "-f", str(COMPOSE_FILE)]
+    for p in profiles:
+        cmd.extend(["--profile", p])
+    cmd.extend(["up", "-d", "--wait"])
+
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+
+def compose_down(target: str | None = None) -> subprocess.CompletedProcess:
+    if target and target not in PROFILE_TARGETS:
+        raise ValueError(
+            f"Unknown target '{target}'. "
+            f"Available: {', '.join(sorted(PROFILE_TARGETS))}"
+        )
+
+    profiles = PROFILE_TARGETS.get(target, PROFILE_TARGETS["all"]) if target else PROFILE_TARGETS["all"]
+
+    cmd = ["docker", "compose", "-f", str(COMPOSE_FILE)]
+    for p in profiles:
+        cmd.extend(["--profile", p])
+    cmd.append("down")
+
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=120)
