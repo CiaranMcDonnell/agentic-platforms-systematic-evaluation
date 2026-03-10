@@ -21,6 +21,7 @@ from desmet.adapters._tracing import (
     finish_trace,
     record_message,
     record_tool_call,
+    record_usage,
     start_trace,
 )
 from desmet.harness.base import (
@@ -173,10 +174,22 @@ class CrewAIAdapter(BasePlatformAdapter):
         result = await asyncio.to_thread(crew.kickoff)
         record_message(trace, "assistant", str(result))
 
-        # TODO: CrewAI token tracking is handled by litellm callbacks
-        # to Langfuse, not captured back into the trace.  tokens_input
-        # and tokens_output will remain 0 in StageResult objects.
-        # To fix, extract counts from result.token_usage if available.
+        # Extract token usage from the CrewOutput.  CrewAI populates
+        # ``token_usage`` (a UsageMetrics object) after kickoff via litellm.
+        # Field names follow the litellm / OpenAI convention.
+        usage = getattr(result, "token_usage", None)
+        if usage is not None:
+            prompt_tokens = (
+                getattr(usage, "prompt_tokens", 0)
+                or getattr(usage, "input_tokens", 0)
+                or 0
+            )
+            completion_tokens = (
+                getattr(usage, "completion_tokens", 0)
+                or getattr(usage, "output_tokens", 0)
+                or 0
+            )
+            record_usage(trace, input_tokens=prompt_tokens, output_tokens=completion_tokens)
 
         iterations = counter[0]
         hit_limit = iterations >= context.max_iterations
