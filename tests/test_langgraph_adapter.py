@@ -14,7 +14,7 @@ from desmet.harness.base import (
 
 @pytest.fixture
 def adapter():
-    return LangGraphAdapter(config={"model": "gpt-4.1"})
+    return LangGraphAdapter(config={"model": "gpt-5.2-2025-12-11"})
 
 
 class TestLangGraphAdapterInterface:
@@ -34,13 +34,15 @@ class TestLangGraphAdapterInterface:
         assert hasattr(adapter, "build_and_deploy")
         assert callable(adapter.build_and_deploy)
 
-    def test_execute_story_still_works(self, adapter):
+    def test_execute_story_inherited(self, adapter):
+        """execute_story() is now inherited from BasePlatformAdapter."""
         assert hasattr(adapter, "execute_story")
         assert callable(adapter.execute_story)
 
-    def test_has_tools_from_stage_context(self, adapter):
-        assert hasattr(adapter, "_create_tools_from_stage_context")
-        assert callable(adapter._create_tools_from_stage_context)
+    def test_has_run_agent(self, adapter):
+        """_run_agent() is the extracted core LangGraph loop."""
+        assert hasattr(adapter, "_run_agent")
+        assert callable(adapter._run_agent)
 
     def test_generate_requirements_signature(self, adapter):
         sig = inspect.signature(adapter.generate_requirements)
@@ -62,11 +64,6 @@ class TestLangGraphAdapterInterface:
         params = list(sig.parameters.keys())
         assert "context" in params
 
-    def test_old_create_tools_preserved(self, adapter):
-        """_create_tools() must still exist for backwards compat."""
-        assert hasattr(adapter, "_create_tools")
-        assert callable(adapter._create_tools)
-
     def test_generate_requirements_is_coroutine(self, adapter):
         assert inspect.iscoroutinefunction(adapter.generate_requirements)
 
@@ -78,3 +75,11 @@ class TestLangGraphAdapterInterface:
 
     def test_build_and_deploy_is_coroutine(self, adapter):
         assert inspect.iscoroutinefunction(adapter.build_and_deploy)
+
+    def test_run_agent_is_coroutine(self, adapter):
+        assert inspect.iscoroutinefunction(adapter._run_agent)
+
+    def test_no_legacy_create_tools(self, adapter):
+        """Legacy _create_tools and _create_tools_from_stage_context are removed."""
+        assert not hasattr(adapter, "_create_tools")
+        assert not hasattr(adapter, "_create_tools_from_stage_context")
