@@ -126,15 +126,23 @@ class CrewAIAdapter(BasePlatformAdapter):
         context: StageContext,
     ) -> tuple[int, bool]:
         """Run a CrewAI agent. Returns (iterations, hit_limit)."""
+        import asyncio
+
         from crewai import Agent, Crew, Process, Task
 
         persona = get_stage_persona(stage_name)
         llm = self._create_llm(context)
 
+        # In CrewAI the system message is injected via backstory since
+        # there is no separate system-message slot.
+        backstory = persona.backstory
+        if system_msg:
+            backstory = f"{backstory}\n\n{system_msg}"
+
         agent = Agent(
             role=persona.role,
             goal=persona.goal,
-            backstory=persona.backstory,
+            backstory=backstory,
             verbose=False,
             allow_delegation=False,
             llm=llm,
@@ -162,7 +170,7 @@ class CrewAIAdapter(BasePlatformAdapter):
         )
 
         record_message(trace, "user", prompt)
-        result = crew.kickoff()
+        result = await asyncio.to_thread(crew.kickoff)
         record_message(trace, "assistant", str(result))
 
         iterations = counter[0]
