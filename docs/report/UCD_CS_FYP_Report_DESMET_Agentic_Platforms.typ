@@ -119,7 +119,7 @@
 
 #heading(level: 1, numbering: none)[Abstract]
 
-Agentic platforms are emerging as transformative tools in software engineering, integrating autonomous or semi-autonomous agents into the development lifecycle to enhance productivity and code quality. However, existing literature provides limited comparative evaluation across heterogeneous agentic frameworks, multi-agent systems, and workflow-based LLM platforms, leaving practitioners without clear guidance for tool selection. This study applies a systematic DESMET-based evaluation framework to compare agentic platforms across dimensions such as functionality, usability, collaboration support, scalability, and reliability. The evaluation covers ten platforms representing three architectural categories: multi-agent frameworks (LangGraph, CrewAI, Microsoft Autogen), agent SDK runtimes (OpenAI Agents SDK, Google ADK, Semantic Kernel), and visual workflow platforms (Flowise, LangFlow, Dify, N8n). Each platform is assessed using representative software engineering tasks, including code generation, debugging, refactoring, tool-use workflows, and agent coordination. The results aim to provide practical guidance for practitioners, highlight capability gaps across different tool categories, and offer a structured methodology for evaluating emerging agentic technologies.
+Agentic platforms are emerging as transformative tools in software engineering, integrating autonomous or semi-autonomous agents into the development lifecycle to enhance productivity and code quality. However, existing literature provides limited comparative evaluation across heterogeneous agentic frameworks, multi-agent systems, and workflow-based LLM platforms, leaving practitioners without clear guidance for tool selection. This study applies a systematic DESMET-based evaluation framework to compare agentic platforms using a three-layer approach: industry readiness assessment, platform characteristic mapping (extending Broccia et al.'s system-level and interaction-level feature analysis), and pipeline-based benchmarking across a four-stage software engineering workflow (requirements and design, code generation, test generation, and build and deployment). The evaluation covers ten platforms representing three architectural categories: multi-agent frameworks (LangGraph, CrewAI, Microsoft Autogen), agent SDK runtimes (OpenAI Agents SDK, Google ADK, Semantic Kernel), and visual workflow platforms (Flowise, LangFlow, Dify, N8n). Each platform is assessed by executing user stories of increasing complexity through the pipeline, with metrics including functional correctness, code quality, token usage, and degree of autonomy. The results aim to provide practical guidance for practitioners, highlight capability gaps across different tool categories, and offer a structured methodology for evaluating emerging agentic technologies.
 
 // =========================================================================
 // Chapter 1 — Project Description
@@ -134,7 +134,7 @@ Agentic platforms are emerging as transformative tools in software engineering, 
 + Apply search and selection criteria to identify the platforms for evaluation
 + Define analysis criteria following DESMET guidelines, informed by stakeholder consultation
 + Define representative software engineering problems to exercise and compare the tools
-+ Conduct systematic evaluation of selected platforms across defined dimensions (functionality, usability, extensibility, collaboration support, scalability, reliability)
++ Conduct systematic evaluation of selected platforms using a three-layer framework (industry readiness, platform characteristics, pipeline benchmarking)
 + Produce comparative analysis and evidence-based recommendations for practitioners
 
 == Advanced Goals
@@ -185,7 +185,7 @@ Despite the growing adoption of agentic platforms, there is a lack of systematic
 This project aims to:
 
 + Construct a systematic evaluation framework for comparing agentic platforms
-+ Evaluate multiple platforms across dimensions of functionality, usability, extensibility, collaboration support, scalability, and reliability
++ Evaluate multiple platforms across three layers: industry readiness, platform characteristics, and pipeline benchmarking (effectiveness, efficiency, quality, autonomy)
 + Identify the comparative strengths and weaknesses of each platform
 + Provide actionable guidance for practitioners selecting agentic tools
 
@@ -194,7 +194,7 @@ This project aims to:
 *In Scope:*
 - Comparative evaluation of ten selected agentic platforms representing multi-agent systems, SDK runtimes, and workflow builders
 - Assessment across defined dimensions using DESMET methodology
-- Testing against representative software engineering tasks: code generation, debugging, refactoring, tool-use workflows, and multi-agent coordination
+- Pipeline-based benchmarking using user stories of increasing complexity across four stages: requirements and design, code generation, test generation, and build and deployment
 - Stakeholder consultation to inform evaluation criteria
 
 *Out of Scope:*
@@ -360,7 +360,7 @@ This section presents the platforms selected for evaluation and the criteria gui
 
 === Selected Platforms
 
-Eleven platforms are included in this evaluation, spanning four architectural categories:
+Ten platforms are included in this evaluation, spanning three architectural categories. Additionally, the A2A (Agent-to-Agent) interoperability protocol is examined as a cross-cutting capability rather than a standalone platform:
 
 #figure(
   table(
