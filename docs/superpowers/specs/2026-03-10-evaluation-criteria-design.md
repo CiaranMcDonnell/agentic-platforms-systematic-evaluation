@@ -91,50 +91,65 @@ Together these answer three practitioner questions: *"Should I consider it?"* �
 
 ### Pipeline Stages
 
-Each platform attempts all 5 stages. Per stage, two tiers are recorded:
+Each platform attempts all 4 stages. Design (UML diagram generation) is folded into the Requirements & Design stage, following Broccia et al.'s approach where requirements and structural modelling form a single artefact-generation step.
 
-- **Capability Tier**: Supported / Partial / Not Supported
+**Codebase mapping**: The evaluation stages correspond to codebase directories as follows:
+
+| Spec Stage | Codebase Directory | Adapter Method |
+|------------|--------------------|----------------|
+| Stage 1 — Requirements & Design | `stage2_requirements/` | `generate_requirements()` |
+| Stage 2 — Code Generation | `stage3_codegen/` | `generate_code()` |
+| Stage 3 — Test Generation | `stage4_testing/` | `generate_tests()` |
+| Stage 4 — Build & Deploy | `stage5_deploy/` | `build_and_deploy()` |
+
+*Note*: Codebase `stage0_setup/` (framework onboarding) and `stage1_stories/` (YAML story loading) are harness infrastructure, not evaluation stages.
+
+Per stage, two tiers are recorded:
+
+- **Capability Tier**: Supported / Partial / Not Supported (see definitions below)
 - **Performance Tier** (only for stages completed): quantitative + qualitative metrics
 
-#### Stage 1 — Requirements Engineering
+#### Capability Tier Definitions
 
-*Input*: User story (YAML) | *Output*: Structured requirements, acceptance criteria
+| Rating | Criteria |
+|--------|----------|
+| **Supported** | Stage completes autonomously or with minimal prompting. Output is usable without manual rewriting. |
+| **Partial** | Stage produces output but requires significant human intervention (>2 corrections) or output is only partially usable. |
+| **Not Supported** | Platform cannot attempt this stage, or output is unusable/empty despite attempts. |
+
+#### Stage 1 — Requirements & Design
+
+*Input*: User story (YAML) | *Output*: Structured requirements, acceptance criteria, UML diagrams (class + sequence in PlantUML)
 
 | Metric | Type | Measurement |
 |--------|------|-------------|
-| Requirement Completeness | Qualitative | % of expected requirements captured |
-| Requirement Quality | Qualitative | Free of smells (ambiguity, vagueness, incompleteness) |
-| Traceability | Qualitative | Requirements traceable back to story? |
+| Requirement Completeness | Quantitative | % of expected requirements captured (ground truth: acceptance criteria from user story YAML) |
+| Requirement Quality | Qualitative | Free of smells — ambiguity, vagueness, incompleteness (rubric 0-3) |
+| Traceability | Qualitative | Requirements traceable back to story? (rubric 0-3) |
+| Design Completeness | Qualitative | All key entities and relationships captured in UML? (rubric 0-3) |
+| Design Correctness | Qualitative | Diagrams consistent with requirements? (rubric 0-3) |
+| Parseable UML | Quantitative | Does the PlantUML compile? (binary) |
 | Token Usage | Quantitative | Input / output / total tokens |
+| API Cost | Quantitative | Estimated cost based on provider pricing (USD) |
 | Wall-clock Time | Quantitative | Seconds to completion |
 | Human Interventions | Quantitative | Count of manual corrections needed |
 
-#### Stage 2 — Design
+#### Stage 2 — Code Generation
 
-*Input*: Requirements | *Output*: UML diagrams (class, sequence) in PlantUML
-
-| Metric | Type | Measurement |
-|--------|------|-------------|
-| Design Completeness | Qualitative | All key entities and relationships captured? |
-| Design Correctness | Qualitative | Diagrams consistent with requirements? |
-| Parseable Output | Quantitative | Does the PlantUML compile? (binary) |
-| Token Usage | Quantitative | Input / output / total tokens |
-| Wall-clock Time | Quantitative | Seconds to completion |
-
-#### Stage 3 — Code Generation
-
-*Input*: Requirements + Design | *Output*: Source code
+*Input*: Requirements + UML Design | *Output*: Source code
 
 | Metric | Type | Measurement |
 |--------|------|-------------|
 | Functional Correctness | Quantitative | Does it run? Does it produce expected output? |
-| Completeness | Qualitative | All requirements implemented? |
+| Completeness | Quantitative | % of requirements with corresponding implementation |
 | Code Quality | Qualitative | Structure, naming, style, maintainability (rubric 0-3) |
-| Adherence to Design | Qualitative | Code reflects the UML structure? |
+| Adherence to Design | Qualitative | Code reflects the UML structure? (rubric 0-3) |
 | Token Usage | Quantitative | Input / output / total tokens |
+| API Cost | Quantitative | Estimated cost based on provider pricing (USD) |
 | Wall-clock Time | Quantitative | Seconds to completion |
+| Human Interventions | Quantitative | Count of manual corrections needed |
 
-#### Stage 4 — Test Generation
+#### Stage 3 — Test Generation
 
 *Input*: Requirements + Source code | *Output*: Test suite
 
@@ -144,9 +159,11 @@ Each platform attempts all 5 stages. Per stage, two tiers are recorded:
 | Test Coverage | Quantitative | Statement/branch coverage of generated tests |
 | Test Quality | Qualitative | Meaningful assertions? Edge cases? (rubric 0-3) |
 | Token Usage | Quantitative | Input / output / total tokens |
+| API Cost | Quantitative | Estimated cost based on provider pricing (USD) |
 | Wall-clock Time | Quantitative | Seconds to completion |
+| Human Interventions | Quantitative | Count of manual corrections needed |
 
-#### Stage 5 — Build & Deploy
+#### Stage 4 — Build & Deploy
 
 *Input*: Source code + Tests | *Output*: Passing build, deployable artifact
 
@@ -154,32 +171,56 @@ Each platform attempts all 5 stages. Per stage, two tiers are recorded:
 |--------|------|-------------|
 | Build Success | Quantitative | Does it build without errors? (binary) |
 | Deploy Success | Quantitative | Health check passes? (binary) |
-| Configuration Effort | Qualitative | How much manual setup was needed? |
+| Configuration Effort | Qualitative | How much manual setup was needed? (rubric 0-3) |
 | Token Usage | Quantitative | Input / output / total tokens |
+| API Cost | Quantitative | Estimated cost based on provider pricing (USD) |
 | Wall-clock Time | Quantitative | Seconds to completion |
+| Human Interventions | Quantitative | Count of manual corrections needed |
+
+### Qualitative Rubric Definitions (0-3 Scale)
+
+All qualitative metrics use a consistent 0-3 rubric:
+
+| Score | Label | Definition |
+|-------|-------|------------|
+| 0 | Absent | No meaningful output, or output is completely wrong/unusable |
+| 1 | Poor | Output exists but has major deficiencies; requires substantial rework |
+| 2 | Adequate | Output is functional with minor issues; usable with light corrections |
+| 3 | Good | Output is correct, complete, and well-structured; no corrections needed |
 
 ### Cross-cutting Aggregations
 
-Per-stage metrics roll up into 4 cross-cutting scores per platform:
+Per-stage metrics roll up into 4 cross-cutting scores per platform, each on a 1-5 Likert scale:
 
-| Dimension | Aggregated from |
-|-----------|----------------|
-| Effectiveness | Capability tier across all stages, correctness, completeness |
-| Efficiency | Total token usage, total wall-clock time, total API cost, total human interventions |
-| Quality | Code quality + test quality + requirement quality + design quality rubrics |
-| Autonomy | Human interventions across all stages — how much could it do alone? |
+| Dimension | Aggregated from | Formula |
+|-----------|----------------|---------|
+| Effectiveness | Capability tier across all stages, correctness, completeness | `(stages_supported / total_stages) × 0.4 + avg(correctness_scores) × 0.3 + avg(completeness_scores) × 0.3`, scaled to 1-5 |
+| Efficiency | Total token usage, total wall-clock time, total API cost | Rank-normalized across platforms: lowest resource consumption = 5, highest = 1 |
+| Quality | Code quality + test quality + requirement quality + design quality rubrics | `avg(all 0-3 rubric scores)` scaled to 1-5 |
+| Autonomy | Human interventions across all stages | `5 - min(4, avg(interventions_per_stage))` — fewer interventions = higher score |
+
+**Relationship to codebase dimensions**: The codebase's `EvaluationDimension` enum defines 7 dimensions (Effectiveness, Efficiency, Quality, Reproducibility, Usability, Observability, Failure Handling). These 4 cross-cutting aggregations are the Layer 3 benchmarking scores; Usability and Observability are captured in Layer 2 (Platform Characteristics); Reproducibility and Failure Handling are observable from the benchmarking runs but not scored as separate aggregated dimensions.
 
 ### Test Tasks
 
-3 user stories of increasing complexity, each run through the full pipeline:
+4 user stories of increasing complexity, each run through the full pipeline:
 
 | Story | Complexity | Purpose |
 |-------|-----------|---------|
 | US001 (utility function) | Basic | Tests pipeline end-to-end with minimal complexity |
-| US010/US030 (API endpoint / fullstack app) | Intermediate | Tests multi-file generation, integration |
+| US010 (API endpoint) | Intermediate | Tests API integration, multi-file generation |
+| US030 (fullstack app) | Intermediate | Tests frontend + backend coordination |
 | US020 (auth system) | Advanced | Tests complex requirements, security, multi-component coordination |
 
-**Scale**: 10 platforms × 3 stories × 5 stages = 150 stage-level evaluations.
+**Scale**: 10 platforms × 4 stories × 4 stages = 160 stage-level evaluations.
+
+### Data Collection Methods
+
+| Layer | Method | Tooling |
+|-------|--------|---------|
+| Layer 1 | Desk research: GitHub API for stars/commits/releases, manual review of docs and adoption evidence | Standardised template per platform, populated manually |
+| Layer 2 | Documentation review + hands-on verification: install each platform, attempt feature use, record Yes/Partial/No | Feature matrix spreadsheet with evidence notes per cell |
+| Layer 3 | Automated pipeline execution via `desmet-eval` CLI harness; manual scoring for qualitative rubrics post-execution | Per-stage JSON artifacts in `results/{platform}/{story_id}/` |
 
 ---
 
@@ -190,7 +231,7 @@ Per-stage metrics roll up into 4 cross-cutting scores per platform:
 | Layer 1 | Factual profile (no numeric score) | Desk research, GitHub data |
 | Layer 2 | Yes / Partial / No per feature | Documentation review + hands-on verification |
 | Layer 3 per-stage | Capability tier + performance metrics | Automated pipeline execution |
-| Layer 3 cross-cutting | 0-5 Likert (aggregated) | Computed from per-stage metrics |
+| Layer 3 cross-cutting | 1-5 Likert (aggregated) | Computed from per-stage metrics using formulas above |
 
 ---
 
@@ -205,10 +246,10 @@ Every dimension from the original project notes maps to a specific layer:
 | Characterizing features | Layer 2 |
 | A2A, MCP, Openness | Layer 2 (system-level) |
 | Requirements engineering | Layer 3 Stage 1 |
-| Design | Layer 3 Stage 2 |
-| Code generation | Layer 3 Stage 3 |
-| Test generation | Layer 3 Stage 4 |
-| Building and deploying | Layer 3 Stage 5 |
+| Design (UML) | Layer 3 Stage 1 (folded into Requirements & Design) |
+| Code generation | Layer 3 Stage 2 |
+| Test generation | Layer 3 Stage 3 |
+| Building and deploying | Layer 3 Stage 4 |
 | Token usage | Layer 3 (per-stage + aggregated into Efficiency) |
 
 ---
