@@ -97,7 +97,7 @@ def compose_up(target: str) -> subprocess.CompletedProcess
 def compose_down(target: str | None) -> subprocess.CompletedProcess
 def get_container_status(container_name: str) -> str  # "running" | "exited" | "not started" | "docker not found"
 def is_package_importable(package_name: str) -> bool
-def get_platform_status() -> list[PlatformStatus]  # dataclass with name, infra_type, status
+def get_platform_statuses() -> list[PlatformStatus]  # dataclass with name, infra_type, status
 def get_config_status() -> ConfigStatus  # dataclass with model, provider, api_key_set, langfuse_status
 ```
 
