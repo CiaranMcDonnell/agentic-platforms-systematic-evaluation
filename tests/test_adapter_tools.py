@@ -1,0 +1,214 @@
+"""Tests for the shared adapter tool factory."""
+
+import pytest
+from pathlib import Path
+
+from desmet.adapters._tools import AVAILABLE_TOOLS, ToolFormat, create_tools, _safe_resolve
+
+
+@pytest.fixture
+def workspace(tmp_path):
+    (tmp_path / "hello.py").write_text("print('hello')")
+    (tmp_path / "subdir").mkdir()
+    (tmp_path / "subdir" / "data.txt").write_text("some data")
+    return tmp_path
+
+
+class TestAvailableTools:
+    def test_all_five_tools_present(self):
+        assert len(AVAILABLE_TOOLS) == 5
+        assert "read_file" in AVAILABLE_TOOLS
+        assert "write_file" in AVAILABLE_TOOLS
+        assert "list_directory" in AVAILABLE_TOOLS
+        assert "execute_shell" in AVAILABLE_TOOLS
+        assert "search_code" in AVAILABLE_TOOLS
+
+    def test_is_tuple(self):
+        assert isinstance(AVAILABLE_TOOLS, tuple)
+
+
+class TestSafeResolve:
+    def test_valid_relative_path(self, workspace):
+        result = _safe_resolve(workspace, "hello.py")
+        assert result == (workspace / "hello.py").resolve()
+
+    def test_rejects_path_traversal(self, workspace):
+        with pytest.raises(ValueError, match="resolves outside workspace"):
+            _safe_resolve(workspace, "../../etc/passwd")
+
+    def test_rejects_deeply_nested_escape(self, workspace):
+        with pytest.raises(ValueError, match="resolves outside workspace"):
+            _safe_resolve(workspace, "subdir/../../../../../../etc/passwd")
+
+    def test_subdirectory_path_works(self, workspace):
+        result = _safe_resolve(workspace, "subdir/data.txt")
+        assert result == (workspace / "subdir" / "data.txt").resolve()
+
+    def test_dot_path_works(self, workspace):
+        result = _safe_resolve(workspace, ".")
+        assert result == workspace.resolve()
+
+
+class TestCreateToolsCallable:
+    def test_returns_correct_count_for_subset(self, workspace):
+        tools = create_tools(workspace, ["read_file", "write_file"])
+        assert len(tools) == 2
+
+    def test_returns_all_five_tools_when_all_requested(self, workspace):
+        tools = create_tools(workspace, list(AVAILABLE_TOOLS))
+        assert len(tools) == 5
+
+    def test_skips_unknown_tool_names(self, workspace):
+        tools = create_tools(
+            workspace,
+            ["read_file", "nonexistent_tool", "write_file"],
+        )
+        assert len(tools) == 2
+
+    def test_tools_have_meaningful_names(self, workspace):
+        tools = create_tools(workspace, list(AVAILABLE_TOOLS))
+        names = {t.__name__ for t in tools}
+        assert names == set(AVAILABLE_TOOLS)
+
+    def test_read_file_reads_content(self, workspace):
+        tools = create_tools(workspace, ["read_file"])
+        read_file = tools[0]
+        result = read_file(path="hello.py")
+        assert result == "print('hello')"
+
+    def test_read_file_returns_error_for_missing(self, workspace):
+        tools = create_tools(workspace, ["read_file"])
+        read_file = tools[0]
+        result = read_file(path="nonexistent.py")
+        assert "File not found" in result
+
+    def test_write_file_creates_file(self, workspace):
+        tools = create_tools(workspace, ["write_file"])
+        write_file = tools[0]
+        result = write_file(path="new_file.txt", content="hello world")
+        assert "Successfully wrote to new_file.txt" in result
+        assert (workspace / "new_file.txt").read_text() == "hello world"
+
+    def test_write_file_creates_parent_dirs(self, workspace):
+        tools = create_tools(workspace, ["write_file"])
+        write_file = tools[0]
+        result = write_file(path="deep/nested/file.txt", content="nested content")
+        assert "Successfully wrote" in result
+        assert (workspace / "deep" / "nested" / "file.txt").read_text() == "nested content"
+
+    def test_list_directory_lists_entries(self, workspace):
+        tools = create_tools(workspace, ["list_directory"])
+        list_dir = tools[0]
+        result = list_dir(path=".")
+        assert "hello.py" in result
+        assert "subdir" in result
+
+    def test_list_directory_returns_sorted(self, workspace):
+        tools = create_tools(workspace, ["list_directory"])
+        list_dir = tools[0]
+        result = list_dir(path=".")
+        lines = result.strip().split("\n")
+        assert lines == sorted(lines)
+
+    def test_list_directory_error_for_missing(self, workspace):
+        tools = create_tools(workspace, ["list_directory"])
+        list_dir = tools[0]
+        result = list_dir(path="nonexistent_dir")
+        assert "Directory not found" in result
+
+    def test_search_code_finds_matches(self, workspace):
+        tools = create_tools(workspace, ["search_code"])
+        search = tools[0]
+        result = search(pattern="hello")
+        assert "hello.py" in result
+        assert "print" in result
+
+    def test_search_code_no_matches(self, workspace):
+        tools = create_tools(workspace, ["search_code"])
+        search = tools[0]
+        result = search(pattern="zzz_no_match_zzz")
+        assert result == "No matches found"
+
+    def test_search_code_in_subdirectory(self, workspace):
+        tools = create_tools(workspace, ["search_code"])
+        search = tools[0]
+        result = search(pattern="some data", path="subdir")
+        assert "data.txt" in result
+
+    def test_execute_shell_runs_command(self, workspace):
+        tools = create_tools(workspace, ["execute_shell"])
+        shell = tools[0]
+        result = shell(command="echo hello_from_shell")
+        assert "hello_from_shell" in result
+
+    def test_execute_shell_captures_stderr(self, workspace):
+        tools = create_tools(workspace, ["execute_shell"])
+        shell = tools[0]
+        # Use python to write to stderr since it is cross-platform
+        result = shell(
+            command='python -c "import sys; sys.stderr.write(\'err_msg\\n\')"'
+        )
+        assert "err_msg" in result
+
+    def test_read_file_rejects_path_traversal(self, workspace):
+        tools = create_tools(workspace, ["read_file"])
+        read_file = tools[0]
+        result = read_file(path="../../etc/passwd")
+        assert "outside workspace" in result.lower() or "error" in result.lower()
+
+    def test_write_file_rejects_path_traversal(self, workspace):
+        tools = create_tools(workspace, ["write_file"])
+        write_file = tools[0]
+        result = write_file(path="../../evil.txt", content="malicious")
+        assert "outside workspace" in result.lower() or "error" in result.lower()
+        # File should NOT have been created
+        assert not (workspace.parent.parent / "evil.txt").exists()
+
+    def test_default_format_is_callable(self, workspace):
+        # Calling without fmt should default to CALLABLE
+        tools = create_tools(workspace, ["read_file"])
+        assert callable(tools[0])
+
+    def test_empty_allowed_tools(self, workspace):
+        tools = create_tools(workspace, [])
+        assert tools == []
+
+
+class TestCreateToolsLangchain:
+    @pytest.fixture
+    def lc_tools(self, workspace):
+        return create_tools(
+            workspace,
+            list(AVAILABLE_TOOLS),
+            fmt=ToolFormat.LANGCHAIN,
+        )
+
+    def test_returns_correct_count(self, lc_tools):
+        assert len(lc_tools) == 5
+
+    def test_tools_have_correct_names(self, lc_tools):
+        names = {t.name for t in lc_tools}
+        assert names == set(AVAILABLE_TOOLS)
+
+    def test_read_file_tool_works(self, lc_tools):
+        read_tool = next(t for t in lc_tools if t.name == "read_file")
+        result = read_tool.invoke({"path": "hello.py"})
+        assert result == "print('hello')"
+
+    def test_write_file_tool_works(self, lc_tools, workspace):
+        write_tool = next(t for t in lc_tools if t.name == "write_file")
+        result = write_tool.invoke({"path": "lc_test.txt", "content": "lc content"})
+        assert "Successfully wrote" in result
+        assert (workspace / "lc_test.txt").read_text() == "lc content"
+
+
+class TestCreateToolsCrewAI:
+    def test_raises_not_implemented(self, workspace):
+        with pytest.raises(NotImplementedError, match="CrewAI"):
+            create_tools(workspace, ["read_file"], fmt=ToolFormat.CREWAI)
+
+
+class TestCreateToolsOpenAI:
+    def test_raises_not_implemented(self, workspace):
+        with pytest.raises(NotImplementedError, match="OpenAI"):
+            create_tools(workspace, ["read_file"], fmt=ToolFormat.OPENAI_FUNCTION)
