@@ -12,7 +12,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+from desmet.llm_config import DEFAULT_MODEL, DEFAULT_TEMPERATURE
 
 if TYPE_CHECKING:
     from .story import UserStory
@@ -59,7 +61,7 @@ class ToolCall:
     timestamp: datetime
     duration_ms: float
     success: bool
-    error: Optional[str] = None
+    error: str | None = None
 
 
 @dataclass
@@ -82,8 +84,8 @@ class AgentTrace:
     total_iterations: int = 0
     total_tokens_input: int = 0
     total_tokens_output: int = 0
-    start_time: Optional[datetime] = None
-    end_time: Optional[datetime] = None
+    start_time: datetime | None = None
+    end_time: datetime | None = None
     final_state: dict[str, Any] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
 
@@ -134,8 +136,8 @@ class EvaluationContext:
     )
 
     # Model configuration
-    model: str = "gpt-4.1"
-    temperature: float = 0.0
+    model: str = DEFAULT_MODEL
+    temperature: float = DEFAULT_TEMPERATURE
 
     # Metadata
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -155,16 +157,16 @@ class ExecutionResult:
     # Outcome
     success: bool
     completed: bool
-    error_message: Optional[str] = None
+    error_message: str | None = None
 
     # Artifacts
     trace: AgentTrace = field(default_factory=AgentTrace)
     output_files: list[str] = field(default_factory=list)
-    git_diff: Optional[str] = None
+    git_diff: str | None = None
 
     # Timing
     start_time: datetime = field(default_factory=datetime.now)
-    end_time: Optional[datetime] = None
+    end_time: datetime | None = None
     wall_clock_seconds: float = 0.0
 
     # Human intervention
@@ -205,7 +207,7 @@ class StageResult:
     # Outcome
     success: bool = False
     completed: bool = False
-    error_message: Optional[str] = None
+    error_message: str | None = None
 
     # Execution trace
     trace: AgentTrace = field(default_factory=AgentTrace)
@@ -219,8 +221,8 @@ class StageResult:
     human_interventions: int = 0
 
     # Timestamps
-    start_time: Optional[datetime] = None
-    end_time: Optional[datetime] = None
+    start_time: datetime | None = None
+    end_time: datetime | None = None
 
     # Raw platform output
     raw_output: Any = None
@@ -257,8 +259,8 @@ class StageContext:
     )
 
     # Model configuration
-    model: str = "gpt-4.1"
-    temperature: float = 0.0
+    model: str = DEFAULT_MODEL
+    temperature: float = DEFAULT_TEMPERATURE
 
     # Accumulated stage results
     artifacts: dict[str, StageResult] = field(default_factory=dict)
@@ -270,7 +272,7 @@ class StageContext:
         """Store the result of a completed stage."""
         self.artifacts[stage_name] = result
 
-    def get_prior_result(self, stage_name: str) -> Optional[StageResult]:
+    def get_prior_result(self, stage_name: str) -> StageResult | None:
         """Retrieve the result of a previously completed stage."""
         return self.artifacts.get(stage_name)
 
@@ -292,7 +294,7 @@ class CodeResult(StageResult):
     """Result of the code-generation stage."""
 
     output_files: list[str] = field(default_factory=list)
-    git_diff: Optional[str] = None
+    git_diff: str | None = None
 
 
 @dataclass
@@ -370,28 +372,52 @@ class BasePlatformAdapter(ABC):
         """
         pass
 
-    @abstractmethod
     async def execute_story(
         self,
         context: EvaluationContext,
     ) -> ExecutionResult:
-        """
-        Execute a user story using this platform.
+        """Backwards-compatible wrapper: convert legacy context to StageContext
+        and delegate to generate_code()."""
+        # Deferred import to avoid circular dependency (base.py <-> story.py)
+        from desmet.harness.story import DifficultyLevel, UserStory
 
-        This is the main evaluation method. The platform should:
-        1. Parse the story prompt and context
-        2. Create and configure agents as appropriate
-        3. Execute the task using the platform's capabilities
-        4. Capture all tool calls, messages, and artifacts
-        5. Return a complete ExecutionResult
-
-        Args:
-            context: The evaluation context containing story details
-
-        Returns:
-            ExecutionResult with all execution details and artifacts
-        """
-        pass
+        story = UserStory(
+            id=context.story_id,
+            title=context.story_id,
+            description=context.story_prompt,
+            difficulty=DifficultyLevel.BASIC,
+            category="code_generation",
+            prompt=context.story_prompt,
+            context=context.story_context,
+            target_files=context.target_files,
+            time_budget_seconds=context.time_budget_seconds,
+            max_iterations=context.max_iterations,
+        )
+        stage_ctx = StageContext(
+            story=story,
+            workspace=context.repo_path,
+            time_budget_seconds=context.time_budget_seconds,
+            max_iterations=context.max_iterations,
+            max_tool_calls=context.max_tool_calls,
+            allowed_tools=context.allowed_tools,
+            model=context.model,
+            temperature=context.temperature,
+        )
+        code_result = await self.generate_code(stage_ctx)
+        return ExecutionResult(
+            platform_id=self.platform_info.id,
+            story_id=context.story_id,
+            execution_id=self._create_execution_id(),
+            success=code_result.success,
+            completed=code_result.completed,
+            error_message=code_result.error_message,
+            trace=code_result.trace,
+            output_files=code_result.output_files,
+            git_diff=code_result.git_diff,
+            start_time=code_result.start_time or datetime.now(),
+            end_time=code_result.end_time,
+            wall_clock_seconds=code_result.wall_clock_seconds,
+        )
 
     # =========================================================================
     # SDLC Stage Methods (Adapter-Centric Pipeline)
@@ -602,7 +628,7 @@ class VisualPlatformAdapter(BasePlatformAdapter):
     def __init__(
         self,
         base_url: str,
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         config: dict[str, Any] | None = None,
     ):
         super().__init__(config)
