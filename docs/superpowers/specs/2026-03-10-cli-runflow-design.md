@@ -25,7 +25,7 @@ Targets map directly to existing docker-compose profiles:
 | `langfuse` | `langfuse` | Langfuse web + worker, postgres, clickhouse, minio, redis |
 | `all` | all of the above | All visual platforms + langfuse |
 
-After starting, the command waits for healthchecks (up to 60s) and reports which services are healthy.
+After starting, the command uses `docker compose up -d --wait` which waits for healthchecks and reports which services are healthy. Subprocess timeout is 120s to allow time for multi-service targets.
 
 `desmet-eval up` with no argument prints the available targets.
 
@@ -95,7 +95,7 @@ PLATFORM_CONTAINERS: dict[str, str | None] = {
 
 def compose_up(target: str) -> subprocess.CompletedProcess
 def compose_down(target: str | None) -> subprocess.CompletedProcess
-def get_container_status(container_name: str) -> str  # "running" | "not started" | "unhealthy"
+def get_container_status(container_name: str) -> str  # "running" | "exited" | "not started" | "docker not found"
 def is_package_importable(package_name: str) -> bool
 def get_platform_status() -> list[PlatformStatus]  # dataclass with name, infra_type, status
 def get_config_status() -> ConfigStatus  # dataclass with model, provider, api_key_set, langfuse_status
