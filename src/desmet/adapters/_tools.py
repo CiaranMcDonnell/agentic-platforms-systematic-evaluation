@@ -239,6 +239,99 @@ def _build_langchain_tools(workspace: Path, tool_names: list[str]) -> list:
     return tools
 
 
+def _build_crewai_tools(workspace: Path, tool_names: list[str]) -> list:
+    """Return CrewAI ``BaseTool`` subclasses.
+
+    Each tool is a class with a Pydantic ``args_schema`` so that CrewAI
+    can advertise typed parameters to the LLM.  The imports are deferred
+    so that the ``crewai`` package is only required when this format is
+    actually requested.
+    """
+    from crewai.tools import BaseTool as CrewAIBaseTool
+    from pydantic import BaseModel, Field
+
+    tools: list = []
+
+    if "read_file" in tool_names:
+
+        class ReadFileInput(BaseModel):
+            path: str = Field(description="Relative path to the file to read")
+
+        class ReadFileTool(CrewAIBaseTool):
+            name: str = "read_file"
+            description: str = "Read the contents of a file at the given relative path"
+            args_schema: type[BaseModel] = ReadFileInput
+
+            def _run(self, path: str) -> str:
+                return _read_file(workspace, path)
+
+        tools.append(ReadFileTool())
+
+    if "write_file" in tool_names:
+
+        class WriteFileInput(BaseModel):
+            path: str = Field(description="Relative path to write the file to")
+            content: str = Field(description="Content to write to the file")
+
+        class WriteFileTool(CrewAIBaseTool):
+            name: str = "write_file"
+            description: str = "Write content to a file, creating parent directories as needed"
+            args_schema: type[BaseModel] = WriteFileInput
+
+            def _run(self, path: str, content: str) -> str:
+                return _write_file(workspace, path, content)
+
+        tools.append(WriteFileTool())
+
+    if "list_directory" in tool_names:
+
+        class ListDirectoryInput(BaseModel):
+            path: str = Field(default=".", description="Relative path to the directory to list")
+
+        class ListDirectoryTool(CrewAIBaseTool):
+            name: str = "list_directory"
+            description: str = "List files and directories at the given relative path"
+            args_schema: type[BaseModel] = ListDirectoryInput
+
+            def _run(self, path: str = ".") -> str:
+                return _list_directory(workspace, path)
+
+        tools.append(ListDirectoryTool())
+
+    if "execute_shell" in tool_names:
+
+        class ExecuteShellInput(BaseModel):
+            command: str = Field(description="Shell command to execute")
+
+        class ExecuteShellTool(CrewAIBaseTool):
+            name: str = "execute_shell"
+            description: str = "Execute a shell command in the project directory"
+            args_schema: type[BaseModel] = ExecuteShellInput
+
+            def _run(self, command: str) -> str:
+                return _execute_shell(workspace, command)
+
+        tools.append(ExecuteShellTool())
+
+    if "search_code" in tool_names:
+
+        class SearchCodeInput(BaseModel):
+            pattern: str = Field(description="Regex pattern to search for")
+            path: str = Field(default=".", description="Relative path to search in")
+
+        class SearchCodeTool(CrewAIBaseTool):
+            name: str = "search_code"
+            description: str = "Search code files for lines matching a regex pattern"
+            args_schema: type[BaseModel] = SearchCodeInput
+
+            def _run(self, pattern: str, path: str = ".") -> str:
+                return _search_code(workspace, pattern, path)
+
+        tools.append(SearchCodeTool())
+
+    return tools
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -274,7 +367,7 @@ def create_tools(
         return _build_langchain_tools(workspace, tool_names)
 
     if fmt is ToolFormat.CREWAI:
-        raise NotImplementedError("CrewAI tools require crewai package")
+        return _build_crewai_tools(workspace, tool_names)
 
     if fmt is ToolFormat.OPENAI_FUNCTION:
         raise NotImplementedError("OpenAI function tools not yet implemented")

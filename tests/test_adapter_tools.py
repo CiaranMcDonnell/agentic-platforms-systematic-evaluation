@@ -207,9 +207,66 @@ class TestCreateToolsLangchain:
 
 
 class TestCreateToolsCrewAI:
-    def test_raises_not_implemented(self, workspace):
-        with pytest.raises(NotImplementedError, match="CrewAI"):
-            create_tools(workspace, ["read_file"], fmt=ToolFormat.CREWAI)
+    @pytest.fixture(autouse=True)
+    def _require_crewai(self):
+        pytest.importorskip("crewai", reason="crewai not installed")
+
+    @pytest.fixture
+    def crewai_tools(self, workspace):
+        return create_tools(
+            workspace,
+            list(AVAILABLE_TOOLS),
+            fmt=ToolFormat.CREWAI,
+        )
+
+    def test_returns_correct_count(self, crewai_tools):
+        assert len(crewai_tools) == 5
+
+    def test_tools_have_correct_names(self, crewai_tools):
+        names = {t.name for t in crewai_tools}
+        assert names == set(AVAILABLE_TOOLS)
+
+    def test_read_file_tool_works(self, crewai_tools):
+        read_tool = next(t for t in crewai_tools if t.name == "read_file")
+        result = read_tool._run(path="hello.py")
+        assert result == "print('hello')"
+
+    def test_read_file_missing(self, crewai_tools):
+        read_tool = next(t for t in crewai_tools if t.name == "read_file")
+        result = read_tool._run(path="nonexistent.py")
+        assert "File not found" in result
+
+    def test_write_file_tool_works(self, crewai_tools, workspace):
+        write_tool = next(t for t in crewai_tools if t.name == "write_file")
+        result = write_tool._run(path="crewai_test.txt", content="crewai content")
+        assert "Successfully wrote" in result
+        assert (workspace / "crewai_test.txt").read_text() == "crewai content"
+
+    def test_list_directory_tool_works(self, crewai_tools):
+        list_tool = next(t for t in crewai_tools if t.name == "list_directory")
+        result = list_tool._run(path=".")
+        assert "hello.py" in result
+        assert "subdir" in result
+
+    def test_execute_shell_tool_works(self, crewai_tools):
+        shell_tool = next(t for t in crewai_tools if t.name == "execute_shell")
+        result = shell_tool._run(command="echo crewai_shell_test")
+        assert "crewai_shell_test" in result
+
+    def test_search_code_tool_works(self, crewai_tools):
+        search_tool = next(t for t in crewai_tools if t.name == "search_code")
+        result = search_tool._run(pattern="hello")
+        assert "hello.py" in result
+
+    def test_read_file_rejects_traversal(self, crewai_tools):
+        read_tool = next(t for t in crewai_tools if t.name == "read_file")
+        result = read_tool._run(path="../../etc/passwd")
+        assert "outside workspace" in result.lower() or "error" in result.lower()
+
+    def test_tools_are_crewai_base_tools(self, crewai_tools):
+        from crewai.tools import BaseTool as CrewAIBaseTool
+        for tool in crewai_tools:
+            assert isinstance(tool, CrewAIBaseTool)
 
 
 class TestCreateToolsOpenAI:
