@@ -48,6 +48,10 @@ class TestSafeResolve:
         result = _safe_resolve(workspace, ".")
         assert result == workspace.resolve()
 
+    def test_rejects_absolute_path(self, workspace):
+        with pytest.raises(ValueError, match="resolves outside workspace"):
+            _safe_resolve(workspace, "../../../../../../tmp/evil")
+
 
 class TestCreateToolsCallable:
     def test_returns_correct_count_for_subset(self, workspace):

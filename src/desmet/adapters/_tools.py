@@ -125,7 +125,10 @@ def _search_code(workspace: Path, pattern: str, path: str = ".") -> str:
     if not full_path.exists():
         return f"Directory not found: {path}"
 
-    compiled = re.compile(pattern)
+    try:
+        compiled = re.compile(pattern)
+    except re.error as exc:
+        return f"Invalid search pattern: {exc}"
     matches: list[str] = []
     workspace_resolved = workspace.resolve()
 
