@@ -158,6 +158,7 @@ class CrewAIAdapter(BasePlatformAdapter):
             verbose=False,
             step_callback=step_cb,
             task_callback=task_cb,
+            max_iter=context.max_iterations,
         )
 
         record_message(trace, "user", prompt)
