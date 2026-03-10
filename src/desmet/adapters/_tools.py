@@ -97,7 +97,14 @@ def _list_directory(workspace: Path, path: str = ".") -> str:
 
 
 def _execute_shell(workspace: Path, command: str) -> str:
-    """Run a shell command with cwd=workspace, timeout 30 s."""
+    """Run a shell command with cwd=workspace, timeout 30 s.
+
+    NOTE: This tool is intentionally unsandboxed beyond cwd — it can run
+    arbitrary shell commands.  Production deployments should rely on
+    container-level isolation (Docker) to restrict blast radius.  The
+    ``allowed_tools`` list in StageContext can be used to disable this
+    tool for stories that don't need shell access.
+    """
     try:
         result = subprocess.run(
             command,
@@ -132,11 +139,17 @@ def _search_code(workspace: Path, pattern: str, path: str = ".") -> str:
     matches: list[str] = []
     workspace_resolved = workspace.resolve()
 
-    # Walk the tree
-    for dirpath, _dirnames, filenames in os.walk(full_path):
+    # Walk the tree, skipping common non-text directories and large files
+    skip_dirs = {".git", "node_modules", "__pycache__", "venv", ".venv"}
+    max_file_size = 1_048_576  # 1 MB
+
+    for dirpath, dirnames, filenames in os.walk(full_path):
+        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
         for filename in sorted(filenames):
             filepath = Path(dirpath) / filename
             try:
+                if filepath.stat().st_size > max_file_size:
+                    continue
                 text = filepath.read_text(errors="replace")
             except (OSError, PermissionError):
                 continue

@@ -173,6 +173,11 @@ class CrewAIAdapter(BasePlatformAdapter):
         result = await asyncio.to_thread(crew.kickoff)
         record_message(trace, "assistant", str(result))
 
+        # TODO: CrewAI token tracking is handled by litellm callbacks
+        # to Langfuse, not captured back into the trace.  tokens_input
+        # and tokens_output will remain 0 in StageResult objects.
+        # To fix, extract counts from result.token_usage if available.
+
         iterations = counter[0]
         hit_limit = iterations >= context.max_iterations
         trace.total_iterations = iterations

@@ -133,6 +133,12 @@ class TestCreateToolsCallable:
         result = search(pattern="zzz_no_match_zzz")
         assert result == "No matches found"
 
+    def test_search_code_invalid_regex(self, workspace):
+        tools = create_tools(workspace, ["search_code"])
+        search = tools[0]
+        result = search(pattern="[unclosed")
+        assert "Invalid search pattern" in result
+
     def test_search_code_in_subdirectory(self, workspace):
         tools = create_tools(workspace, ["search_code"])
         search = tools[0]
