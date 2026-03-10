@@ -38,7 +38,7 @@ from desmet.harness.loader import (
 )
 from desmet.harness.runner import EvaluationRunner, RunnerConfig
 from desmet.harness.story import DifficultyLevel
-from desmet.observability import configure_logging, init_langfuse, shutdown_langfuse
+from desmet.observability import configure_logging, init_langfuse, shutdown_langfuse, start_session
 
 # Valid pipeline stage names (matches runner._STAGES keys)
 VALID_STAGES = ("requirements", "codegen", "testing", "deploy", "all")
@@ -57,7 +57,7 @@ console = Console()
 
 @app.command()
 def run(
-    platform: str = typer.Option(None, help="Platform ID to evaluate"),
+    platform: list[str] = typer.Option([], help="Platform ID(s) to evaluate (repeatable)"),
     story: str = typer.Option(None, help="Story ID to run"),
     all_platforms: bool = typer.Option(False, "--all", help="Run all implemented platforms"),
     difficulty: str = typer.Option(None, help="Filter by difficulty: basic, intermediate, advanced"),
@@ -78,13 +78,7 @@ def run(
     """
     # -- Validate args -------------------------------------------------------
     if not platform and not all_platforms:
-        console.print("[red]Error:[/red] Provide --platform <id> or --all")
-        raise typer.Exit(code=1)
-    if platform and all_platforms:
-        console.print("[red]Error:[/red] --platform and --all are mutually exclusive")
-        raise typer.Exit(code=1)
-    if story and all_platforms:
-        console.print("[red]Error:[/red] --story cannot be combined with --all")
+        console.print("[red]Error:[/red] Provide --platform <id> (repeatable) or --all")
         raise typer.Exit(code=1)
 
     stage_lower = stage.lower()
@@ -99,6 +93,10 @@ def run(
     load_dotenv()
     configure_logging(verbose=verbose)
     init_langfuse()
+
+    # Start a Langfuse session so all traces in this run are grouped
+    session_label = story or difficulty or "full"
+    start_session(label=session_label)
 
     # -- Load stories --------------------------------------------------------
     try:
@@ -121,7 +119,7 @@ def run(
             console.print("[yellow]No implemented adapters available.[/yellow]")
             raise typer.Exit(code=1)
     else:
-        platform_ids = [platform]
+        platform_ids = list(platform)
 
     adapters = {}
     for pid in platform_ids:
@@ -161,9 +159,10 @@ def run(
 
     try:
         if story:
-            # Single story on a single platform
-            result = asyncio.run(runner.run_single_story(platform_ids[0], story))
-            _print_single_result(result)
+            # Single story — run on each selected platform
+            for pid in platform_ids:
+                result = asyncio.run(runner.run_single_story(pid, story))
+                _print_single_result(result)
         else:
             # Full evaluation for selected platform(s)
             summary = asyncio.run(runner.run_full_evaluation())
@@ -233,6 +232,118 @@ def list_stories(
         )
 
     console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# up
+# ---------------------------------------------------------------------------
+
+@app.command()
+def up(
+    target: str = typer.Argument(None, help="Target to start: flowise, langflow, dify, n8n, langfuse, all"),
+):
+    """Start Docker infrastructure for a platform."""
+    from desmet.infra import PROFILE_TARGETS, compose_up
+
+    if target is None:
+        console.print("[bold]Available targets:[/bold]")
+        for name in sorted(PROFILE_TARGETS):
+            console.print(f"  {name}")
+        console.print("\nUsage: desmet-eval up <target>")
+        return
+
+    try:
+        console.print(f"Starting [cyan]{target}[/cyan]...")
+        result = compose_up(target)
+        if result.returncode == 0:
+            console.print(f"[green]Started {target} successfully.[/green]")
+        else:
+            console.print(f"[red]Failed to start {target}:[/red]")
+            if result.stderr:
+                console.print(result.stderr)
+            raise typer.Exit(code=1)
+    except ValueError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1)
+    except FileNotFoundError:
+        console.print("[red]Error:[/red] docker compose not found. Is Docker installed?")
+        raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# down
+# ---------------------------------------------------------------------------
+
+@app.command()
+def down(
+    target: str = typer.Argument(None, help="Target to stop (omit to stop all)"),
+):
+    """Stop Docker infrastructure."""
+    from desmet.infra import compose_down
+
+    label = target or "all services"
+    try:
+        console.print(f"Stopping [cyan]{label}[/cyan]...")
+        result = compose_down(target)
+        if result.returncode == 0:
+            console.print(f"[green]Stopped {label}.[/green]")
+        else:
+            console.print(f"[red]Failed to stop {label}:[/red]")
+            if result.stderr:
+                console.print(result.stderr)
+            raise typer.Exit(code=1)
+    except ValueError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1)
+    except FileNotFoundError:
+        console.print("[red]Error:[/red] docker compose not found. Is Docker installed?")
+        raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# status
+# ---------------------------------------------------------------------------
+
+@app.command()
+def status():
+    """Show platform readiness and configuration."""
+    from desmet.infra import get_config_status, get_platform_statuses
+
+    load_dotenv()
+
+    statuses = get_platform_statuses()
+
+    table = Table(title="DESMET Platform Status")
+    table.add_column("Platform", style="cyan")
+    table.add_column("Infrastructure")
+    table.add_column("Status")
+
+    status_styles = {
+        "ready": "[green]ready[/green]",
+        "running": "[green]running[/green]",
+        "not installed": "[dim]not installed[/dim]",
+        "not started": "[yellow]not started[/yellow]",
+        "exited": "[red]exited[/red]",
+        "docker not found": "[red]docker not found[/red]",
+    }
+
+    for ps in statuses:
+        styled = status_styles.get(ps.status, ps.status)
+        table.add_row(ps.name, ps.infra_type, styled)
+
+    console.print(table)
+
+    cfg = get_config_status()
+    console.print(f"\n  Model   : [bold]{cfg.model}[/bold]")
+
+    if cfg.api_keys_set:
+        keys = ", ".join(cfg.api_keys_set)
+        console.print(f"  API Keys: [green]{keys}[/green]")
+    else:
+        console.print("  API Keys: [red]none set[/red]")
+
+    langfuse_style = "[green]" if "configured" in cfg.langfuse_status else "[dim]"
+    console.print(f"  Langfuse: {langfuse_style}{cfg.langfuse_status}[/{langfuse_style.strip('[')}")
 
 
 # ---------------------------------------------------------------------------
