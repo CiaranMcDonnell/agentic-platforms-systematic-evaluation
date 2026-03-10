@@ -63,13 +63,20 @@ def get_adapter(
     return adapter_cls(config=config)
 
 
-def list_available_platforms() -> list[str]:
-    """Return all platform IDs with registered adapter classes.
+# Platforms whose adapters are fully implemented (i.e. do not raise
+# NotImplementedError on their stage methods).  Update this set as more
+# adapters are completed.
+_IMPLEMENTED_PLATFORMS: frozenset[str] = frozenset({"langgraph", "crewai"})
 
-    All adapters now have concrete classes (though stub adapters raise
-    ``NotImplementedError`` on most methods).
+
+def list_available_platforms() -> list[str]:
+    """Return platform IDs whose adapters are fully implemented.
+
+    Only platforms in ``_IMPLEMENTED_PLATFORMS`` are returned; stub adapters
+    that raise ``NotImplementedError`` are excluded.  Update
+    ``_IMPLEMENTED_PLATFORMS`` above as more adapters are completed.
     """
-    return sorted(ADAPTER_REGISTRY)
+    return sorted(ADAPTER_REGISTRY.keys() & _IMPLEMENTED_PLATFORMS)
 
 
 def list_all_platforms() -> list[str]:

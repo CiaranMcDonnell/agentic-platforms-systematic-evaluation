@@ -5,9 +5,9 @@ Defines the structure of user stories and their results.
 """
 
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Optional
 from datetime import datetime
+from enum import Enum
+from typing import Any
 
 
 class DifficultyLevel(Enum):
@@ -32,10 +32,10 @@ class AcceptanceCriterion:
     """A single acceptance criterion for a story."""
     id: str
     description: str
-    gherkin: Optional[str] = None  # Given/When/Then format
+    gherkin: str | None = None  # Given/When/Then format
     verification_method: str = "manual"  # manual, automated, test
-    passed: Optional[bool] = None
-    notes: Optional[str] = None
+    passed: bool | None = None
+    notes: str | None = None
 
 
 @dataclass
@@ -52,13 +52,13 @@ class UserStory:
 
     # Classification
     difficulty: DifficultyLevel
-    category: str  # e.g., "code_generation", "debugging", "refactoring"
+    category: str  # e.g., "code_generation", "design", "fullstack"
 
     # Prompt and context
     prompt: str  # The main instruction given to the agent
     tags: list[str] = field(default_factory=list)
     context: str = ""  # Additional context (file contents, requirements)
-    system_prompt: Optional[str] = None  # Optional system prompt override
+    system_prompt: str | None = None  # Optional system prompt override
 
     # Acceptance criteria
     acceptance_criteria: list[AcceptanceCriterion] = field(default_factory=list)
@@ -70,7 +70,7 @@ class UserStory:
 
     # Prerequisites
     requires_setup: bool = False
-    setup_script: Optional[str] = None
+    setup_script: str | None = None
     dependencies: list[str] = field(default_factory=list)  # Other story IDs
 
     # Expected outcomes
@@ -125,11 +125,11 @@ class StoryResult:
 
     # Status
     status: StoryStatus = StoryStatus.PENDING
-    error_message: Optional[str] = None
+    error_message: str | None = None
 
     # Timing
-    start_time: Optional[datetime] = None
-    end_time: Optional[datetime] = None
+    start_time: datetime | None = None
+    end_time: datetime | None = None
     wall_clock_seconds: float = 0.0
 
     # Execution metrics
@@ -153,9 +153,9 @@ class StoryResult:
 
     # Artifacts
     output_files: list[str] = field(default_factory=list)
-    git_diff: Optional[str] = None
-    trace_file: Optional[str] = None
-    log_file: Optional[str] = None
+    git_diff: str | None = None
+    trace_file: str | None = None
+    log_file: str | None = None
 
     # Raw data
     raw_result: Any = None

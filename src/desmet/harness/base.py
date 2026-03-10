@@ -566,6 +566,7 @@ class BasePlatformAdapter(ABC):
         """
         pass
 
+    # Layer 2 assessment helpers — not used in Layer 3 pipeline benchmarking.
     def get_observability_info(self) -> dict[str, Any]:
         """
         Return information about the platform's observability features.
@@ -581,6 +582,7 @@ class BasePlatformAdapter(ABC):
             "trace_format": None,
         }
 
+    # Layer 2 assessment helpers — not used in Layer 3 pipeline benchmarking.
     def get_failure_handling_info(self) -> dict[str, Any]:
         """
         Return information about the platform's failure handling.
