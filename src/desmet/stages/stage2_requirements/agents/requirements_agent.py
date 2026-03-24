@@ -2,32 +2,33 @@
 Requirements Agent
 
 The core agent for the Requirements Stage that processes natural language requirements
-and produces structured requirements, user stories, and PlantUML diagrams.
+and produces structured requirements, user stories, and Mermaid diagrams.
 
 This agent can be implemented with different agentic platforms for DESMET evaluation.
 """
 
 import json
 from abc import ABC, abstractmethod
-from typing import Optional, Any
+from typing import Any
+
+from desmet.llm_config import DEFAULT_MODEL, DEFAULT_TEMPERATURE
 
 from ..schemas import (
+    Actor,
+    APIEndpoint,
+    Component,
+    DiagramType,
+    Entity,
+    FunctionalRequirement,
+    MermaidDiagram,
+    NonFunctionalRequirement,
+    RequirementPriority,
     RequirementsInput,
     RequirementsOutput,
-    UserStory,
-    FunctionalRequirement,
-    NonFunctionalRequirement,
-    Actor,
     UseCase,
-    Entity,
-    Component,
-    PlantUMLDiagram,
-    APIEndpoint,
-    RequirementPriority,
-    RequirementCategory,
-    DiagramType,
+    UserStory,
 )
-from ..templates.plantuml_templates import PlantUMLTemplates
+from ..templates.mermaid_templates import MermaidTemplates
 
 
 class BaseRequirementsAgent(ABC):
@@ -38,10 +39,10 @@ class BaseRequirementsAgent(ABC):
     this interface to enable DESMET comparison.
     """
 
-    def __init__(self, model: str = "gpt-4", temperature: float = 0.2):
+    def __init__(self, model: str = DEFAULT_MODEL, temperature: float = DEFAULT_TEMPERATURE):
         self.model = model
         self.temperature = temperature
-        self.templates = PlantUMLTemplates()
+        self.templates = MermaidTemplates()
 
     @abstractmethod
     async def analyze_requirements(self, input_data: RequirementsInput) -> RequirementsOutput:
@@ -370,8 +371,8 @@ class SimpleRequirementsAgent(BaseRequirementsAgent):
     def __init__(
         self,
         llm_client: Any = None,
-        model: str = "gpt-4",
-        temperature: float = 0.2
+        model: str = DEFAULT_MODEL,
+        temperature: float = DEFAULT_TEMPERATURE
     ):
         super().__init__(model, temperature)
         self.llm_client = llm_client
@@ -417,7 +418,7 @@ class SimpleRequirementsAgent(BaseRequirementsAgent):
         components = await self.design_components(context)
         api_endpoints = await self.design_api_endpoints(context, entities)
 
-        # Generate PlantUML diagrams
+        # Generate Mermaid diagrams
         diagrams = self._generate_diagrams(
             actors, use_cases, entities, components, input_data.project_name
         )
@@ -598,8 +599,8 @@ class SimpleRequirementsAgent(BaseRequirementsAgent):
         entities: list[Entity],
         components: list[Component],
         project_name: str,
-    ) -> list[PlantUMLDiagram]:
-        """Generate PlantUML diagrams from extracted data."""
+    ) -> list[MermaidDiagram]:
+        """Generate Mermaid diagrams from extracted data."""
         diagrams = []
 
         # Use Case Diagram
@@ -629,11 +630,11 @@ class SimpleRequirementsAgent(BaseRequirementsAgent):
                 use_cases=uc_data,
                 relationships=relationships
             )
-            diagrams.append(PlantUMLDiagram(
+            diagrams.append(MermaidDiagram(
                 diagram_type=DiagramType.USE_CASE,
                 name="System Use Cases",
                 description="Use case diagram showing actors and system functionality",
-                plantuml_code=uc_diagram,
+                mermaid_code=uc_diagram,
             ))
 
         # Class Diagram
@@ -677,11 +678,11 @@ class SimpleRequirementsAgent(BaseRequirementsAgent):
                 classes=class_data,
                 relationships=relationships
             )
-            diagrams.append(PlantUMLDiagram(
+            diagrams.append(MermaidDiagram(
                 diagram_type=DiagramType.CLASS,
                 name="Domain Model",
                 description="Class diagram showing domain entities and relationships",
-                plantuml_code=class_diagram,
+                mermaid_code=class_diagram,
             ))
 
         # Component Diagram
@@ -704,11 +705,11 @@ class SimpleRequirementsAgent(BaseRequirementsAgent):
                 components=comp_data,
                 connections=connections
             )
-            diagrams.append(PlantUMLDiagram(
+            diagrams.append(MermaidDiagram(
                 diagram_type=DiagramType.COMPONENT,
                 name="System Architecture",
                 description="Component diagram showing system structure",
-                plantuml_code=comp_diagram,
+                mermaid_code=comp_diagram,
             ))
 
         # Entity Relationship Diagram
@@ -753,11 +754,11 @@ class SimpleRequirementsAgent(BaseRequirementsAgent):
                 entities=er_entities,
                 relationships=er_relationships
             )
-            diagrams.append(PlantUMLDiagram(
+            diagrams.append(MermaidDiagram(
                 diagram_type=DiagramType.ENTITY_RELATIONSHIP,
                 name="Data Model",
                 description="Entity-relationship diagram for database design",
-                plantuml_code=er_diagram,
+                mermaid_code=er_diagram,
             ))
 
         return diagrams

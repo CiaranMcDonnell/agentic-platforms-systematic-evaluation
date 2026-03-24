@@ -1,5 +1,5 @@
-"""PlantUML Templates for Requirements Stage."""
+"""Mermaid Templates for Requirements Stage."""
 
-from .plantuml_templates import PlantUMLTemplates
+from .mermaid_templates import MermaidTemplates
 
-__all__ = ["PlantUMLTemplates"]
+__all__ = ["MermaidTemplates"]

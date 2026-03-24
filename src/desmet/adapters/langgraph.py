@@ -14,7 +14,7 @@ from typing import Annotated, Any
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
-from langgraph.graph import END, StateGraph
+from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from typing_extensions import TypedDict
@@ -31,6 +31,7 @@ from desmet.adapters._tracing import (
     build_stage_result,
     finish_trace,
     record_message,
+    record_node_event,
     record_tool_call,
     record_usage,
     start_trace,
@@ -163,7 +164,7 @@ class LangGraphAdapter(BasePlatformAdapter):
         builder.add_node("executor_node", executor_node)
         builder.add_node("tool_node", ToolNode(tools))
         builder.add_node("validator_node", validator_node)
-        builder.set_entry_point("planner_node")
+        builder.add_edge(START, "planner_node")
         builder.add_edge("planner_node", "executor_node")
         builder.add_edge("tool_node", "executor_node")
         builder.add_conditional_edges("executor_node", self._route_executor)
@@ -264,31 +265,51 @@ class LangGraphAdapter(BasePlatformAdapter):
 
         iteration = 0
         hit_limit = False
-        final_state = None
+        final_state: dict[str, Any] = {}
 
-        async for chunk in graph.astream(initial_state, config=config, stream_mode="values"):
+        async for chunk in graph.astream(initial_state, config=config, stream_mode="updates"):
             iteration += 1
-            final_state = chunk
 
-            messages = chunk.get("messages", [])
-            if messages:
-                last = messages[-1]
-                content = getattr(last, "content", "")
-                if content:
-                    record_message(trace, getattr(last, "type", "assistant"), str(content))
+            for node_name, node_update in chunk.items():
+                if not node_update:
+                    continue
 
-                resp_meta = getattr(last, "response_metadata", {})
-                usage = resp_meta.get("token_usage") or resp_meta.get("usage") or {}
-                if isinstance(usage, dict) and usage.get("total_tokens", 0) > 0:
-                    record_usage(
+                # Accumulate full state so finish_trace has something meaningful.
+                if isinstance(node_update, dict):
+                    final_state.update(node_update)
+
+                messages = node_update.get("messages", []) if isinstance(node_update, dict) else []
+                for msg in messages:
+                    content = getattr(msg, "content", "")
+                    if content:
+                        record_message(
+                            trace,
+                            getattr(msg, "type", "assistant"),
+                            str(content),
+                            metadata={"node": node_name},
+                        )
+
+                    resp_meta = getattr(msg, "response_metadata", {})
+                    usage = resp_meta.get("token_usage") or resp_meta.get("usage") or {}
+                    if isinstance(usage, dict) and usage.get("total_tokens", 0) > 0:
+                        record_usage(
+                            trace,
+                            input_tokens=usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0),
+                            output_tokens=usage.get("completion_tokens", 0) or usage.get("output_tokens", 0),
+                            cost_usd=float(usage.get("cost") or 0.0),
+                        )
+
+                    for tc in getattr(msg, "tool_calls", []):
+                        record_tool_call(trace, tc.get("name", "unknown"), tc.get("args", {}), "")
+
+                # Capture validator outcomes as named node events for per-retry visibility.
+                if node_name == "validator_node" and isinstance(node_update, dict):
+                    record_node_event(
                         trace,
-                        input_tokens=usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0),
-                        output_tokens=usage.get("completion_tokens", 0) or usage.get("output_tokens", 0),
-                        cost_usd=float(usage.get("cost") or 0.0),
+                        "validator_node",
+                        validator_passed=node_update.get("validator_passed", False),
+                        retry_count=node_update.get("retry_count", 0),
                     )
-
-                for tc in getattr(last, "tool_calls", []):
-                    record_tool_call(trace, tc.get("name", "unknown"), tc.get("args", {}), "")
 
             if iteration >= context.max_iterations:
                 hit_limit = True

@@ -13,7 +13,7 @@ The Requirements Stage takes raw requirements (natural language, user stories, f
 5. **Domain Entity Designs** - Classes, attributes, methods, relationships
 6. **System Component Architecture** - High-level component design
 7. **API Endpoint Specifications** - REST API design
-8. **PlantUML Diagrams** - Visual representations of the design
+8. **Mermaid Diagrams** - Visual representations of the design
 
 ## Directory Structure
 
@@ -30,7 +30,7 @@ requirements/
 │   ├── __init__.py
 │   └── requirements_agent.py # Core agent logic
 ├── templates/
-│   └── plantuml_templates.py # PlantUML diagram generators
+│   └── mermaid_templates.py  # Mermaid diagram generators
 ├── examples/
 │   ├── example_usage.py      # Usage examples
 │   └── sample_requirements.txt
@@ -77,7 +77,7 @@ async def main():
 
     # Access outputs
     print(f"Generated {len(output.user_stories)} user stories")
-    print(f"Generated {len(output.diagrams)} PlantUML diagrams")
+    print(f"Generated {len(output.diagrams)} Mermaid diagrams")
 
 asyncio.run(main())
 ```
@@ -138,9 +138,9 @@ When the stage runs, it produces the following outputs:
 | `requirements_specification.md` | Full requirements document | Documentation |
 | `for_code_generation.json` | Entities, APIs, components | Code Generation stage |
 | `for_testing.json` | Acceptance criteria, test cases | Testing stage |
-| `diagrams/*.puml` | PlantUML diagram files | Documentation |
+| `diagrams/*.mermaid` | Mermaid diagram files | Documentation |
 
-## PlantUML Diagrams
+## Mermaid Diagrams
 
 The stage generates the following diagram types:
 
@@ -154,17 +154,17 @@ The stage generates the following diagram types:
 
 ### Rendering Diagrams
 
-PlantUML diagrams can be rendered using:
+Mermaid diagrams can be rendered using:
 
 ```bash
-# Using PlantUML CLI
-java -jar plantuml.jar diagram.puml
+# Using Mermaid CLI
+npx @mermaid-js/mermaid-cli mmdc -i diagram.mermaid -o output.svg
 
-# Using online renderer
-# Paste content at https://www.plantuml.com/plantuml/
+# Using online editor
+# Visit https://mermaid.js.org/ and use the live editor
 
 # Using VS Code extension
-# Install "PlantUML" extension
+# Install "Markdown Preview Mermaid Support" extension
 ```
 
 ## Extending for DESMET Evaluation
@@ -204,7 +204,7 @@ The Requirements Stage outputs feed into subsequent stages:
          │
          ├──► for_testing.json ──────────► Testing Stage
          │
-         └──► diagrams/*.puml ───────────► Documentation
+         └──► diagrams/*.mermaid ────────► Documentation
 ```
 
 ## Configuration

@@ -1,9 +1,10 @@
 id: US-001
 title: Add Email Validation Utility Function
 description: >
-  Add a validate_email function to the project's utility module that
-  validates email addresses using regex, handles edge cases, and
-  returns a boolean.
+  As a developer integrating user registration, I want a reusable
+  email validation utility function so that I can consistently validate
+  email inputs across the application without duplicating regex logic
+  in every module.
 
 category: code_generation
 difficulty: basic
@@ -39,7 +40,7 @@ acceptance_criteria:
     verification_method: test
 
 time_budget_seconds: 300
-max_iterations: 25
+max_iterations: 50
 
 version: "1.0"
 author: Ciaran McDonnell

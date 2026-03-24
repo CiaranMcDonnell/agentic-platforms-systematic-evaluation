@@ -8,7 +8,7 @@ Processes natural language requirements and produces structured outputs includin
 - Domain Entity/Class designs
 - System Component architecture
 - API Endpoint specifications
-- PlantUML diagrams (Use Case, Class, Component, ER, Sequence, etc.)
+- Mermaid diagrams (Use Case, Class, Component, ER, Sequence, etc.)
 
 Usage:
     from desmet.stages.stage2_requirements import (
@@ -39,42 +39,39 @@ Usage:
     print(output.diagrams)
 """
 
-from .schemas import (
-    # Input types
-    RequirementsInput,
-    RequirementType,
-    ProjectDomain,
-    StakeholderInfo,
-    ConstraintInfo,
-    # Output types
-    RequirementsOutput,
-    RequirementPriority,
-    RequirementCategory,
-    DiagramType,
-    UserStory,
-    FunctionalRequirement,
-    NonFunctionalRequirement,
-    Actor,
-    UseCase,
-    Entity,
-    Component,
-    PlantUMLDiagram,
-    APIEndpoint,
-    DataModel,
-)
-
 from .agents import (
     BaseRequirementsAgent,
-    SimpleRequirementsAgent,
     RequirementsAgentPrompts,
+    SimpleRequirementsAgent,
 )
-
+from .schemas import (
+    Actor,
+    APIEndpoint,
+    Component,
+    ConstraintInfo,
+    DataModel,
+    DiagramType,
+    Entity,
+    FunctionalRequirement,
+    MermaidDiagram,
+    NonFunctionalRequirement,
+    ProjectDomain,
+    RequirementCategory,
+    RequirementPriority,
+    # Input types
+    RequirementsInput,
+    # Output types
+    RequirementsOutput,
+    RequirementType,
+    StakeholderInfo,
+    UseCase,
+    UserStory,
+)
 from .stage_runner import (
     RequirementsStageRunner,
     create_input_from_text,
 )
-
-from .templates.plantuml_templates import PlantUMLTemplates
+from .templates.mermaid_templates import MermaidTemplates
 
 __all__ = [
     # Input
@@ -95,7 +92,7 @@ __all__ = [
     "UseCase",
     "Entity",
     "Component",
-    "PlantUMLDiagram",
+    "MermaidDiagram",
     "APIEndpoint",
     "DataModel",
     # Agents
@@ -106,5 +103,5 @@ __all__ = [
     "RequirementsStageRunner",
     "create_input_from_text",
     # Templates
-    "PlantUMLTemplates",
+    "MermaidTemplates",
 ]

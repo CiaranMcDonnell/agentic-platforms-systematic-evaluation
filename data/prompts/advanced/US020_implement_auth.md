@@ -1,47 +1,47 @@
 # Prompt
 
-Implement a JWT-based authentication system with the following:
+Implement a complete JWT-based authentication system for a FastAPI application.
 
-Endpoints:
-1. POST /api/auth/register
-   - Accepts: email, password, display_name
-   - Validates password strength (8+ chars, mixed case, digit)
-   - Hashes password with bcrypt
-   - Returns user profile + access token + refresh token
+Requirements:
+1. **Register** — `POST /api/auth/register`
+   - Accept `email`, `password`, `display_name`.
+   - Hash the password (bcrypt).
+   - Create the user in the database.
+   - Return access and refresh tokens.
+2. **Login** — `POST /api/auth/login`
+   - Accept `email` and `password`.
+   - Verify credentials; return 401 on mismatch.
+   - Return access token (short-lived, 15 min) and refresh token (long-lived, 7 days).
+3. **Refresh** — `POST /api/auth/refresh`
+   - Accept a valid refresh token.
+   - Issue a new access token without requiring re-login.
+4. **Logout** — `POST /api/auth/logout`
+   - Accept the refresh token and invalidate it (token blocklist or DB flag).
+5. **Password validation** — enforce minimum 8 characters, at least one uppercase,
+   one lowercase, one digit, one special character.
+6. **Rate limiting** — limit login attempts to 5 per minute per email address.
+   Return 429 on excess.
+7. **Protected routes** — create a `get_current_user` dependency that extracts and
+   validates the access token from the `Authorization: Bearer <token>` header.
+   Return 401 if missing/invalid/expired.
 
-2. POST /api/auth/login
-   - Accepts: email, password
-   - Verifies credentials
-   - Returns access token (15min) + refresh token (7 days)
-   - Rate limit: 5 attempts per minute per email
-
-3. POST /api/auth/refresh
-   - Accepts: refresh_token
-   - Returns new access token
-   - Rotates refresh token
-
-4. POST /api/auth/logout
-   - Accepts: refresh_token
-   - Invalidates the refresh token
-
-5. Add authentication middleware/dependency for protected routes
-
-Security requirements:
-- Passwords hashed with bcrypt (cost factor 12)
-- JWT signed with HS256, configurable secret from env
-- Refresh tokens stored in database, support revocation
-- Rate limiting on login endpoint
-
-Testing:
-- Unit tests for all endpoints
-- Test token expiry, refresh rotation, and revocation
-- Test password validation rules
-- Test rate limiting behavior
+Files to create or modify:
+- `app/routers/auth.py` (create)
+- `app/schemas/auth.py` (create)
+- `app/services/auth_service.py` (create)
+- `app/dependencies/auth.py` (create)
+- `app/models/user.py` (modify — add hashed_password, is_active fields)
+- `app/main.py` (modify — register auth router)
+- `tests/test_auth.py` (create — comprehensive tests)
 
 # Context
 
-The project uses FastAPI with an existing app instance in app/main.py.
-Database: async SQLAlchemy with PostgreSQL.
-Environment variables loaded via pydantic-settings.
-Use python-jose for JWT, passlib[bcrypt] for password hashing.
-Follow existing patterns in the codebase.
+You are working in a FastAPI project with SQLAlchemy (async), an existing User
+model, and a `get_db` dependency. The project has `pytest` and `httpx` for
+testing, and `python-jose` and `passlib[bcrypt]` are available as dependencies.
+
+The project structure follows the same layout described in US-010. There is no
+existing authentication — you are adding it from scratch.
+
+Python 3.10+. Use environment variables (`SECRET_KEY`, `ALGORITHM`) for JWT
+configuration with sensible defaults.

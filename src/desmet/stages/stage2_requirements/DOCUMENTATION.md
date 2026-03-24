@@ -7,7 +7,7 @@
 3. [Input Specification](#input-specification)
 4. [Output Specification](#output-specification)
 5. [Agent Design](#agent-design)
-6. [PlantUML Diagram Generation](#plantuml-diagram-generation)
+6. [Mermaid Diagram Generation](#mermaid-diagram-generation)
 7. [Pipeline Integration](#pipeline-integration)
 8. [DESMET Evaluation Integration](#desmet-evaluation-integration)
 9. [Extending the Stage](#extending-the-stage)
@@ -23,7 +23,7 @@ The Requirements Stage is the **first stage** of the DESMET Agentic Platforms so
 
 1. **Extract Structure from Natural Language** - Convert informal requirements into formal specifications
 2. **Generate Design Artifacts** - Produce user stories, use cases, entity designs, and API specifications
-3. **Create Visual Documentation** - Generate PlantUML diagrams for system documentation
+3. **Create Visual Documentation** - Generate Mermaid diagrams for system documentation
 4. **Enable Traceability** - Link requirements to design elements for verification
 5. **Feed Downstream Stages** - Produce structured JSON outputs for code generation and testing
 
@@ -33,7 +33,7 @@ The Requirements Stage is the **first stage** of the DESMET Agentic Platforms so
 |---------|-------------|
 | Multi-format Input | Accepts natural language, user stories, or structured requirements |
 | Comprehensive Output | Produces 8+ artifact types from a single input |
-| PlantUML Diagrams | Generates 7 diagram types automatically |
+| Mermaid Diagrams | Generates 7 diagram types automatically |
 | Platform Agnostic | Abstract interface for implementing on any agentic platform |
 | Pipeline Ready | Exports structured JSON for downstream stage consumption |
 
@@ -55,7 +55,7 @@ The Requirements Stage is the **first stage** of the DESMET Agentic Platforms so
 │                               │                                 │
 │                               ▼                                 │
 │                      ┌──────────────────┐                       │
-│                      │    PlantUML      │                       │
+│                      │    Mermaid       │                       │
 │                      │   Templates      │                       │
 │                      └──────────────────┘                       │
 │                                                                 │
@@ -87,9 +87,9 @@ requirements/
 │   ├── __init__.py
 │   └── requirements_agent.py   # Base agent and simple implementation
 │
-├── templates/                  # PlantUML generators
+├── templates/                  # Mermaid generators
 │   ├── __init__.py
-│   └── plantuml_templates.py   # All diagram type generators
+│   └── mermaid_templates.py    # All diagram type generators
 │
 ├── examples/                   # Usage examples
 │   ├── example_usage.py        # Code examples
@@ -97,7 +97,7 @@ requirements/
 │
 └── outputs/                    # Generated outputs (runtime)
     └── {project_name}/
-        ├── diagrams/           # PlantUML .puml files
+        ├── diagrams/           # Mermaid .mermaid files
         ├── requirements_output.json
         ├── user_stories.md
         ├── requirements_specification.md
@@ -254,7 +254,7 @@ class RequirementsOutput:
     api_endpoints: list[APIEndpoint]
 
     # Diagrams
-    diagrams: list[PlantUMLDiagram]
+    diagrams: list[MermaidDiagram]
 
     # Traceability
     traceability_matrix: dict[str, list[str]]
@@ -408,15 +408,15 @@ class APIEndpoint:
     related_use_cases: list[str]   # Related UC IDs
 ```
 
-#### PlantUML Diagrams
+#### Mermaid Diagrams
 
 ```python
 @dataclass
-class PlantUMLDiagram:
+class MermaidDiagram:
     diagram_type: DiagramType      # Type enum
     name: str                      # Diagram name
     description: str               # Purpose
-    plantuml_code: str             # Full PlantUML source
+    mermaid_code: str              # Full Mermaid source
     related_requirements: list[str]# Related requirement IDs
 ```
 
@@ -558,7 +558,7 @@ Respond with a JSON array of user stories:
 
 ---
 
-## PlantUML Diagram Generation
+## Mermaid Diagram Generation
 
 ### Supported Diagram Types
 
@@ -572,150 +572,126 @@ Respond with a JSON array of user stories:
 | Activity | Workflow processes | Use Case flows |
 | State | State machines | Entity states |
 
-### PlantUML Templates Class
+### Mermaid Templates Class
 
 ```python
-class PlantUMLTemplates:
+class MermaidTemplates:
     @staticmethod
     def use_case_diagram(title, actors, use_cases, relationships) -> str:
-        """Generate Use Case diagram PlantUML code."""
+        """Generate Use Case diagram Mermaid code."""
 
     @staticmethod
     def class_diagram(title, classes, relationships, packages) -> str:
-        """Generate Class diagram PlantUML code."""
+        """Generate Class diagram Mermaid code."""
 
     @staticmethod
     def sequence_diagram(title, participants, messages, notes) -> str:
-        """Generate Sequence diagram PlantUML code."""
+        """Generate Sequence diagram Mermaid code."""
 
     @staticmethod
     def component_diagram(title, components, interfaces, connections) -> str:
-        """Generate Component diagram PlantUML code."""
+        """Generate Component diagram Mermaid code."""
 
     @staticmethod
     def activity_diagram(title, activities, transitions, swimlanes) -> str:
-        """Generate Activity diagram PlantUML code."""
+        """Generate Activity diagram Mermaid code."""
 
     @staticmethod
     def entity_relationship_diagram(title, entities, relationships) -> str:
-        """Generate ER diagram PlantUML code."""
+        """Generate ER diagram Mermaid code."""
 
     @staticmethod
     def state_diagram(title, states, transitions) -> str:
-        """Generate State diagram PlantUML code."""
+        """Generate State diagram Mermaid code."""
 ```
 
 ### Example Generated Diagrams
 
 #### Use Case Diagram
 
-```plantuml
-@startuml
-title TaskFlow - Use Case Diagram
+```mermaid
+graph LR
+    subgraph System
+        UC_001["Create Task"]
+        UC_002["Assign Task"]
+        UC_003["Update Status"]
+        UC_004["Send Notification"]
+    end
 
-left to right direction
-skinparam packageStyle rectangle
-
-actor "Team Member" as Team_Member
-actor "Team Lead" as Team_Lead
-actor "System" as System <<system>>
-
-rectangle "System" {
-  usecase "Create Task" as UC_001
-  usecase "Assign Task" as UC_002
-  usecase "Update Status" as UC_003
-  usecase "Send Notification" as UC_004
-}
-
-Team_Member --> UC_001
-Team_Member --> UC_003
-Team_Lead --> UC_002
-UC_002 ..> UC_004 : <<include>>
-
-@enduml
+    Team_Member["Team Member"] --> UC_001
+    Team_Member --> UC_003
+    Team_Lead["Team Lead"] --> UC_002
+    UC_002 -.->|include| UC_004
 ```
 
 #### Class Diagram
 
-```plantuml
-@startuml
-title TaskFlow - Domain Model
+```mermaid
+classDiagram
+    class Task {
+        +UUID id
+        +String title
+        +String description
+        +DateTime dueDate
+        +Priority priority
+        +Status status
+        +assign(User user)
+        +updateStatus(Status status)
+    }
 
-skinparam classAttributeIconSize 0
+    class User {
+        +UUID id
+        +String email
+        +String name
+        +authenticate(String password)
+    }
 
-class "Task" {
-  +id: UUID
-  +title: String
-  +description: String
-  +dueDate: DateTime
-  +priority: Priority
-  +status: Status
-  --
-  +assign(user: User): void
-  +updateStatus(status: Status): void
-}
-
-class "User" {
-  +id: UUID
-  +email: String
-  +name: String
-  --
-  +authenticate(password: String): Boolean
-}
-
-Task "*" -- "1" User : assignedTo
-
-@enduml
+    Task "*" -- "1" User : assignedTo
 ```
 
 #### Component Diagram
 
-```plantuml
-@startuml
-title TaskFlow - System Architecture
+```mermaid
+graph TB
+    API_Gateway["API Gateway"]
+    Task_Service["Task Service"]
+    User_Service["User Service"]
+    Notification_Service["Notification Service"]
+    PostgreSQL[(PostgreSQL)]
+    Message_Queue["Message Queue"]
 
-skinparam componentStyle rectangle
-
-component "API Gateway" <<api>>
-component "Task Service" <<service>>
-component "User Service" <<service>>
-component "Notification Service" <<service>>
-database "PostgreSQL" <<database>>
-queue "Message Queue" <<queue>>
-
-API_Gateway --> Task_Service
-API_Gateway --> User_Service
-Task_Service --> PostgreSQL
-Task_Service --> Message_Queue
-Notification_Service --> Message_Queue
-
-@enduml
+    API_Gateway --> Task_Service
+    API_Gateway --> User_Service
+    Task_Service --> PostgreSQL
+    Task_Service --> Message_Queue
+    Notification_Service --> Message_Queue
 ```
 
-### Rendering PlantUML Diagrams
+### Rendering Mermaid Diagrams
 
-**Option 1: PlantUML CLI**
+**Option 1: Mermaid CLI**
 ```bash
-java -jar plantuml.jar diagram.puml -o output/
+npx @mermaid-js/mermaid-cli mmdc -i diagram.mermaid -o output.svg
 ```
 
-**Option 2: Online Renderer**
-- Visit https://www.plantuml.com/plantuml/
-- Paste the PlantUML code
+**Option 2: Online Editor**
+- Visit https://mermaid.js.org/
+- Click "Try it Live" or "Editor"
+- Paste the Mermaid code
 
 **Option 3: VS Code Extension**
-- Install "PlantUML" extension
-- Preview with `Alt+D`
+- Install "Markdown Preview Mermaid Support" extension
+- Preview with markdown preview
 
 **Option 4: Programmatic Rendering**
 ```python
 import subprocess
 
-def render_diagram(puml_file: str, output_format: str = "png"):
+def render_diagram(mermaid_file: str, output_format: str = "svg"):
     subprocess.run([
-        "java", "-jar", "plantuml.jar",
-        f"-t{output_format}",
-        puml_file
+        "npx", "@mermaid-js/mermaid-cli", "mmdc",
+        "-i", mermaid_file,
+        "-o", f"output.{output_format}"
     ])
 ```
 
@@ -830,10 +806,10 @@ The Requirements Stage produces specific JSON files for each downstream stage:
 │                       │                                           │
 │         ┌─────────────┼─────────────┐                            │
 │         ▼             ▼             ▼                            │
-│  ┌────────────┐ ┌───────────┐ ┌──────────┐                       │
-│  │for_code_   │ │for_testing│ │diagrams/ │                       │
-│  │generation  │ │.json      │ │*.puml    │                       │
-│  │.json       │ │           │ │          │                       │
+│  ┌────────────┐ ┌───────────┐ ┌──────────────┐                   │
+│  │for_code_   │ │for_testing│ │diagrams/     │                   │
+│  │generation  │ │.json      │ │*.mermaid     │                   │
+│  │.json       │ │           │ │              │                   │
 │  └─────┬──────┘ └─────┬─────┘ └────┬─────┘                       │
 └────────┼──────────────┼────────────┼─────────────────────────────┘
          │              │            │
@@ -960,21 +936,19 @@ class RequirementsStageMetrics:
 
 ### Adding New Diagram Types
 
-1. Add template method to `PlantUMLTemplates`:
+1. Add template method to `MermaidTemplates`:
 
 ```python
 @staticmethod
 def deployment_diagram(title, nodes, connections) -> str:
     lines = [
-        "@startuml",
-        f"title {title}",
-        ""
+        "graph TB",
+        f'title["{title}"]'
     ]
     for node in nodes:
-        lines.append(f'node "{node["name"]}" as {node["id"]}')
+        lines.append(f'{node["id"]}["{node["name"]}"]')
     for conn in connections:
         lines.append(f'{conn["from"]} --> {conn["to"]}')
-    lines.append("@enduml")
     return "\n".join(lines)
 ```
 
@@ -987,10 +961,10 @@ def _generate_diagrams(self, ...):
     # Deployment diagram
     if components:
         deployment = self.templates.deployment_diagram(...)
-        diagrams.append(PlantUMLDiagram(
+        diagrams.append(MermaidDiagram(
             diagram_type=DiagramType.DEPLOYMENT,
             name="Deployment View",
-            plantuml_code=deployment
+            mermaid_code=deployment
         ))
 ```
 
@@ -1112,7 +1086,7 @@ class RequirementsStageRunner:
 
 ```python
 class RequirementsOutput:
-    def get_diagram_by_type(self, diagram_type: DiagramType) -> list[PlantUMLDiagram]:
+    def get_diagram_by_type(self, diagram_type: DiagramType) -> list[MermaidDiagram]:
         """Get all diagrams of a specific type."""
 
     def get_requirements_by_priority(self, priority: RequirementPriority) -> list[FunctionalRequirement]:
@@ -1122,7 +1096,7 @@ class RequirementsOutput:
         """Convert to JSON-serializable dictionary."""
 
     def export_diagrams(self, output_dir: str) -> list[str]:
-        """Export all diagrams to .puml files."""
+        """Export all diagrams to .mermaid files."""
 ```
 
 ---
@@ -1172,5 +1146,5 @@ async def _call_llm(self, system_prompt, user_prompt):
 ## References
 
 - [DESMET Methodology](https://doi.org/10.1016/S0950-5849(96)01202-0) - Kitchenham et al., 1997
-- [PlantUML Documentation](https://plantuml.com/guide)
+- [Mermaid Documentation](https://mermaid.js.org/)
 - [UML Specification](https://www.omg.org/spec/UML/)

@@ -11,12 +11,13 @@ with the harness dataclasses.
 
 from __future__ import annotations
 
+import functools
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
-import streamlit as st
 import yaml
 
 # ---------------------------------------------------------------------------
@@ -56,19 +57,18 @@ FIGURES_DIR = RESULTS_DIR / "figures"
 
 CATEGORY_COLOURS: dict[str, dict[str, str]] = {
     "multi_agent_framework": {
-        "langgraph": "#6366f1",          # indigo
-        "crewai": "#f472b6",             # pink
-        "microsoft_autogen": "#38bdf8",  # sky blue
+        "langgraph": "#818cf8",          # indigo (lighter, reads well on dark)
+        "crewai": "#fb7185",             # rose
+        "microsoft_agent_framework": "#7dd3fc",  # sky
     },
     "agent_sdk_runtime": {
-        "openai_agents_sdk": "#22d3ee",  # cyan
-        "google_adk": "#4ade80",         # green
-        "semantic_kernel": "#a78bfa",    # purple
+        "openai_agents_sdk": "#fbbf24",  # amber (distinct from sky/teal)
+        "google_adk": "#2dd4bf",         # teal
     },
     "visual_workflow_platform": {
         "flowise": "#fb923c",            # orange
-        "langflow": "#facc15",           # yellow
-        "dify": "#f87171",              # red
+        "langflow": "#a78bfa",           # violet (replaces yellow)
+        "dify": "#f87171",              # coral
         "n8n": "#34d399",               # emerald
     },
 }
@@ -92,42 +92,37 @@ def get_platform_colours(platform_ids: list[str]) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Scoring constants (duplicated from story.py to avoid import coupling)
+# Scoring constants — framework-centric (NOT LLM output quality).
+# Duplicated from story.py to avoid import coupling with the harness.
 # ---------------------------------------------------------------------------
 
 SCORING_DIMENSIONS: list[str] = [
-    "correctness",
-    "completeness",
-    "code_quality",
-    "test_quality",
+    "pipeline_completeness",
+    "tool_integration",
+    "error_recovery",
     "time_efficiency",
     "autonomy",
+    "trace_quality",
 ]
 
 SCORING_RUBRIC: dict[str, dict[int, str]] = {
-    "correctness": {
-        0: "Does not compile/run",
-        1: "Runs but wrong behavior",
-        2: "Mostly correct, minor issues",
-        3: "Fully correct",
+    "pipeline_completeness": {
+        0: "Cannot run any stage",
+        1: "Runs 1-2 stages",
+        2: "Runs 3 stages",
+        3: "Runs all 4 stages end-to-end",
     },
-    "completeness": {
-        0: "No meaningful output",
-        1: "Partial implementation",
-        2: "Most requirements met",
-        3: "All requirements met",
+    "tool_integration": {
+        0: "No tool use",
+        1: "Tools defined but frequently fail",
+        2: "Tools work with workarounds",
+        3: "Clean, reliable tool execution",
     },
-    "code_quality": {
-        0: "Unreadable/unmaintainable",
-        1: "Poor style, no structure",
-        2: "Acceptable quality",
-        3: "Clean, idiomatic code",
-    },
-    "test_quality": {
-        0: "No tests",
-        1: "Tests exist but trivial",
-        2: "Tests cover main paths",
-        3: "Comprehensive tests",
+    "error_recovery": {
+        0: "Crashes on first error",
+        1: "Errors halt pipeline",
+        2: "Logs errors, continues partially",
+        3: "Self-corrects and retries",
     },
     "time_efficiency": {
         0: "Exceeded budget by 2x+",
@@ -141,6 +136,12 @@ SCORING_RUBRIC: dict[str, dict[int, str]] = {
         2: "Occasional intervention",
         3: "Fully autonomous",
     },
+    "trace_quality": {
+        0: "No execution trace",
+        1: "Partial trace data",
+        2: "Messages + tool calls traced",
+        3: "Full trace with tokens, timing, state",
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -148,14 +149,14 @@ SCORING_RUBRIC: dict[str, dict[int, str]] = {
 # ---------------------------------------------------------------------------
 
 
-@st.cache_data
+@functools.lru_cache(maxsize=1)
 def load_platforms_config() -> list[dict[str, str]]:
     """Load platform definitions from ``config/platforms.yaml``.
 
     Returns a list of dicts, each with keys: id, name, category, runtime.
-    Cached via ``@st.cache_data`` because this file never changes at runtime.
+    Cached because this file never changes at runtime.
     """
-    with open(CONFIG_YAML, "r", encoding="utf-8") as fh:
+    with open(CONFIG_YAML, encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh)
     return cfg.get("platforms", [])
 
@@ -189,7 +190,7 @@ def load_results_raw() -> dict[str, Any]:
     """
     if not RESULTS_JSON.exists():
         return {"platforms": {}}
-    with open(RESULTS_JSON, "r", encoding="utf-8") as fh:
+    with open(RESULTS_JSON, encoding="utf-8") as fh:
         return json.load(fh)
 
 
@@ -224,7 +225,7 @@ def get_story_metrics_df(data: dict[str, Any]) -> pd.DataFrame:
             rows.append(row)
     if not rows:
         return pd.DataFrame(
-            columns=["platform_id", "platform_name", "story_id"]
+            columns=pd.Index(["platform_id", "platform_name", "story_id"])
         )
     return pd.DataFrame(rows)
 
@@ -251,7 +252,7 @@ def get_dimension_scores_df(data: dict[str, Any]) -> pd.DataFrame:
             rows.append(row)
     if not rows:
         return pd.DataFrame(
-            columns=["platform_id", "platform_name", "dimension", "score"]
+            columns=pd.Index(["platform_id", "platform_name", "dimension", "score"])
         )
     return pd.DataFrame(rows)
 
@@ -281,7 +282,7 @@ def get_platform_summary_df(data: dict[str, Any]) -> pd.DataFrame:
         )
     if not rows:
         return pd.DataFrame(
-            columns=[
+            columns=pd.Index([
                 "platform_id",
                 "platform_name",
                 "category",
@@ -289,7 +290,7 @@ def get_platform_summary_df(data: dict[str, Any]) -> pd.DataFrame:
                 "stories_completed",
                 "completion_rate",
                 "overall_score",
-            ]
+            ])
         )
     return pd.DataFrame(rows)
 
@@ -303,7 +304,7 @@ def update_story_scores(
     data: dict[str, Any],
     platform_id: str,
     story_id: str,
-    scores: dict[str, float],
+    scores: Mapping[str, float],
     notes: dict[str, str],
 ) -> dict[str, Any]:
     """Mutate *data* in-place: write dimension scores for a story.
@@ -360,10 +361,13 @@ def list_trace_files(platform_id: str, story_id: str) -> list[Path]:
     trace_dir = LOGS_DIR / platform_id / story_id
     if not trace_dir.is_dir():
         return []
-    return sorted(trace_dir.glob("*_trace.json"))
+    files = sorted(trace_dir.glob("*_stages.json"))
+    if not files:
+        files = sorted(trace_dir.glob("*_trace.json"))
+    return files
 
 
 def load_trace(trace_path: Path) -> dict[str, Any]:
     """Load a single trace file and return its contents as a dict."""
-    with open(trace_path, "r", encoding="utf-8") as fh:
+    with open(trace_path, encoding="utf-8") as fh:
         return json.load(fh)

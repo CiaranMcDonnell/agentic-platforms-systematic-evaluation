@@ -6,7 +6,6 @@ This can be natural language requirements, user stories, or structured requireme
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
 from enum import Enum
 
 
@@ -45,8 +44,8 @@ class ConstraintInfo:
     technical: list[str] = field(default_factory=list)
     business: list[str] = field(default_factory=list)
     regulatory: list[str] = field(default_factory=list)
-    timeline: Optional[str] = None
-    budget: Optional[str] = None
+    timeline: str | None = None
+    budget: str | None = None
 
 
 @dataclass
@@ -73,7 +72,7 @@ class RequirementsInput:
     domain: ProjectDomain = ProjectDomain.OTHER
     stakeholders: list[StakeholderInfo] = field(default_factory=list)
     constraints: ConstraintInfo = field(default_factory=ConstraintInfo)
-    existing_context: Optional[str] = None
+    existing_context: str | None = None
     target_technologies: list[str] = field(default_factory=list)
     quality_attributes: dict[str, int] = field(default_factory=dict)
 
@@ -101,7 +100,7 @@ class RequirementsInput:
                 constraints_text.append(f"Business: {', '.join(self.constraints.business)}")
             if self.constraints.regulatory:
                 constraints_text.append(f"Regulatory: {', '.join(self.constraints.regulatory)}")
-            context_parts.append(f"\n## Constraints\n" + "\n".join(constraints_text))
+            context_parts.append("\n## Constraints\n" + "\n".join(constraints_text))
 
         if self.target_technologies:
             context_parts.append(f"\n## Target Technologies\n{', '.join(self.target_technologies)}")

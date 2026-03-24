@@ -1,28 +1,27 @@
 """Requirements Stage Schemas."""
 
 from .input_schema import (
+    ConstraintInfo,
+    ProjectDomain,
     RequirementsInput,
     RequirementType,
-    ProjectDomain,
     StakeholderInfo,
-    ConstraintInfo,
 )
-
 from .output_schema import (
-    RequirementsOutput,
-    RequirementPriority,
-    RequirementCategory,
-    DiagramType,
-    UserStory,
-    FunctionalRequirement,
-    NonFunctionalRequirement,
     Actor,
-    UseCase,
-    Entity,
-    Component,
-    PlantUMLDiagram,
     APIEndpoint,
+    Component,
     DataModel,
+    DiagramType,
+    Entity,
+    FunctionalRequirement,
+    MermaidDiagram,
+    NonFunctionalRequirement,
+    RequirementCategory,
+    RequirementPriority,
+    RequirementsOutput,
+    UseCase,
+    UserStory,
 )
 
 __all__ = [
@@ -44,7 +43,7 @@ __all__ = [
     "UseCase",
     "Entity",
     "Component",
-    "PlantUMLDiagram",
+    "MermaidDiagram",
     "APIEndpoint",
     "DataModel",
 ]

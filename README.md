@@ -6,8 +6,8 @@ A DESMET-based evaluation framework for comparing agentic platforms across effec
 
 | Category | Platforms |
 |----------|-----------|
-| Multi-Agent Frameworks | LangGraph, CrewAI, Microsoft AutoGen |
-| Agent SDK Runtimes | OpenAI Agents SDK, Google ADK, Semantic Kernel |
+| Multi-Agent Frameworks | LangGraph, CrewAI, Microsoft Agent Framework |
+| Agent SDK Runtimes | OpenAI Agents SDK, Google ADK |
 | Visual / Workflow Platforms | Flowise, LangFlow, Dify, N8n |
 
 ## Pipeline
@@ -34,7 +34,8 @@ Seven cross-cutting **evaluation dimensions** are assessed throughout: Effective
 │   ├── adapters/            #   Platform adapters (one per platform)
 │   ├── dimensions/          #   Cross-cutting dimension scorers
 │   ├── analysis/            #   Scoring, comparison, report generation
-│   └── cli.py               #   `desmet-eval` CLI entrypoint
+│   ├── cli.py               #   `desmet webui` entry point
+│   └── webui/               #   Management Console (FastAPI + Svelte SPA)
 │
 ├── config/                  # Platform definitions (platforms.yaml)
 ├── data/                    # Input data: user stories, prompts, baseline repo
@@ -63,8 +64,8 @@ uv sync
 # Install with a specific platform adapter
 uv sync --extra langgraph
 
-# Run evaluation
-uv run desmet-eval run --platform langgraph --story US-001
+# Launch the Management Console (browser UI)
+uv run desmet
 
 # Run tests
 uv run --group test pytest

@@ -1,10 +1,9 @@
 id: US-020
 title: Implement JWT Authentication System
 description: >
-  Implement a complete JWT-based authentication system with
-  register, login, token refresh, and logout endpoints.
-  Includes password hashing, token management, rate limiting,
-  and comprehensive tests.
+  As an application user, I want to securely register, log in, refresh
+  my session, and log out using JWT tokens so that my identity is
+  verified and my data is protected from unauthorised access.
 
 category: code_generation
 difficulty: advanced

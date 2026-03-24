@@ -2,8 +2,8 @@
 
 from .requirements_agent import (
     BaseRequirementsAgent,
-    SimpleRequirementsAgent,
     RequirementsAgentPrompts,
+    SimpleRequirementsAgent,
 )
 
 __all__ = [

@@ -8,6 +8,7 @@ from desmet.adapters._tracing import (
     build_stage_result,
     finish_trace,
     record_message,
+    record_node_event,
     record_tool_call,
     record_usage,
     start_trace,
@@ -47,6 +48,7 @@ class TestStartTrace:
         assert trace.tool_calls == []
         assert trace.errors == []
         assert trace.final_state == {}
+        assert trace.node_events == []
 
     def test_counters_are_zero(self) -> None:
         trace = start_trace()
@@ -356,3 +358,46 @@ class TestBuildStageResult:
         )
 
         assert result.completed is False
+
+
+# ── TestRecordNodeEvent ─────────────────────────────────────────────────
+
+
+class TestRecordNodeEvent:
+    """record_node_event() appends a node-attributed event dict to the trace."""
+
+    def test_appends_event(self) -> None:
+        trace = start_trace()
+        record_node_event(trace, "validator_node", validator_passed=True, retry_count=1)
+        assert len(trace.node_events) == 1
+        event = trace.node_events[0]
+        assert event["node"] == "validator_node"
+        assert event["validator_passed"] is True
+        assert event["retry_count"] == 1
+
+    def test_node_key_always_present(self) -> None:
+        trace = start_trace()
+        record_node_event(trace, "planner_node")
+        assert trace.node_events[0]["node"] == "planner_node"
+
+    def test_multiple_events_accumulate(self) -> None:
+        trace = start_trace()
+        record_node_event(trace, "validator_node", validator_passed=False, retry_count=1)
+        record_node_event(trace, "validator_node", validator_passed=True, retry_count=2)
+        assert len(trace.node_events) == 2
+        assert trace.node_events[0]["validator_passed"] is False
+        assert trace.node_events[1]["validator_passed"] is True
+
+    def test_arbitrary_kwargs_stored(self) -> None:
+        trace = start_trace()
+        record_node_event(trace, "executor_node", step=3, tool="write_file")
+        event = trace.node_events[0]
+        assert event["step"] == 3
+        assert event["tool"] == "write_file"
+
+    def test_does_not_affect_other_collections(self) -> None:
+        trace = start_trace()
+        record_node_event(trace, "planner_node", plan="step 1")
+        assert trace.messages == []
+        assert trace.tool_calls == []
+        assert trace.errors == []

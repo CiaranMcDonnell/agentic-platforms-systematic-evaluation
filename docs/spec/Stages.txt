@@ -8,7 +8,7 @@ agentic platforms using representative tasks.
 ```
 ┌─────────────────────┐
 │  1. REQUIREMENTS    │  ◄── Natural language requirements
-│     STAGE           │  ──► User stories, PlantUML diagrams, API specs
+│     STAGE           │  ──► User stories, Mermaid diagrams, API specs
 └──────────┬──────────┘
            │
            ▼
@@ -49,7 +49,7 @@ agentic platforms using representative tasks.
 - Domain entity/class designs
 - System component architecture
 - API endpoint specifications
-- PlantUML diagrams:
+- Mermaid diagrams:
   - Use Case Diagram
   - Class Diagram (Domain Model)
   - Component Diagram
@@ -151,7 +151,7 @@ Each stage provides evaluation opportunities for agentic platforms:
 - Quality of extracted requirements
 - Accuracy of use case identification
 - Completeness of entity design
-- Correctness of PlantUML diagrams
+- Correctness of Mermaid diagrams
 
 ### Code Generation Stage
 - Code correctness and functionality

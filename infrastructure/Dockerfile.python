@@ -1,5 +1,5 @@
 # Dockerfile for Python-based Agentic Platforms Evaluation
-# Supports: LangGraph, CrewAI, AutoGen, OpenAI Agents, Google ADK, Semantic Kernel, LangFlow
+# Supports: LangGraph, CrewAI, Microsoft Agent Framework, OpenAI Agents, Google ADK, LangFlow
 
 FROM python:3.11-slim
 

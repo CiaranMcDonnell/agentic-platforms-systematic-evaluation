@@ -18,34 +18,37 @@ dependencies = [
     "httpx>=0.25.0",
     "aiofiles>=23.0.0",
     "rich>=13.0.0",
-    "typer>=0.9.0",
+    "typer>=0.12.0",
     "python-dotenv>=1.0.0",
     # Data handling
     "pandas>=2.0.0",
-    "numpy>=1.24.0",
+    "numpy>=2.0.0",
     # Logging and tracing
     "structlog>=23.0.0",
-    "langfuse>=2.0.0",
-    # PlantUML rendering
-    "plantuml>=0.3.0",
-    # Dashboard
-    "streamlit>=1.30.0",
-    "plotly>=5.18.0",
-    "kaleido>=0.2.1,<1.0",
-    # LangGraph
-    "langgraph>=0.3.0",
+    "langfuse>=4.0.0",
+    # Web UI (Management Console)
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.25.0",
+    "websockets>=12.0",
+    # LangGraph / LangChain v1
+    "langchain>=1.0.0",
+    "langgraph>=1.0.0",
     "langgraph-sdk>=0.1.0",
-    "langgraph-checkpoint>=2.0.0",
-    "langchain-core>=0.2.0",
-    "langchain-openai>=0.1.0",
-    "langchain-anthropic>=0.1.0",
+    "langgraph-checkpoint>=4.0.0",
+    "langchain-openai>=1.0.0",
+    "langchain-anthropic>=1.0.0",
     # CrewAI
-    "crewai>=0.80.0",
-    "crewai[tools]",
+    "crewai[tools]>=1.6.0,<1.7",
+    # CrewAI OTEL tracing (crew/task/agent/tool spans)
+    "openinference-instrumentation-crewai>=1.0.0",
 ]
 
 [project.optional-dependencies]
-autogen = [
+# Static chart export (PNG/SVG for reports)
+export = [
+    "kaleido>=1.0.0",
+]
+agent-framework = [
     "autogen-agentchat>=0.4.0",
     "autogen-ext[openai]>=0.4.0",
 ]
@@ -55,35 +58,28 @@ openai-agents = [
 google-adk = [
     "google-adk>=1.0.0",
 ]
-semantic-kernel = [
-    "semantic-kernel>=1.30.0",
-]
 
 # ── Visual/workflow platforms ──
-# These run as Docker services and are evaluated via their HTTP APIs.
-# Install only if running LangFlow locally (conflicts with other extras):
-langflow = [
-    "langflow>=1.5.0",
-]
-# Flowise, Dify, n8n — Docker-only, no Python deps needed.
+# Flowise, Dify, n8n, LangFlow — Docker-only, evaluated via HTTP APIs.
+# No Python deps needed.
 
 
 [dependency-groups]
 dev = [
-    "ruff>=0.1.0",
+    "ruff>=0.8.0",
     "mypy>=1.5.0",
-    "pre-commit>=3.4.0",
+    "pre-commit>=4.0.0",
     "ipython>=8.0.0",
     "jupyter>=1.0.0",
 ]
 test = [
-    "pytest>=7.4.0",
-    "pytest-asyncio>=0.21.0",
-    "pytest-cov>=4.1.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=1.0.0",
+    "pytest-cov>=6.0.0",
 ]
 
 [project.scripts]
-desmet-eval = "desmet.cli:main"
+desmet = "desmet.cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -99,17 +95,7 @@ packages = ["src/desmet"]
 # pydantic, openai, litellm). Each platform extra is intended to be installed in
 # isolation — pick ONE per virtual-env. Declare all known conflicts so uv can
 # resolve the base dependencies without trying to unify incompatible extras.
-conflicts = [
-    # langflow conflicts with every other SDK extra
-    [{ extra = "langflow" }, { extra = "langgraph" }],
-    [{ extra = "langflow" }, { extra = "crewai" }],
-    [{ extra = "langflow" }, { extra = "autogen" }],
-    [{ extra = "langflow" }, { extra = "openai-agents" }],
-    [{ extra = "langflow" }, { extra = "google-adk" }],
-    [{ extra = "langflow" }, { extra = "semantic-kernel" }],
-    # openai-agents requires pydantic>=2.12.3; semantic-kernel requires <2.12
-    [{ extra = "openai-agents" }, { extra = "semantic-kernel" }],
-]
+conflicts = []
 
 # ── Tool config ─────────────────────────────────────────────────────────────
 

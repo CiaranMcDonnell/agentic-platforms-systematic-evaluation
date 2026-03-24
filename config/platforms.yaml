@@ -1,7 +1,7 @@
 # =============================================================================
 # DESMET Agentic Platforms - Platform Configuration
 # =============================================================================
-# Defines the 10 agentic platforms evaluated under the DESMET framework.
+# Defines the 9 agentic platforms evaluated under the DESMET framework.
 # TODO: Wire into CLI/loader so adapters and runner read from here
 #       instead of hardcoding platform info and evaluation settings.
 # =============================================================================
@@ -12,53 +12,84 @@ platforms:
     name: LangGraph
     category: multi_agent_framework
     runtime: Python
+    vendor: LangChain Inc
+    description: Graph-based agent orchestration built on LangChain
+    documentation_url: https://langchain-ai.github.io/langgraph/
+    repository_url: https://github.com/langchain-ai/langgraph
 
   - id: crewai
     name: CrewAI
     category: multi_agent_framework
     runtime: Python
+    vendor: CrewAI Inc
+    description: Role-based multi-agent collaboration framework
+    documentation_url: https://docs.crewai.com/
+    repository_url: https://github.com/joaomdmoura/crewAI
 
-  - id: microsoft_autogen
-    name: Microsoft AutoGen
+  - id: microsoft_agent_framework
+    name: Microsoft Agent Framework
     category: multi_agent_framework
     runtime: Python
+    vendor: Microsoft
+    description: Unified agent SDK combining AutoGen and Semantic Kernel
+    documentation_url: https://github.com/microsoft/agent-framework
+    repository_url: https://github.com/microsoft/agent-framework
 
   # Agent SDK Runtimes
   - id: openai_agents_sdk
     name: OpenAI Agents SDK
     category: agent_sdk_runtime
     runtime: Python
+    vendor: OpenAI
+    description: Official OpenAI SDK for building agentic applications
+    documentation_url: https://platform.openai.com/docs/agents
+    repository_url: https://github.com/openai/openai-agents-python
 
   - id: google_adk
     name: Google ADK
     category: agent_sdk_runtime
     runtime: Python
-
-  - id: semantic_kernel
-    name: Semantic Kernel
-    category: agent_sdk_runtime
-    runtime: Python
+    vendor: Google
+    description: Google Agent Development Kit for building AI agents
+    documentation_url: https://google.github.io/adk-docs/
+    repository_url: https://github.com/google/adk-python
 
   # Visual / Workflow Platforms
   - id: flowise
     name: Flowise
     category: visual_workflow_platform
     runtime: Docker
+    vendor: FlowiseAI
+    description: Drag-and-drop UI for building LLM flows and agents
+    documentation_url: https://docs.flowiseai.com/
+    repository_url: https://github.com/FlowiseAI/Flowise
 
   - id: langflow
     name: LangFlow
     category: visual_workflow_platform
     runtime: Python
+    vendor: DataStax
+    description: Visual framework for building multi-agent and RAG applications
+    documentation_url: https://docs.langflow.org/
+    repository_url: https://github.com/langflow-ai/langflow
 
   - id: dify
     name: Dify
     category: visual_workflow_platform
     runtime: Docker
+    vendor: Dify.AI
+    description: Open-source LLM app development platform with visual workflow builder
+    documentation_url: https://docs.dify.ai/
+    repository_url: https://github.com/langgenius/dify
 
   - id: n8n
     name: n8n
     category: visual_workflow_platform
     runtime: Docker
+    vendor: n8n GmbH
+    description: Workflow automation platform with AI agent capabilities
+    documentation_url: https://docs.n8n.io/
+    repository_url: https://github.com/n8n-io/n8n
 
 # =============================================================================
 # Evaluation Settings
@@ -77,4 +108,6 @@ evaluation_settings:
     intermediate: 40
     advanced: 60
 
-  default_model: gpt-5.2
+  # The canonical default lives in src/desmet/llm_config.py.
+  # Override at runtime with DESMET_MODEL or DEFAULT_MODEL env vars.
+  default_model: gpt-4o

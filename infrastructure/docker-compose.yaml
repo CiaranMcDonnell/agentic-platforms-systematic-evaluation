@@ -1,8 +1,6 @@
 # Docker Compose for DESMET Agentic Platforms Evaluation
 # This file provides containerized environments for all platforms
 
-version: '3.8'
-
 services:
   # ============================================================================
   # SHARED INFRASTRUCTURE
@@ -28,6 +26,7 @@ services:
     profiles:
       - infrastructure
       - dify
+      - langflow
       - n8n
 
   # Redis for caching and message queues
@@ -62,9 +61,9 @@ services:
       - ../../:/workspace
       - python_packages:/root/.local
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
     working_dir: /workspace
     command: sleep infinity
     profiles:
@@ -173,6 +172,8 @@ services:
       - DB_DATABASE=dify
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - STORAGE_TYPE=local
+      - STORAGE_LOCAL_PATH=/app/storage
     volumes:
       - dify_storage:/app/storage
     depends_on:

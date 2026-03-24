@@ -1,17 +1,24 @@
 # Prompt
 
-Add a `validate_email(email: str) -> bool` function to `utils/validation.py`.
+Add a `validate_email` function to `utils/validation.py` that validates email
+addresses and returns a boolean.
 
 Requirements:
-- Use regex to validate email format
-- Handle edge cases (empty string, None, whitespace)
-- Return True for valid emails, False otherwise
-- Add type hints and a docstring
-- Valid format: local@domain.tld where local allows alphanumeric, dots,
-  hyphens, underscores; domain allows alphanumeric and hyphens; TLD is 2-10 chars
+1. Accept a single `email: str` parameter and return `bool`.
+2. Use a regex pattern that covers standard RFC 5322 local-part and domain rules:
+   - Local part: alphanumeric, dots, underscores, hyphens, plus signs.
+   - Domain: at least two labels separated by dots, TLD at least 2 characters.
+3. Handle edge cases gracefully — `None`, empty string, whitespace-only input,
+   and non-string types should return `False` without raising.
+4. Add type hints and a docstring.
+
+Write the function and any necessary imports into `utils/validation.py`.
 
 # Context
 
-The project uses Python 3.11+ with type hints throughout.
-The utils/ directory already exists with an __init__.py.
-Follow existing code style (Google-style docstrings, snake_case).
+You are working in a Python project that has a `utils/` package. The file
+`utils/validation.py` may or may not already exist. If it does not exist,
+create it with the appropriate module docstring. If it already exists, add
+the function without removing existing code.
+
+The project uses Python 3.10+ and follows PEP 8 style conventions.

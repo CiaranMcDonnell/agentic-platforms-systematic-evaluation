@@ -7,21 +7,21 @@ LLM providers (OpenAI, Anthropic) and shows the complete workflow.
 
 import asyncio
 import os
-from pathlib import Path
 
 # Add parent directory to path for imports
 import sys
+from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from stages.requirements.schemas import (
+    ConstraintInfo,
+    ProjectDomain,
     RequirementsInput,
     RequirementType,
-    ProjectDomain,
     StakeholderInfo,
-    ConstraintInfo,
 )
 from stages.requirements.stage_runner import RequirementsStageRunner, create_input_from_text
-
 
 # Example 1: Simple usage with text input
 EXAMPLE_REQUIREMENTS = """
@@ -228,7 +228,7 @@ async def example_with_openai():
         print(f"- Entities: {len(output.entities)}")
         print(f"- Components: {len(output.components)}")
         print(f"- API Endpoints: {len(output.api_endpoints)}")
-        print(f"- PlantUML Diagrams: {len(output.diagrams)}")
+        print(f"- Mermaid Diagrams: {len(output.diagrams)}")
 
     except ImportError:
         print("OpenAI package not installed. Run: pip install openai")

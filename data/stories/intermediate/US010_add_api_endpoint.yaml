@@ -1,9 +1,9 @@
 id: US-010
 title: Add REST API Endpoint for User Profiles
 description: >
-  Add GET and PUT endpoints for user profile management at
-  /api/users/{user_id}/profile with Pydantic validation,
-  error handling, and unit tests.
+  As an application user, I want to view and update my profile
+  information through the API so that I can manage my display name,
+  bio, and avatar without needing direct database access.
 
 category: code_generation
 difficulty: intermediate

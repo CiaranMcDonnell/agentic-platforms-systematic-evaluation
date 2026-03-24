@@ -1,11 +1,11 @@
 id: US-030
 title: Design Full-Stack Issue Tracker Application
 description: >
-  Produce a complete software design for a full-stack Issue Tracker
-  application. The agent must create architecture documentation, a REST
-  API specification, a database schema, a component breakdown, and
-  PlantUML diagrams (component, class, sequence, ER) — all written
-  as files to docs/design/.
+  As a development team lead, I want a complete software design for a
+  full-stack Issue Tracker application — including architecture docs,
+  API spec, database schema, component breakdown, and UML diagrams —
+  so that the team has clear, unambiguous guidance before starting
+  implementation.
 
 category: design
 difficulty: intermediate
@@ -25,20 +25,20 @@ target_files:
   - docs/design/api_spec.md
   - docs/design/database_schema.md
   - docs/design/components.md
-  - docs/design/diagrams/component_diagram.puml
-  - docs/design/diagrams/class_diagram.puml
-  - docs/design/diagrams/sequence_create_issue.puml
-  - docs/design/diagrams/er_diagram.puml
+  - docs/design/diagrams/component_diagram.mermaid
+  - docs/design/diagrams/class_diagram.mermaid
+  - docs/design/diagrams/sequence_create_issue.mermaid
+  - docs/design/diagrams/er_diagram.mermaid
 
 expected_files_created:
   - docs/design/architecture.md
   - docs/design/api_spec.md
   - docs/design/database_schema.md
   - docs/design/components.md
-  - docs/design/diagrams/component_diagram.puml
-  - docs/design/diagrams/class_diagram.puml
-  - docs/design/diagrams/sequence_create_issue.puml
-  - docs/design/diagrams/er_diagram.puml
+  - docs/design/diagrams/component_diagram.mermaid
+  - docs/design/diagrams/class_diagram.mermaid
+  - docs/design/diagrams/sequence_create_issue.mermaid
+  - docs/design/diagrams/er_diagram.mermaid
 
 expected_files_modified: []
 
@@ -64,19 +64,19 @@ acceptance_criteria:
     verification_method: manual
 
   - id: AC-030-6
-    description: Component diagram (.puml) shows system components with interfaces and dependencies in valid PlantUML
+    description: Component diagram (.mermaid) shows system components with interfaces and dependencies in valid Mermaid
     verification_method: automated
 
   - id: AC-030-7
-    description: Class diagram (.puml) shows all domain entities with attributes, types, and relationships in valid PlantUML
+    description: Class diagram (.mermaid) shows all domain entities with attributes, types, and relationships in valid Mermaid
     verification_method: automated
 
   - id: AC-030-8
-    description: Sequence diagram (.puml) shows the create-issue flow through all layers in valid PlantUML
+    description: Sequence diagram (.mermaid) shows the create-issue flow through all layers in valid Mermaid
     verification_method: automated
 
   - id: AC-030-9
-    description: ER diagram (.puml) shows all tables with columns, keys, and cardinality in valid PlantUML
+    description: ER diagram (.mermaid) shows all tables with columns, keys, and cardinality in valid Mermaid
     verification_method: automated
 
 time_budget_seconds: 900

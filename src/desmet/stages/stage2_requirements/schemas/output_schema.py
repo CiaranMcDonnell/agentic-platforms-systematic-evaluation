@@ -6,9 +6,8 @@ This output is consumed by subsequent pipeline stages (Code Generation, Testing,
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
-from enum import Enum
 from datetime import datetime
+from enum import Enum
 
 
 class RequirementPriority(Enum):
@@ -29,7 +28,7 @@ class RequirementCategory(Enum):
 
 
 class DiagramType(Enum):
-    """Types of PlantUML diagrams."""
+    """Types of Mermaid diagrams."""
     USE_CASE = "use_case"
     CLASS = "class"
     SEQUENCE = "sequence"
@@ -52,7 +51,7 @@ class UserStory:
     benefit: str
     acceptance_criteria: list[str] = field(default_factory=list)
     priority: RequirementPriority = RequirementPriority.MEDIUM
-    story_points: Optional[int] = None
+    story_points: int | None = None
     dependencies: list[str] = field(default_factory=list)
 
     def to_text(self) -> str:
@@ -73,11 +72,11 @@ class FunctionalRequirement:
     description: str
     category: RequirementCategory = RequirementCategory.FUNCTIONAL
     priority: RequirementPriority = RequirementPriority.MEDIUM
-    rationale: Optional[str] = None
-    source: Optional[str] = None
+    rationale: str | None = None
+    source: str | None = None
     dependencies: list[str] = field(default_factory=list)
     related_user_stories: list[str] = field(default_factory=list)
-    verification_method: Optional[str] = None
+    verification_method: str | None = None
 
 
 @dataclass
@@ -87,9 +86,9 @@ class NonFunctionalRequirement:
     title: str
     description: str
     category: str  # e.g., "Performance", "Security", "Scalability"
-    metric: Optional[str] = None  # e.g., "Response time < 200ms"
+    metric: str | None = None  # e.g., "Response time < 200ms"
     priority: RequirementPriority = RequirementPriority.MEDIUM
-    rationale: Optional[str] = None
+    rationale: str | None = None
 
 
 @dataclass
@@ -138,12 +137,12 @@ class Component:
 
 
 @dataclass
-class PlantUMLDiagram:
-    """A PlantUML diagram specification."""
+class MermaidDiagram:
+    """A Mermaid diagram specification."""
     diagram_type: DiagramType
     name: str
     description: str
-    plantuml_code: str
+    mermaid_code: str
     related_requirements: list[str] = field(default_factory=list)
 
 
@@ -153,8 +152,8 @@ class APIEndpoint:
     path: str
     method: str  # GET, POST, PUT, DELETE, PATCH
     description: str
-    request_body: Optional[dict] = None
-    response_schema: Optional[dict] = None
+    request_body: dict | None = None
+    response_schema: dict | None = None
     parameters: list[dict] = field(default_factory=list)
     authentication_required: bool = True
     related_use_cases: list[str] = field(default_factory=list)
@@ -195,25 +194,25 @@ class RequirementsOutput:
 
     # Domain Model
     entities: list[Entity] = field(default_factory=list)
-    data_model: Optional[DataModel] = None
+    data_model: DataModel | None = None
 
     # Architecture
     components: list[Component] = field(default_factory=list)
     api_endpoints: list[APIEndpoint] = field(default_factory=list)
 
-    # PlantUML Diagrams
-    diagrams: list[PlantUMLDiagram] = field(default_factory=list)
+    # Mermaid Diagrams
+    diagrams: list[MermaidDiagram] = field(default_factory=list)
 
     # Traceability
     traceability_matrix: dict[str, list[str]] = field(default_factory=dict)
 
     # Summary
-    summary: Optional[str] = None
+    summary: str | None = None
     risks: list[str] = field(default_factory=list)
     assumptions: list[str] = field(default_factory=list)
     open_questions: list[str] = field(default_factory=list)
 
-    def get_diagram_by_type(self, diagram_type: DiagramType) -> list[PlantUMLDiagram]:
+    def get_diagram_by_type(self, diagram_type: DiagramType) -> list[MermaidDiagram]:
         """Get all diagrams of a specific type."""
         return [d for d in self.diagrams if d.diagram_type == diagram_type]
 
@@ -236,13 +235,13 @@ class RequirementsOutput:
         return json.loads(json.dumps(result, default=enum_handler))
 
     def export_diagrams(self, output_dir: str) -> list[str]:
-        """Export all PlantUML diagrams to files."""
+        """Export all Mermaid diagrams to files."""
         import os
         exported = []
         for diagram in self.diagrams:
-            filename = f"{diagram.diagram_type.value}_{diagram.name.lower().replace(' ', '_')}.puml"
+            filename = f"{diagram.diagram_type.value}_{diagram.name.lower().replace(' ', '_')}.mermaid"
             filepath = os.path.join(output_dir, filename)
             with open(filepath, 'w') as f:
-                f.write(diagram.plantuml_code)
+                f.write(diagram.mermaid_code)
             exported.append(filepath)
         return exported

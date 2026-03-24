@@ -6,22 +6,18 @@ This module orchestrates the requirements analysis pipeline and produces
 output for downstream stages (Code Generation, Testing, Deployment).
 """
 
-import asyncio
 import json
-import os
-from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
+from desmet.llm_config import DEFAULT_MODEL
+
+from .agents import SimpleRequirementsAgent
 from .schemas import (
+    ProjectDomain,
     RequirementsInput,
     RequirementsOutput,
     RequirementType,
-    ProjectDomain,
-    StakeholderInfo,
-    ConstraintInfo,
 )
-from .agents import SimpleRequirementsAgent
 
 
 class RequirementsStageRunner:
@@ -37,8 +33,8 @@ class RequirementsStageRunner:
     def __init__(
         self,
         output_dir: str = "./outputs",
-        llm_client: Optional[object] = None,
-        model: str = "gpt-4",
+        llm_client: object | None = None,
+        model: str = DEFAULT_MODEL,
     ):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -73,11 +69,11 @@ class RequirementsStageRunner:
         project_dir = self.output_dir / output.project_name.lower().replace(" ", "_")
         project_dir.mkdir(parents=True, exist_ok=True)
 
-        # Export PlantUML diagrams
+        # Export Mermaid diagrams
         diagrams_dir = project_dir / "diagrams"
         diagrams_dir.mkdir(exist_ok=True)
         exported_diagrams = output.export_diagrams(str(diagrams_dir))
-        print(f"Exported {len(exported_diagrams)} PlantUML diagrams")
+        print(f"Exported {len(exported_diagrams)} Mermaid diagrams")
 
         # Export JSON output
         json_output = output.to_json()
@@ -262,7 +258,7 @@ def create_input_from_text(
     description: str,
     requirements_text: str,
     domain: str = "other",
-    technologies: list[str] = None,
+    technologies: list[str] | None = None,
 ) -> RequirementsInput:
     """
     Convenience function to create RequirementsInput from simple text.
@@ -314,12 +310,12 @@ if __name__ == "__main__":
     parser.add_argument("--requirements-file", required=True, help="Path to requirements text file")
     parser.add_argument("--output-dir", default="./outputs", help="Output directory")
     parser.add_argument("--domain", default="other", help="Project domain")
-    parser.add_argument("--model", default="gpt-4", help="LLM model to use")
+    parser.add_argument("--model", default=DEFAULT_MODEL, help="LLM model to use")
 
     args = parser.parse_args()
 
     # Read requirements from file
-    with open(args.requirements_file, "r") as f:
+    with open(args.requirements_file) as f:
         requirements_text = f.read()
 
     # Create input

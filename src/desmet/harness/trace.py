@@ -45,6 +45,7 @@ class AgentTrace:
     end_time: datetime | None = None
     final_state: dict[str, Any] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
+    node_events: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def duration_seconds(self) -> float:

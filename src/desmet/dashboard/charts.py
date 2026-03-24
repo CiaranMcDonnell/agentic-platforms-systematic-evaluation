@@ -1,218 +1,247 @@
-"""DESMET Dashboard - reusable Plotly chart builders.
+"""DESMET Dashboard - reusable ECharts option builders.
 
-Every public function returns a ``plotly.graph_objects.Figure``.
-No Streamlit imports - pure Plotly so charts can be embedded in any
-front-end or exported to static images.
+Every public function returns a plain ``dict`` that can be serialised to
+JSON and consumed directly by the ECharts frontend component.  No
+browser-side library imports are needed on the Python side.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 import pandas as pd
-import plotly.graph_objects as go
 
 from .data import get_platform_colour, get_platform_name
 
 # ---------------------------------------------------------------------------
-# Shared theme — designed for Streamlit dark mode
+# Shared theme — designed for dark UI
 # ---------------------------------------------------------------------------
 
-_BG = "rgba(0,0,0,0)"  # Transparent — inherits Streamlit's theme
-_GRID = "rgba(255,255,255,0.08)"  # Subtle grid
+_BG = "transparent"
+_GRID = "rgba(255,255,255,0.08)"
 _TEXT = "#e0e0e0"
 _AXIS_TEXT = "#b0b0b0"
+_FONT = "Inter, -apple-system, sans-serif"
 
-_LAYOUT_DEFAULTS: dict = dict(
-    font=dict(family="Inter, -apple-system, sans-serif", size=13, color=_TEXT),
-    plot_bgcolor=_BG,
-    paper_bgcolor=_BG,
-    margin=dict(l=10, r=10, t=60, b=10),
-    legend=dict(
-        bgcolor="rgba(0,0,0,0)",
-        borderwidth=0,
-        font=dict(size=12, color=_TEXT),
-    ),
-    hoverlabel=dict(
-        bgcolor="#1e1e2e",
-        font_size=12,
-        font_color="#e0e0e0",
-        bordercolor="rgba(255,255,255,0.1)",
-    ),
+_TOOLTIP_DEFAULTS: dict[str, Any] = dict(
+    backgroundColor="#1e1e2e",
+    borderColor="rgba(255,255,255,0.1)",
+    textStyle=dict(color="#e0e0e0", fontFamily=_FONT, fontSize=12),
+)
+
+_LEGEND_DEFAULTS: dict[str, Any] = dict(
+    textStyle=dict(color=_TEXT, fontFamily=_FONT, fontSize=12),
+    bottom=0,
+)
+
+_TITLE_DEFAULTS: dict[str, Any] = dict(
+    textStyle=dict(color="#ffffff", fontFamily=_FONT, fontSize=14, fontWeight="bold"),
+    left=12,
+    top=10,
 )
 
 
-def _apply_defaults(fig: go.Figure, title: str = "") -> go.Figure:
-    """Apply shared theme and optional title to *fig*."""
-    layout_update: dict = {**_LAYOUT_DEFAULTS}
-    if title:
-        layout_update["title"] = dict(
-            text=title,
-            font=dict(size=16, color="#ffffff"),
-            x=0.0,
-            xanchor="left",
-        )
-    fig.update_layout(**layout_update)
-    return fig
-
-
-def _style_cartesian(fig: go.Figure) -> go.Figure:
-    """Style x/y axes for cartesian charts."""
-    axis_style = dict(
-        gridcolor=_GRID,
-        zerolinecolor="rgba(255,255,255,0.15)",
-        tickfont=dict(size=12, color=_AXIS_TEXT),
-        title=dict(font=dict(size=13, color=_TEXT)),
+def _base_option(title: str = "") -> dict[str, Any]:
+    """Return a base ECharts option dict with shared theme defaults."""
+    opt: dict[str, Any] = dict(
+        backgroundColor=_BG,
+        tooltip={**_TOOLTIP_DEFAULTS, "trigger": "axis"},
+        legend={**_LEGEND_DEFAULTS},
+        textStyle=dict(fontFamily=_FONT, color=_TEXT),
     )
-    fig.update_xaxes(**axis_style)
-    fig.update_yaxes(**axis_style)
-    return fig
+    if title:
+        opt["title"] = {**_TITLE_DEFAULTS, "text": title}
+    return opt
+
+
+def _axis_defaults() -> dict[str, Any]:
+    """Shared axis styling for cartesian charts."""
+    return dict(
+        axisLine=dict(lineStyle=dict(color="rgba(255,255,255,0.15)")),
+        splitLine=dict(lineStyle=dict(color=_GRID)),
+        axisLabel=dict(color=_AXIS_TEXT, fontFamily=_FONT, fontSize=12),
+        nameTextStyle=dict(color=_AXIS_TEXT, fontFamily=_FONT, fontSize=12),
+        nameGap=25,
+    )
+
+
+def _hex_to_rgba(hex_colour: str, alpha: float) -> str:
+    """Convert #RRGGBB to rgba() string."""
+    r = int(hex_colour[1:3], 16)
+    g = int(hex_colour[3:5], 16)
+    b = int(hex_colour[5:7], 16)
+    return f"rgba({r},{g},{b},{alpha})"
 
 
 # ---------------------------------------------------------------------------
-# 1. Radar - DESMET dimension scores
+# 1. Radar — DESMET dimension scores
 # ---------------------------------------------------------------------------
 
 
 def radar_dimensions(
     dimension_scores: dict[str, dict[str, float]],
     title: str = "DESMET Dimension Comparison",
-) -> go.Figure:
+) -> dict[str, Any]:
     """Polar radar chart of dimension scores per platform."""
-    fig = go.Figure()
-
     all_dims: list[str] = []
     for scores in dimension_scores.values():
         for dim in scores:
             if dim not in all_dims:
                 all_dims.append(dim)
 
-    theta_labels = [d.replace("_", " ").title() for d in all_dims]
+    indicators = [
+        dict(name=d.replace("_", " ").title(), max=5) for d in all_dims
+    ]
+
+    series_data = []
+    legend_data = []
 
     for platform_id, scores in dimension_scores.items():
         values = [scores.get(d, 0.0) for d in all_dims]
-        r = values + [values[0]]
-        theta = theta_labels + [theta_labels[0]]
         colour = get_platform_colour(platform_id)
-        # Convert hex to rgba for transparent fill
-        r_val = int(colour[1:3], 16)
-        g_val = int(colour[3:5], 16)
-        b_val = int(colour[5:7], 16)
-        fill_colour = f"rgba({r_val},{g_val},{b_val},0.15)"
+        name = get_platform_name(platform_id)
+        legend_data.append(name)
 
-        fig.add_trace(
-            go.Scatterpolar(
-                r=r,
-                theta=theta,
-                fill="toself",
-                fillcolor=fill_colour,
-                name=get_platform_name(platform_id),
-                marker=dict(color=colour, size=6),
-                line=dict(color=colour, width=2.5),
-            )
-        )
+        series_data.append(dict(
+            value=values,
+            name=name,
+            symbol="circle",
+            symbolSize=6,
+            lineStyle=dict(color=colour, width=2.5),
+            itemStyle=dict(color=colour),
+            areaStyle=dict(color=_hex_to_rgba(colour, 0.15)),
+        ))
 
-    fig.update_layout(
-        polar=dict(
-            bgcolor="rgba(0,0,0,0)",
-            radialaxis=dict(
-                visible=True,
-                range=[0, 5],
-                tickvals=[1, 2, 3, 4, 5],
-                gridcolor="rgba(255,255,255,0.1)",
-                tickfont=dict(size=10, color=_AXIS_TEXT),
-                linecolor="rgba(255,255,255,0.05)",
-            ),
-            angularaxis=dict(
-                gridcolor="rgba(255,255,255,0.1)",
-                tickfont=dict(size=12, color=_TEXT),
-                linecolor="rgba(255,255,255,0.05)",
-            ),
-        ),
-        showlegend=True,
-        legend=dict(x=1.15, y=1.0),
+    opt = _base_option(title)
+    opt["tooltip"] = {**_TOOLTIP_DEFAULTS, "trigger": "item"}
+    opt["legend"] = {
+        **_LEGEND_DEFAULTS,
+        "data": legend_data,
+        "right": 10,
+        "top": "middle",
+        "bottom": "auto",
+        "orient": "vertical",
+    }
+    opt["radar"] = dict(
+        indicator=indicators,
+        shape="polygon",
+        center=["40%", "55%"],
+        radius="65%",
+        splitNumber=5,
+        axisName=dict(color=_TEXT, fontFamily=_FONT, fontSize=12),
+        splitLine=dict(lineStyle=dict(color="rgba(255,255,255,0.1)")),
+        splitArea=dict(show=False),
+        axisLine=dict(lineStyle=dict(color="rgba(255,255,255,0.1)")),
     )
+    opt["series"] = [dict(type="radar", data=series_data)]
 
-    return _apply_defaults(fig, title)
+    return opt
 
 
 # ---------------------------------------------------------------------------
-# 2. Horizontal bar - platform overall rankings
+# 2. Horizontal bar — platform overall rankings
 # ---------------------------------------------------------------------------
 
 
 def bar_platform_rankings(
     summary_df: pd.DataFrame,
     title: str = "Platform Rankings",
-) -> go.Figure:
+) -> dict[str, Any]:
     """Horizontal bar chart of platforms ranked by ``overall_score``."""
     df = summary_df.sort_values("overall_score", ascending=True).reset_index(drop=True)
     colours = [get_platform_colour(pid) for pid in df["platform_id"]]
+    names = list(df["platform_name"])
+    values = list(df["overall_score"])
 
-    fig = go.Figure()
-    fig.add_trace(
-        go.Bar(
-            y=df["platform_name"],
-            x=df["overall_score"],
-            orientation="h",
-            marker=dict(
-                color=colours,
-                line=dict(width=0),
-                cornerradius=4,
-            ),
-            text=[f"  {v:.1f}" for v in df["overall_score"]],
-            textposition="outside",
-            textfont=dict(size=13, color=_TEXT),
-        )
-    )
-    fig.update_layout(
-        xaxis=dict(range=[0, 5.5], title="Score (0–5)"),
-        yaxis=dict(title="", automargin=True),
-        height=max(200, len(df) * 60 + 80),
-    )
+    opt = _base_option(title)
+    opt["tooltip"] = {**_TOOLTIP_DEFAULTS, "trigger": "axis", "axisPointer": dict(type="shadow")}
+    opt["legend"] = {"show": False}
+    opt["grid"] = dict(left="30%", right="18%", top=45, bottom=25)
+    opt["xAxis"] = {
+        **_axis_defaults(),
+        "type": "value",
+        "max": 5.5,
+        "name": "Score (0–5)",
+        "nameLocation": "middle",
+        "nameGap": 30,
+    }
+    opt["yAxis"] = {
+        **_axis_defaults(),
+        "type": "category",
+        "data": names,
+    }
+    opt["series"] = [dict(
+        type="bar",
+        data=[
+            dict(value=round(v, 2), itemStyle=dict(color=c, borderRadius=[0, 4, 4, 0]))
+            for v, c in zip(values, colours)
+        ],
+        label=dict(
+            show=True, position="right", color=_TEXT,
+            fontFamily=_FONT, fontSize=13,
+            formatter="{c}",
+        ),
+        barMaxWidth=30,
+    )]
 
-    return _style_cartesian(_apply_defaults(fig, title))
+    return opt
 
 
 # ---------------------------------------------------------------------------
-# 3. Horizontal bar - completion rates
+# 3. Horizontal bar — completion rates
 # ---------------------------------------------------------------------------
 
 
 def bar_completion_rates(
     summary_df: pd.DataFrame,
     title: str = "Completion Rates",
-) -> go.Figure:
+) -> dict[str, Any]:
     """Horizontal bar chart of story completion rates per platform."""
     df = summary_df.sort_values("completion_rate", ascending=True).reset_index(drop=True)
-    pct = df["completion_rate"] * 100
+    pct = (df["completion_rate"] * 100).tolist()
     colours = [get_platform_colour(pid) for pid in df["platform_id"]]
+    names = list(df["platform_name"])
 
-    fig = go.Figure()
-    fig.add_trace(
-        go.Bar(
-            y=df["platform_name"],
-            x=pct,
-            orientation="h",
-            marker=dict(
-                color=colours,
-                line=dict(width=0),
-                cornerradius=4,
-            ),
-            text=[f"  {v:.0f}%" for v in pct],
-            textposition="outside",
-            textfont=dict(size=13, color=_TEXT),
-        )
-    )
-    fig.update_layout(
-        xaxis=dict(range=[0, 115], title="Completion (%)"),
-        yaxis=dict(title="", automargin=True),
-        height=max(200, len(df) * 60 + 80),
-    )
+    opt = _base_option(title)
+    opt["tooltip"] = {
+        **_TOOLTIP_DEFAULTS,
+        "trigger": "axis",
+        "axisPointer": dict(type="shadow"),
+    }
+    opt["legend"] = {"show": False}
+    opt["grid"] = dict(left="30%", right="18%", top=45, bottom=25)
+    opt["xAxis"] = {
+        **_axis_defaults(),
+        "type": "value",
+        "max": 115,
+        "name": "Completion (%)",
+        "nameLocation": "middle",
+        "nameGap": 30,
+    }
+    opt["yAxis"] = {
+        **_axis_defaults(),
+        "type": "category",
+        "data": names,
+    }
+    opt["series"] = [dict(
+        type="bar",
+        data=[
+            dict(value=round(v, 1), itemStyle=dict(color=c, borderRadius=[0, 4, 4, 0]))
+            for v, c in zip(pct, colours)
+        ],
+        label=dict(
+            show=True, position="right", color=_TEXT,
+            fontFamily=_FONT, fontSize=13,
+            formatter="{c}%",
+        ),
+        barMaxWidth=30,
+    )]
 
-    return _style_cartesian(_apply_defaults(fig, title))
+    return opt
 
 
 # ---------------------------------------------------------------------------
-# 4. Grouped bar - story-level metric comparison
+# 4. Grouped bar — story-level metric comparison
 # ---------------------------------------------------------------------------
 
 
@@ -220,45 +249,56 @@ def bar_story_comparison(
     metrics_df: pd.DataFrame,
     metric: str,
     title: str = "",
-) -> go.Figure:
+) -> dict[str, Any]:
     """Grouped bar chart comparing a single *metric* across stories and platforms."""
-    fig = go.Figure()
+    story_ids = list(metrics_df["story_id"].unique())
+    y_label = metric.replace("_", " ").title()
 
+    series = []
     for pid in metrics_df["platform_id"].unique():
         pdf = metrics_df[metrics_df["platform_id"] == pid]
-        fig.add_trace(
-            go.Bar(
-                x=pdf["story_id"],
-                y=pdf[metric],
-                name=get_platform_name(pid),
-                marker=dict(
-                    color=get_platform_colour(pid),
-                    cornerradius=4,
-                ),
-            )
-        )
+        val_map = dict(zip(pdf["story_id"], pdf[metric]))
+        values = [val_map.get(sid, 0) for sid in story_ids]
 
-    y_label = metric.replace("_", " ").title()
-    fig.update_layout(
-        barmode="group",
-        bargap=0.25,
-        bargroupgap=0.1,
-        xaxis=dict(title="Story"),
-        yaxis=dict(title=y_label),
-    )
+        series.append(dict(
+            type="bar",
+            name=get_platform_name(pid),
+            data=values,
+            itemStyle=dict(color=get_platform_colour(pid), borderRadius=[4, 4, 0, 0]),
+            barMaxWidth=24,
+        ))
 
-    return _style_cartesian(_apply_defaults(fig, title or f"{y_label} by Story"))
+    opt = _base_option(title or f"{y_label} by Story")
+    opt["tooltip"] = {**_TOOLTIP_DEFAULTS, "trigger": "axis", "axisPointer": dict(type="shadow")}
+    opt["legend"] = {**_LEGEND_DEFAULTS, "bottom": 0}
+    opt["grid"] = dict(left=80, right=20, top=45, bottom=40)
+    opt["xAxis"] = {
+        **_axis_defaults(),
+        "type": "category",
+        "data": story_ids,
+        "axisLabel": {**_axis_defaults()["axisLabel"], "rotate": 30, "fontSize": 10},
+    }
+    opt["yAxis"] = {
+        **_axis_defaults(),
+        "type": "value",
+        "name": y_label,
+        "nameLocation": "middle",
+        "nameGap": 50,
+    }
+    opt["series"] = series
+
+    return opt
 
 
 # ---------------------------------------------------------------------------
-# 5. Grouped bar - efficiency breakdown (wall_clock, iterations, tool_calls)
+# 5. Grouped bar — efficiency breakdown (wall_clock, iterations, tool_calls)
 # ---------------------------------------------------------------------------
 
 
 def bar_efficiency_breakdown(
     metrics_df: pd.DataFrame,
     title: str = "Efficiency Breakdown",
-) -> go.Figure:
+) -> dict[str, Any]:
     """Grouped bar chart of averaged efficiency metrics per platform."""
     efficiency_cols = ["wall_clock_seconds", "iterations", "tool_calls"]
     agg = (
@@ -273,36 +313,48 @@ def bar_efficiency_breakdown(
         ("tool_calls", "Avg Tool Calls", "#f472b6"),
     ]
 
-    fig = go.Figure()
+    platform_names = list(agg["platform_name"])
+
+    series = []
     for col, label, colour in metric_config:
-        fig.add_trace(
-            go.Bar(
-                x=agg["platform_name"],
-                y=agg[col],
-                name=label,
-                marker=dict(color=colour, cornerradius=4),
-            )
-        )
+        series.append(dict(
+            type="bar",
+            name=label,
+            data=[round(v, 1) for v in agg[col]],
+            itemStyle=dict(color=colour, borderRadius=[4, 4, 0, 0]),
+            barMaxWidth=24,
+        ))
 
-    fig.update_layout(
-        barmode="group",
-        bargap=0.25,
-        bargroupgap=0.1,
-        yaxis=dict(title="Average Value"),
-    )
+    opt = _base_option(title)
+    opt["tooltip"] = {**_TOOLTIP_DEFAULTS, "trigger": "axis", "axisPointer": dict(type="shadow")}
+    opt["legend"] = {**_LEGEND_DEFAULTS, "bottom": 0}
+    opt["grid"] = dict(left=80, right=20, top=45, bottom=40)
+    opt["xAxis"] = {
+        **_axis_defaults(),
+        "type": "category",
+        "data": platform_names,
+    }
+    opt["yAxis"] = {
+        **_axis_defaults(),
+        "type": "value",
+        "name": "Average Value",
+        "nameLocation": "middle",
+        "nameGap": 50,
+    }
+    opt["series"] = series
 
-    return _style_cartesian(_apply_defaults(fig, title))
+    return opt
 
 
 # ---------------------------------------------------------------------------
-# 6. Heatmap - criteria pass / fail / N/A
+# 6. Heatmap — criteria pass / fail / N/A
 # ---------------------------------------------------------------------------
 
 
 def heatmap_criteria(
     criteria_data: dict[str, dict[str, bool | None]],
     title: str = "Acceptance Criteria",
-) -> go.Figure:
+) -> dict[str, Any]:
     """Heatmap showing pass/fail/N-A for every platform-criterion pair."""
     platform_ids = list(criteria_data.keys())
     platform_names = [get_platform_name(pid) for pid in platform_ids]
@@ -313,58 +365,54 @@ def heatmap_criteria(
             if cid not in all_criteria:
                 all_criteria.append(cid)
 
-    z: list[list[float]] = []
-    text: list[list[str]] = []
-
-    for cid in all_criteria:
-        row_z: list[float] = []
-        row_t: list[str] = []
-        for pid in platform_ids:
-            val = criteria_data[pid].get(cid)
-            if val is True:
-                row_z.append(1.0)
-                row_t.append("Pass")
-            elif val is False:
-                row_z.append(0.0)
-                row_t.append("Fail")
-            else:
-                row_z.append(0.5)
-                row_t.append("N/A")
-        z.append(row_z)
-        text.append(row_t)
-
-    colorscale = [
-        [0.0, "#ef4444"], [0.25, "#ef4444"],
-        [0.25, "#4b5563"], [0.75, "#4b5563"],
-        [0.75, "#22c55e"], [1.0, "#22c55e"],
-    ]
-
     criteria_labels = [c.replace("_", " ").title() for c in all_criteria]
 
-    fig = go.Figure()
-    fig.add_trace(
-        go.Heatmap(
-            z=z,
-            x=platform_names,
-            y=criteria_labels,
-            text=text,
-            texttemplate="%{text}",
-            textfont=dict(size=12, color="white"),
-            colorscale=colorscale,
-            showscale=False,
-            zmin=0,
-            zmax=1,
-            xgap=2,
-            ygap=2,
-        )
-    )
-    fig.update_layout(yaxis=dict(autorange="reversed", automargin=True))
+    # ECharts heatmap data: [x_index, y_index, value]
+    data = []
+    for xi, pid in enumerate(platform_ids):
+        for yi, cid in enumerate(all_criteria):
+            val = criteria_data[pid].get(cid)
+            if val is True:
+                data.append([xi, yi, 1])
+            elif val is False:
+                data.append([xi, yi, 0])
+            else:
+                data.append([xi, yi, 0.5])
 
-    return _apply_defaults(fig, title)
+    opt = _base_option(title)
+    opt["tooltip"] = {
+        **_TOOLTIP_DEFAULTS,
+        "trigger": "item",
+    }
+    opt["grid"] = dict(left="30%", right=20, top=45, bottom=30)
+    opt["xAxis"] = dict(
+        type="category",
+        data=platform_names,
+        splitArea=dict(show=True),
+        axisLabel=dict(color=_AXIS_TEXT, fontFamily=_FONT, fontSize=11, rotate=30),
+    )
+    opt["yAxis"] = dict(
+        type="category",
+        data=criteria_labels,
+        axisLabel=dict(color=_AXIS_TEXT, fontFamily=_FONT, fontSize=11),
+    )
+    opt["visualMap"] = dict(
+        min=0, max=1,
+        show=False,
+        inRange=dict(color=["#ef4444", "#4b5563", "#22c55e"]),
+    )
+    opt["series"] = [dict(
+        type="heatmap",
+        data=data,
+        label=dict(show=True, color="white", fontSize=11),
+        itemStyle=dict(borderWidth=2, borderColor="#0a0a0a"),
+    )]
+
+    return opt
 
 
 # ---------------------------------------------------------------------------
-# 7. Horizontal bar - single dimension comparison
+# 7. Horizontal bar — single dimension comparison
 # ---------------------------------------------------------------------------
 
 
@@ -372,34 +420,45 @@ def bar_dimension_comparison(
     dimension_df: pd.DataFrame,
     dimension: str,
     title: str = "",
-) -> go.Figure:
+) -> dict[str, Any]:
     """Horizontal bar chart for a single DESMET dimension."""
     df = dimension_df[dimension_df["dimension"] == dimension].copy()
     df = df.sort_values("score", ascending=True).reset_index(drop=True)
 
     dim_title = dimension.replace("_", " ").title()
     colours = [get_platform_colour(pid) for pid in df["platform_id"]]
+    names = list(df["platform_name"])
+    values = list(df["score"])
 
-    fig = go.Figure()
-    fig.add_trace(
-        go.Bar(
-            y=df["platform_name"],
-            x=df["score"],
-            orientation="h",
-            marker=dict(
-                color=colours,
-                line=dict(width=0),
-                cornerradius=4,
-            ),
-            text=[f"  {v:.1f}" for v in df["score"]],
-            textposition="outside",
-            textfont=dict(size=13, color=_TEXT),
-        )
-    )
-    fig.update_layout(
-        xaxis=dict(range=[0, 5.5], title=dim_title),
-        yaxis=dict(title="", automargin=True),
-        height=max(200, len(df) * 60 + 80),
-    )
+    opt = _base_option(title or dim_title)
+    opt["tooltip"] = {**_TOOLTIP_DEFAULTS, "trigger": "axis", "axisPointer": dict(type="shadow")}
+    opt["legend"] = {"show": False}
+    opt["grid"] = dict(left="30%", right="18%", top=45, bottom=25)
+    opt["xAxis"] = {
+        **_axis_defaults(),
+        "type": "value",
+        "max": 5.5,
+        "name": dim_title,
+        "nameLocation": "middle",
+        "nameGap": 30,
+    }
+    opt["yAxis"] = {
+        **_axis_defaults(),
+        "type": "category",
+        "data": names,
+    }
+    opt["series"] = [dict(
+        type="bar",
+        data=[
+            dict(value=round(v, 2), itemStyle=dict(color=c, borderRadius=[0, 4, 4, 0]))
+            for v, c in zip(values, colours)
+        ],
+        label=dict(
+            show=True, position="right", color=_TEXT,
+            fontFamily=_FONT, fontSize=13,
+            formatter="{c}",
+        ),
+        barMaxWidth=30,
+    )]
 
-    return _style_cartesian(_apply_defaults(fig, title or dim_title))
+    return opt

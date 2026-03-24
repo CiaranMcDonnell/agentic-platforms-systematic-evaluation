@@ -72,8 +72,8 @@ This document specifies the complete evaluation pipeline for systematically comp
 
 | Category | Platforms |
 |----------|-----------|
-| Multi-Agent Frameworks | LangGraph, CrewAI, Microsoft AutoGen |
-| Agent SDK Runtimes | OpenAI Agents SDK, Google ADK, Semantic Kernel |
+| Multi-Agent Frameworks | LangGraph, CrewAI, Microsoft Agent Framework |
+| Agent SDK Runtimes | OpenAI Agents SDK, Google ADK |
 | Visual/Workflow Platforms | Flowise, LangFlow, Dify, N8n |
 
 ---

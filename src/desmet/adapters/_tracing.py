@@ -100,6 +100,20 @@ def record_tool_call(
     )
 
 
+def record_node_event(
+    trace: AgentTrace,
+    node: str,
+    **data: Any,
+) -> None:
+    """Record a named graph-node event on the trace.
+
+    Useful for capturing per-node state changes (e.g. validator retries,
+    planner decisions) when streaming with ``stream_mode="updates"``.
+    Each event is stored as a dict with at least a ``"node"`` key.
+    """
+    trace.node_events.append({"node": node, **data})
+
+
 # ── Result construction ─────────────────────────────────────────────────
 
 

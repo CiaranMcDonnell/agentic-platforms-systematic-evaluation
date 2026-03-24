@@ -290,8 +290,8 @@
             </div>
           {/each}
           <div class="status-row" style="margin-top: 2px; padding-top: 8px; border-top: 1px solid var(--border);">
-            <span class="status-dot {config?.langfuse_status === 'connected' ? 'dot-green' : 'dot-dim'}"></span>
-            <span style="font-size: 13px;{config?.langfuse_status === 'connected' ? '' : ' color: var(--text-2);'}">Langfuse</span>
+            <span class="status-dot {config?.langfuse_status === 'configured' ? 'dot-green' : 'dot-dim'}"></span>
+            <span style="font-size: 13px;{config?.langfuse_status === 'configured' ? '' : ' color: var(--text-2);'}">Langfuse</span>
             <span style="font-size: 11px; color: var(--text-2); margin-left: auto;">{config?.langfuse_status || 'not set'}</span>
           </div>
         </div>
