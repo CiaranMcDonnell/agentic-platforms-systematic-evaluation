@@ -46,6 +46,31 @@ from desmet.llm_config import get_config as get_llm_config
 _log = logging.getLogger(__name__)
 
 
+def _summarise_step(step_output: Any) -> str:
+    """Return a readable string for a CrewAI step output.
+
+    Prefers ``log`` / ``text`` (the LLM reasoning text).  Falls back to a
+    compact summary when ``str()`` would produce a multi-kilobyte Agent/Crew
+    repr that obscures the actual reasoning content.
+    """
+    import re
+
+    content = getattr(step_output, "log", "") or getattr(step_output, "text", "")
+    if content:
+        return content
+
+    raw = str(step_output)
+    # Detect verbose CrewAI object reprs (Agent, Task, Crew contain these fields).
+    if len(raw) > 300 and ("role=" in raw or "backstory=" in raw):
+        role_m = re.search(r"role=['\"]([^'\"]{1,80})", raw)
+        goal_m = re.search(r"goal=['\"]([^'\"]{1,120})", raw)
+        role = role_m.group(1) if role_m else "?"
+        goal = (goal_m.group(1)[:100] + "…") if goal_m and len(goal_m.group(1)) > 100 else (goal_m.group(1) if goal_m else "")
+        return f"[Agent: {role}] {goal}".strip()
+
+    return raw
+
+
 # ---------------------------------------------------------------------------
 # HTTP interceptor for cost extraction
 # ---------------------------------------------------------------------------
@@ -378,11 +403,7 @@ class CrewAIAdapter(BasePlatformAdapter):
 
             # Always record the step as a message so the full reasoning
             # chain is visible in the trace.
-            content = (
-                getattr(step_output, "log", "")
-                or getattr(step_output, "text", "")
-                or str(step_output)
-            )
+            content = _summarise_step(step_output)
             record_message(trace, "assistant", content, metadata={"step": counter[0]})
             trace.total_iterations = counter[0]
 

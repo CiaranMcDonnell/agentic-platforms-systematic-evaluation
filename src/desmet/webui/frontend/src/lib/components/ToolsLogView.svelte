@@ -47,6 +47,13 @@
     if (next.has(id)) next.delete(id); else next.add(id);
     expanded = next;
   }
+
+  function formatContent(raw: string | null | undefined): string {
+    if (!raw) return '';
+    const s = raw.trim();
+    try { return JSON.stringify(JSON.parse(s), null, 2); } catch {}
+    return s;
+  }
 </script>
 
 <div class="tl-wrap">
@@ -80,13 +87,13 @@
               {#if row.input}
                 <div class="exp-block">
                   <div class="exp-label">INPUT</div>
-                  <pre class="exp-pre">{row.input}</pre>
+                  <pre class="exp-pre">{formatContent(row.input)}</pre>
                 </div>
               {/if}
               {#if row.output}
                 <div class="exp-block">
                   <div class="exp-label">OUTPUT</div>
-                  <pre class="exp-pre">{row.output}</pre>
+                  <pre class="exp-pre">{formatContent(row.output)}</pre>
                 </div>
               {/if}
             </div>

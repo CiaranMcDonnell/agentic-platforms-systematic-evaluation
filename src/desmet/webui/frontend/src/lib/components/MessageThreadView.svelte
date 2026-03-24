@@ -63,6 +63,13 @@
     if (type === 'tool') return 'TOOL';
     return type.toUpperCase();
   }
+
+  function formatContent(raw: string | null | undefined): string {
+    if (!raw) return '';
+    const s = raw.trim();
+    try { return JSON.stringify(JSON.parse(s), null, 2); } catch {}
+    return s;
+  }
 </script>
 
 <div class="mt-wrap">
@@ -95,13 +102,13 @@
           {#if msg.input}
             <div class="io-section">
               <div class="io-label">INPUT</div>
-              <pre class="io-pre">{msg.input}</pre>
+              <pre class="io-pre">{formatContent(msg.input)}</pre>
             </div>
           {/if}
           {#if msg.output}
             <div class="io-section">
               <div class="io-label">OUTPUT</div>
-              <pre class="io-pre output">{msg.output}</pre>
+              <pre class="io-pre output">{formatContent(msg.output)}</pre>
             </div>
           {/if}
         </div>
