@@ -1012,6 +1012,7 @@ dependencies = [
     { name = "langgraph-sdk" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "openai-agents" },
     { name = "openinference-instrumentation-crewai" },
     { name = "pandas", version = "2.2.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1036,9 +1037,6 @@ export = [
 ]
 google-adk = [
     { name = "google-adk" },
-]
-openai-agents = [
-    { name = "openai-agents" },
 ]
 
 [package.dev-dependencies]
@@ -1074,7 +1072,7 @@ requires-dist = [
     { name = "langgraph-checkpoint", specifier = ">=4.0.0" },
     { name = "langgraph-sdk", specifier = ">=0.1.0" },
     { name = "numpy", specifier = ">=2.0.0" },
-    { name = "openai-agents", marker = "extra == 'openai-agents'", specifier = ">=0.5.0" },
+    { name = "openai-agents", specifier = ">=0.1.0" },
     { name = "openinference-instrumentation-crewai", specifier = ">=1.0.0" },
     { name = "pandas", specifier = ">=2.0.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
@@ -1087,7 +1085,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.25.0" },
     { name = "websockets", specifier = ">=12.0" },
 ]
-provides-extras = ["export", "agent-framework", "openai-agents", "google-adk"]
+provides-extras = ["export", "agent-framework", "google-adk"]
 
 [package.metadata.requires-dev]
 dev = [
