@@ -1,26 +1,21 @@
 """
 OpenAI Agents SDK Platform Adapter.
 
-Uses the Agents SDK's Runner.run() with a validation/retry loop per SDLC stage.
+Uses a 3-agent handoff chain: planner (structured output) → executor → reviewer.
+The reviewer carries an output guardrail that validates the workspace; on failure
+the executor retries with conversation carry-forward.
 """
 from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
-from agents import Agent, ModelSettings, Runner
-from agents.items import (
-    MessageOutputItem,
-    ToolCallItem,
-    ToolCallOutputItem,
-)
-from openai import AsyncOpenAI
-
-from agents.tracing import set_trace_processors
+from pydantic import BaseModel
 
 from desmet.adapters._base import ToolAgentAdapter
-from desmet.adapters._prompts import get_stage_persona
+from desmet.adapters._prompts import get_stage_persona, get_sub_persona
 from desmet.adapters._tools import ToolFormat
 from desmet.adapters._tracing import (
     finish_trace,
@@ -36,9 +31,49 @@ from desmet.harness.models import PlatformInfo
 from desmet.harness.trace import AgentTrace
 from desmet.llm_config import Provider
 from desmet.llm_config import get_config as get_llm_config
-from desmet.observability import get_openai_agents_tracing_processor
 
 MAX_RETRIES = 3
+
+
+# ── Data models ───────────────────────────────────────────────────────────────
+
+
+class ImplementationPlan(BaseModel):
+    """Structured output from the planner agent."""
+
+    steps: list[str]
+    files_to_create: list[str]
+    files_to_modify: list[str]
+
+
+@dataclass
+class OpenAIRunContext:
+    """Adapter-local context passed through RunContextWrapper."""
+
+    stage_context: Any  # StageContext, but Any to avoid circular imports
+    plan: ImplementationPlan | None = None
+
+
+# ── Guardrail factory ─────────────────────────────────────────────────────────
+
+
+def _make_workspace_guardrail(stage_name: str, workspace: str):
+    """Create an output guardrail that validates the workspace."""
+    from agents import output_guardrail
+    from agents.guardrail import GuardrailFunctionOutput
+
+    @output_guardrail
+    async def workspace_guardrail(ctx, agent, output):
+        passed = validate_workspace(stage_name, workspace)
+        return GuardrailFunctionOutput(
+            output_info={"passed": passed, "stage": stage_name},
+            tripwire_triggered=not passed,
+        )
+
+    return workspace_guardrail
+
+
+# ── Helper ────────────────────────────────────────────────────────────────────
 
 
 def _format_tool_detail(name: str, raw_args: Any) -> str:
@@ -63,8 +98,11 @@ def _format_tool_detail(name: str, raw_args: Any) -> str:
     return name
 
 
+# ── Adapter ───────────────────────────────────────────────────────────────────
+
+
 class OpenAIAgentsAdapter(ToolAgentAdapter):
-    """OpenAI Agents SDK adapter using Runner.run() with a retry/validation loop."""
+    """OpenAI Agents SDK adapter using a handoff chain with structured output and guardrails."""
 
     TOOL_FORMAT = ToolFormat.OPENAI_AGENTS
 
@@ -88,6 +126,9 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
 
     async def initialize(self) -> None:
         try:
+            from agents import Agent, ModelSettings, Runner
+            from agents.tracing import set_trace_processors
+
             cfg = get_llm_config(model=self.config.get("model"))
             self._model = self._create_model(cfg)
             self._model_name = cfg.model
@@ -96,9 +137,13 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
             # processor.  The default BackendSpanExporter posts to
             # api.openai.com/v1/traces/ingest which rejects non-OpenAI
             # providers and unknown usage keys.
-            lf_processor = get_openai_agents_tracing_processor()
-            if lf_processor is not None:
-                set_trace_processors([lf_processor])
+            try:
+                from desmet.observability import get_openai_agents_tracing_processor
+                lf_processor = get_openai_agents_tracing_processor()
+                if lf_processor is not None:
+                    set_trace_processors([lf_processor])
+            except (ImportError, AttributeError):
+                pass
 
             self._initialized = True
         except ImportError as e:
@@ -116,6 +161,7 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
         if cfg.provider == Provider.OPENAI:
             return cfg.model
 
+        from openai import AsyncOpenAI
         from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
 
         client = AsyncOpenAI(base_url=cfg.base_url, api_key=cfg.api_key)
@@ -129,6 +175,8 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
         if not self._initialized or self._model is None:
             return False
         try:
+            from agents import Agent, Runner
+
             agent = Agent(
                 name="health_check",
                 instructions="Respond with 'ok'.",
@@ -150,77 +198,140 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
         trace: AgentTrace,
         context: StageContext,
     ) -> tuple[int, bool]:
-        """Run an OpenAI Agent with retry/validation loop.
+        """Run a 3-agent handoff chain: planner → executor → reviewer.
 
         Returns (total_iterations, hit_limit).
         """
-        persona = get_stage_persona(stage_name)
-        instructions = persona.backstory
-        if system_msg:
-            instructions = f"{instructions}\n\n{system_msg}"
+        from agents import Agent, ModelSettings, Runner
+        from agents.exceptions import OutputGuardrailTripwireTriggered
 
-        agent = Agent(
-            name=f"desmet-{stage_name}",
-            instructions=instructions,
-            model=self._model,
-            tools=tools,
-            model_settings=ModelSettings(temperature=context.temperature),
-        )
+        planner_persona = get_sub_persona("planner")
+        executor_persona = get_stage_persona(stage_name)
+        reviewer_persona = get_sub_persona("reviewer")
 
-        max_turns = context.max_iterations // MAX_RETRIES
         total_iterations = 0
         tool_call_count = 0
         hit_limit = False
-        result = None
         t0 = time.monotonic()
         cb = context.progress_callback
 
         record_message(trace, "user", prompt)
 
+        # ── Step 1: Planner agent (structured output, no tools) ────────────
+        planner = Agent(
+            name=f"desmet-{stage_name}-planner",
+            instructions=planner_persona.backstory,
+            model=self._model,
+            output_type=ImplementationPlan,
+            model_settings=ModelSettings(temperature=context.temperature),
+        )
+
+        planner_result = await Runner.run(planner, input=prompt, max_turns=3)
+
+        if isinstance(planner_result.final_output, ImplementationPlan):
+            plan = planner_result.final_output
+        else:
+            plan = ImplementationPlan(
+                steps=[str(planner_result.final_output)],
+                files_to_create=[],
+                files_to_modify=[],
+            )
+
+        iters, tool_call_count = self._extract_trace(
+            trace, planner_result, cb=cb, t0=t0,
+            tool_call_count=tool_call_count, model=self._model_name,
+        )
+        total_iterations += iters
+
+        if cb:
+            cb(f"    planner: {len(plan.steps)} steps, {len(plan.files_to_create)} files to create")
+
+        # ── Step 2: Build executor + reviewer agents ───────────────────────
+        guardrail = _make_workspace_guardrail(stage_name, str(context.workspace))
+
+        reviewer_agent = Agent(
+            name=f"desmet-{stage_name}-reviewer",
+            instructions=reviewer_persona.backstory,
+            model=self._model,
+            tools=tools,
+            output_guardrails=[guardrail],
+            model_settings=ModelSettings(temperature=context.temperature),
+        )
+
+        # Dynamic executor instructions: persona + plan + system_msg
+        plan_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(plan.steps))
+        all_files = plan.files_to_create + plan.files_to_modify
+        files_text = ", ".join(all_files) if all_files else "(none specified)"
+        executor_instructions = (
+            f"{executor_persona.backstory}\n\n"
+            f"## Implementation Plan\n{plan_text}\n\n"
+            f"## Files\n{files_text}\n"
+        )
+        if system_msg:
+            executor_instructions += f"\n## Additional Context\n{system_msg}\n"
+
+        executor_agent = Agent(
+            name=f"desmet-{stage_name}-executor",
+            instructions=executor_instructions,
+            model=self._model,
+            tools=tools,
+            handoffs=[reviewer_agent],
+            model_settings=ModelSettings(temperature=context.temperature),
+        )
+
+        # ── Step 3: Retry loop ─────────────────────────────────────────────
+        max_turns = (context.max_iterations - 3) // MAX_RETRIES
+        result = None
+
         for attempt in range(MAX_RETRIES):
-            if result is None:
-                input_msg = prompt
-            else:
-                if cb is not None:
+            try:
+                if result is None:
+                    input_msg = prompt
+                else:
+                    # Retry with conversation carry-forward
+                    input_msg = result.to_input_list() + [
+                        {
+                            "role": "user",
+                            "content": f"Validation failed (attempt {attempt}/{MAX_RETRIES}). Fix issues.",
+                        }
+                    ]
+
+                tool_time_before = sum(tc.duration_ms for tc in trace.tool_calls)
+                run_t0 = time.monotonic()
+                result = await Runner.run(executor_agent, input=input_msg, max_turns=max_turns)
+                run_duration_ms = (time.monotonic() - run_t0) * 1000
+
+                iters, tool_call_count = self._extract_trace(
+                    trace, result, cb=cb, t0=t0,
+                    tool_call_count=tool_call_count, model=self._model_name,
+                )
+                total_iterations += iters
+
+                tool_time_after = sum(tc.duration_ms for tc in trace.tool_calls)
+                tool_time_in_run = tool_time_after - tool_time_before
+                llm_time_estimate = max(0.0, run_duration_ms - tool_time_in_run)
+                record_llm_duration(trace, llm_time_estimate)
+
+                if total_iterations >= context.max_iterations:
+                    hit_limit = True
+                    break
+
+                # If we got here without guardrail tripping, validation passed
+                if cb:
+                    cb("    reviewer: PASSED")
+                break
+
+            except OutputGuardrailTripwireTriggered:
+                total_iterations += 1
+                if cb:
                     from desmet.adapters._tools import _check_completion
                     _, hint = _check_completion(context.workspace, stage_name)
                     elapsed = time.monotonic() - t0
-                    cb(f"    validator: FAILED (attempt {attempt}/{MAX_RETRIES}) — {hint}  ({elapsed:.0f}s)")
-                input_msg = result.to_input_list() + [
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Validation failed (attempt {attempt}/{MAX_RETRIES}). "
-                            f"Review the workspace and fix issues."
-                        ),
-                    }
-                ]
-
-            tool_time_before = sum(tc.duration_ms for tc in trace.tool_calls)
-            run_t0 = time.monotonic()
-            result = await Runner.run(agent, input=input_msg, max_turns=max_turns)
-            run_duration_ms = (time.monotonic() - run_t0) * 1000
-
-            # Extract trace data from this run
-            iterations, tool_call_count = self._extract_trace(
-                trace, result, cb=cb, t0=t0, tool_call_count=tool_call_count,
-                model=self._model_name,
-            )
-            total_iterations += iterations
-
-            tool_time_after = sum(tc.duration_ms for tc in trace.tool_calls)
-            tool_time_in_run = tool_time_after - tool_time_before
-            llm_time_estimate = max(0.0, run_duration_ms - tool_time_in_run)
-            record_llm_duration(trace, llm_time_estimate)
-
-            if total_iterations >= context.max_iterations:
-                hit_limit = True
-                break
-
-            if validate_workspace(stage_name, str(context.workspace)):
-                if cb is not None:
-                    cb("    validator: PASSED")
-                break
+                    cb(f"    reviewer: FAILED (attempt {attempt + 1}/{MAX_RETRIES}) — {hint}  ({elapsed:.0f}s)")
+                if total_iterations >= context.max_iterations:
+                    hit_limit = True
+                    break
+                continue
 
         trace.total_iterations = total_iterations
         finish_trace(trace)
@@ -240,6 +351,12 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
 
         Returns ``(new_items_count, updated_tool_call_count)``.
         """
+        from agents.items import (
+            MessageOutputItem,
+            ToolCallItem,
+            ToolCallOutputItem,
+        )
+
         for item in result.new_items:
             if isinstance(item, MessageOutputItem):
                 text = item.raw_item.content[0].text if item.raw_item.content else ""
@@ -276,7 +393,7 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
 
         # Record final output
         if result.final_output:
-            record_message(trace, "assistant", result.final_output, metadata={"event": "final_output"})
+            record_message(trace, "assistant", str(result.final_output), metadata={"event": "final_output"})
 
         return len(result.new_items), tool_call_count
 
@@ -289,10 +406,13 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
             "has_tracing": True,
             "has_step_through": False,
             "has_replay": False,
-            "has_state_inspection": False,
+            "has_state_inspection": True,
             "has_memory_inspection": False,
             "trace_format": "RunResult",
-            "notes": "Token usage from RunResult.raw_responses; message/tool trace from new_items",
+            "notes": (
+                "Handoff chain: planner (structured output) → executor → reviewer. "
+                "RunConfig provides workflow_name and trace_id for Langfuse."
+            ),
         }
 
     def get_failure_handling_info(self) -> dict[str, Any]:
@@ -302,5 +422,8 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
             "has_graceful_degradation": True,
             "supports_human_handoff": False,
             "is_idempotent": True,
-            "notes": "Retry/validation loop: up to 3 attempts per stage with conversation carry-forward",
+            "notes": (
+                "Output guardrail on reviewer triggers retry via conversation carry-forward. "
+                "Structured planner output prevents malformed plans."
+            ),
         }

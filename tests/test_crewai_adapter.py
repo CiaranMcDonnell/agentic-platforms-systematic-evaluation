@@ -1,6 +1,9 @@
-"""Tests for CrewAI adapter's new SDLC stage methods."""
+"""Tests for the CrewAI idiomatic adapter (multi-agent crew)."""
+from __future__ import annotations
+
 import inspect
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -224,3 +227,46 @@ class TestTraceCallbacks:
 
         assert trace.messages[0].timestamp is not None
         assert trace.messages[1].timestamp is not None
+
+
+class TestCrewAIAdapterStructure:
+    def test_imports(self):
+        from desmet.adapters.crewai import CrewAIAdapter
+        adapter = CrewAIAdapter()
+        assert adapter.TOOL_FORMAT is not None
+
+    def test_observability_reports_auto_recovery(self):
+        from desmet.adapters.crewai import CrewAIAdapter
+        adapter = CrewAIAdapter()
+        info = adapter.get_failure_handling_info()
+        assert info["has_auto_recovery"] is True
+
+    def test_observability_notes_mention_multi_agent(self):
+        from desmet.adapters.crewai import CrewAIAdapter
+        adapter = CrewAIAdapter()
+        info = adapter.get_observability_info()
+        notes = info.get("notes", "").lower()
+        assert "multi-agent" in notes or "crew" in notes
+
+
+class TestIterationBudget:
+    def test_budget_allocation_default_50(self):
+        from desmet.adapters.crewai import _compute_iter_budget
+        planner, executor, reviewer = _compute_iter_budget(50)
+        assert planner == 10
+        assert executor == 30
+        assert reviewer == 10
+
+    def test_budget_allocation_custom_30(self):
+        from desmet.adapters.crewai import _compute_iter_budget
+        planner, executor, reviewer = _compute_iter_budget(30)
+        assert planner + executor + reviewer <= 30
+        assert executor > planner
+        assert executor > reviewer
+
+    def test_budget_allocation_minimum(self):
+        from desmet.adapters.crewai import _compute_iter_budget
+        planner, executor, reviewer = _compute_iter_budget(10)
+        assert planner >= 1
+        assert executor >= 1
+        assert reviewer >= 1

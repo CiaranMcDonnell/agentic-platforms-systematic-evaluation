@@ -146,6 +146,38 @@ def get_stage_persona(stage_name: str) -> AgentPersona:
     return _STAGE_PERSONAS[stage_name]
 
 
+_SUB_PERSONAS: dict[str, AgentPersona] = {
+    "planner": AgentPersona(
+        role="Technical Lead",
+        goal="Analyse the task and produce a structured implementation plan",
+        backstory=(
+            "You are a senior technical lead. You break down complex tasks "
+            "into clear, actionable steps. You identify files to create or "
+            "modify, dependencies between steps, and potential risks."
+        ),
+    ),
+    "reviewer": AgentPersona(
+        role="Code Reviewer",
+        goal="Validate output completeness and correctness against requirements",
+        backstory=(
+            "You are a thorough reviewer. You verify that all required "
+            "artefacts are present in the workspace, outputs are complete "
+            "and correct, and the implementation matches the plan. Use the "
+            "available tools to inspect the workspace and confirm completeness."
+        ),
+    ),
+}
+
+
+def get_sub_persona(name: str) -> AgentPersona:
+    """Return the :class:`AgentPersona` for sub-persona *name*.
+
+    Valid names: ``planner``, ``reviewer``.
+    Raises :exc:`KeyError` if *name* is not recognised.
+    """
+    return _SUB_PERSONAS[name]
+
+
 # =========================================================================
 # Prompt Builders
 # =========================================================================

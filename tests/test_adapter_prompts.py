@@ -13,6 +13,7 @@ from desmet.adapters._prompts import (
     build_system_message,
     build_testing_prompt,
     get_stage_persona,
+    get_sub_persona,
 )
 from desmet.harness.results import RequirementsResult
 from desmet.harness.story import DifficultyLevel, UserStory
@@ -303,3 +304,37 @@ class TestStageExpectedOutputs:
         assert STAGE_EXPECTED_OUTPUTS["deploy"] == (
             "Build completed, deployment readiness verified, and any issues reported"
         )
+
+
+# ---------------------------------------------------------------------------
+# TestGetSubPersona
+# ---------------------------------------------------------------------------
+
+
+class TestGetSubPersona:
+    """get_sub_persona returns correct AgentPersona for planner and reviewer."""
+
+    def test_planner_persona(self):
+        persona = get_sub_persona("planner")
+        assert isinstance(persona, AgentPersona)
+        assert persona.role == "Technical Lead"
+        assert "plan" in persona.goal.lower()
+
+    def test_reviewer_persona(self):
+        persona = get_sub_persona("reviewer")
+        assert isinstance(persona, AgentPersona)
+        assert persona.role == "Code Reviewer"
+        assert "validate" in persona.goal.lower()
+
+    def test_reviewer_backstory_does_not_mention_check_completion(self):
+        persona = get_sub_persona("reviewer")
+        assert "check_completion" not in persona.backstory
+
+    def test_unknown_sub_persona_raises_key_error(self):
+        with pytest.raises(KeyError):
+            get_sub_persona("nonexistent")
+
+    def test_sub_persona_is_frozen(self):
+        persona = get_sub_persona("planner")
+        with pytest.raises(AttributeError):
+            persona.role = "Hacker"
