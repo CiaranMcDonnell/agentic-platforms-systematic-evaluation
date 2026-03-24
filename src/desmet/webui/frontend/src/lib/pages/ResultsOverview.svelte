@@ -3,12 +3,18 @@
   import { fetchOverview } from '../api';
   import type { OverviewData } from '../api';
   import EChart from '../components/EChart.svelte';
+  import DimScorePills from '../components/DimScorePills.svelte';
 
   let data = $state<OverviewData | null>(null);
 
   onMount(async () => {
     data = await fetchOverview();
   });
+
+  function hasAnyScore(dimScores: Record<string, number | null | undefined> | undefined): boolean {
+    if (!dimScores) return false;
+    return Object.values(dimScores).some(v => v !== null && v !== undefined);
+  }
 </script>
 
 <div>
@@ -36,10 +42,18 @@
       {/each}
     </div>
 
-    <!-- Rankings table -->
+    <!-- Rankings table with dim score sub-rows -->
     <div class="table-wrap" style="margin-bottom: 28px;">
       <table>
-        <thead><tr><th>#</th><th>Platform</th><th>Category</th><th style="text-align: right;">Score</th><th style="text-align: right;">Completion</th></tr></thead>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Platform</th>
+            <th>Category</th>
+            <th style="text-align: right;">Score</th>
+            <th style="text-align: right;">Completion</th>
+          </tr>
+        </thead>
         <tbody>
           {#each data.platforms || [] as p, i}
             <tr>
@@ -61,6 +75,16 @@
                 </span>
               </td>
             </tr>
+            <!-- Dimension score sub-row -->
+            <tr class="dim-subrow">
+              <td colspan="5">
+                {#if hasAnyScore(p.dim_scores)}
+                  <DimScorePills scores={p.dim_scores ?? {}} />
+                {:else}
+                  <span class="no-scores">No rubric scores yet</span>
+                {/if}
+              </td>
+            </tr>
           {/each}
         </tbody>
       </table>
@@ -79,3 +103,15 @@
     <EChart endpoint="/api/dashboard/charts/efficiency" />
   {/if}
 </div>
+
+<style>
+  .dim-subrow td {
+    padding: 4px 12px 10px;
+    border-top: none;
+  }
+  .no-scores {
+    font-size: 10px;
+    color: var(--text-2);
+    font-style: italic;
+  }
+</style>
