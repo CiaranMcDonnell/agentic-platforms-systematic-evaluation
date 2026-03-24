@@ -1,9 +1,6 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { fetchStories } from '../api';
-  import type { Story } from '../api';
+  import { store } from '../data.svelte';
 
-  let stories = $state<Story[]>([]);
   let diffFilter = $state('all');
   let search = $state('');
   let tagFilter = $state<string | null>(null);
@@ -11,12 +8,12 @@
 
   // All unique tags across stories
   let allTags = $derived(
-    [...new Set(stories.flatMap(s => s.tags || []))].sort()
+    [...new Set(store.stories.flatMap(s => s.tags || []))].sort()
   );
 
   // Filtered stories
   let filtered = $derived(
-    stories.filter(s => {
+    store.stories.filter(s => {
       if (diffFilter !== 'all' && s.difficulty !== diffFilter) return false;
       if (tagFilter && !(s.tags || []).includes(tagFilter)) return false;
       if (search) {
@@ -33,10 +30,10 @@
 
   // Stats
   let stats = $derived({
-    total: stories.length,
-    basic: stories.filter(s => s.difficulty === 'basic').length,
-    intermediate: stories.filter(s => s.difficulty === 'intermediate').length,
-    advanced: stories.filter(s => s.difficulty === 'advanced').length,
+    total: store.stories.length,
+    basic: store.stories.filter(s => s.difficulty === 'basic').length,
+    intermediate: store.stories.filter(s => s.difficulty === 'intermediate').length,
+    advanced: store.stories.filter(s => s.difficulty === 'advanced').length,
   });
 
   const diffColors: Record<string, string> = {
@@ -52,11 +49,6 @@
     if (seconds >= 60) return `${Math.round(seconds / 60)}m`;
     return `${seconds}s`;
   }
-
-  onMount(async () => {
-    const res = await fetchStories();
-    stories = (res as any).stories || [];
-  });
 </script>
 
 <div>

@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { fetchStories, fetchStoryDetail } from '../api';
-  import type { Story, StoryDetailData } from '../api';
+  import { fetchStoryDetail } from '../api';
+  import type { StoryDetailData } from '../api';
+  import { store } from '../data.svelte';
   import TraceViewer from '../components/TraceViewer.svelte';
   import EChart from '../components/EChart.svelte';
   import DimScorePills from '../components/DimScorePills.svelte';
@@ -16,15 +16,9 @@
     'trace_quality',
   ];
 
-  let stories = $state<Story[]>([]);
   let selectedStory = $state('');
   let detail = $state<StoryDetailData | null>(null);
   let expandedTrace = $state<string | null>(null);
-
-  onMount(async () => {
-    const res = await fetchStories();
-    stories = (res as any).stories || [];
-  });
 
   async function loadDetail() {
     if (!selectedStory) return;
@@ -60,7 +54,7 @@
       <label class="label" for="detail-story">Story</label>
       <select id="detail-story" class="input" bind:value={selectedStory} onchange={loadDetail}>
         <option value="">Select story…</option>
-        {#each stories as s}
+        {#each store.stories as s}
           <option value={s.id}>{s.title}</option>
         {/each}
       </select>
