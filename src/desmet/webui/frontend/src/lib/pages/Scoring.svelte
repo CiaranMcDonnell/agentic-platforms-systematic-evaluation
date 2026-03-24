@@ -91,6 +91,41 @@
     autonomy: 'Autonomy',
     trace_quality: 'Trace Quality',
   };
+
+  const FM_KEYS = [
+    'tokens_per_stage',
+    'iteration_ratio',
+    'first_action_latency_ms',
+    'redundant_tool_call_rate',
+    'tool_failure_rate',
+    'framework_overhead_ms',
+  ] as const;
+
+  const FM_LABELS: Record<string, string> = {
+    tokens_per_stage: 'Tokens / Stage',
+    iteration_ratio: 'Iteration Ratio',
+    first_action_latency_ms: 'First-Action Latency',
+    redundant_tool_call_rate: 'Redundant Calls',
+    tool_failure_rate: 'Tool Failure Rate',
+    framework_overhead_ms: 'Framework Overhead',
+  };
+
+  function fmFormat(key: string, val: number | null | undefined): string {
+    if (val === null || val === undefined) return 'N/A';
+    if (key === 'tokens_per_stage') return val.toLocaleString();
+    if (key === 'iteration_ratio' || key === 'redundant_tool_call_rate' || key === 'tool_failure_rate') {
+      return (val * 100).toFixed(1) + '%';
+    }
+    if (key === 'first_action_latency_ms' || key === 'framework_overhead_ms') {
+      return val.toLocaleString() + ' ms';
+    }
+    return String(val);
+  }
+
+  function hasFmData(fm: Record<string, number | null> | undefined): boolean {
+    if (!fm) return false;
+    return Object.values(fm).some(v => v !== null && v !== undefined);
+  }
 </script>
 
 <div>
@@ -146,6 +181,21 @@
         </div>
       </div>
     </div>
+
+    <!-- Framework Metrics card (read-only, informational) -->
+    {#if hasFmData(scoreData.framework_metrics)}
+      <div class="card fm-card" style="margin-bottom: 28px;">
+        <h2 style="font-size: 13px; font-weight: 600; margin-bottom: 12px; color: var(--text-1);">Automated Framework Metrics</h2>
+        <div class="fm-grid">
+          {#each FM_KEYS as key}
+            <div class="fm-item">
+              <span class="fm-label">{FM_LABELS[key]}</span>
+              <span class="fm-value mono">{fmFormat(key, scoreData.framework_metrics?.[key])}</span>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
 
     <!-- Rubric form -->
     <div class="card" style="margin-bottom: 28px;">
@@ -239,6 +289,31 @@
 </div>
 
 <style>
+  .fm-card {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+  }
+  .fm-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px 16px;
+  }
+  .fm-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .fm-label {
+    font-size: 10px;
+    color: var(--text-2);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .fm-value {
+    font-size: 13px;
+    color: var(--text-1);
+  }
+
   .score-level {
     display: flex; flex-direction: column; gap: 2px;
     padding: 8px; border-radius: 4px; cursor: pointer;

@@ -120,6 +120,7 @@ export interface StoryScoreData {
   trace?: TraceData | null;
   langfuse_trace_id?: string | null;
   langsmith_run_id?: string | null;
+  framework_metrics?: Record<string, number | null>;
 }
 
 export interface TraceData {

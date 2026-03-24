@@ -848,6 +848,7 @@ async def get_story_score(platform_id: str, story_id: str):
         "trace": _sanitize_trace(trace_data) if trace_data else None,
         "langfuse_trace_id": langfuse_tid,
         "langsmith_run_id": langsmith_run_id,
+        "framework_metrics": story_metric.get("framework_metrics") or None,
     }
 
 
