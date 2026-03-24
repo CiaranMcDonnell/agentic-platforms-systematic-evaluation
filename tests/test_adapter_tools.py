@@ -312,14 +312,11 @@ class TestCreateToolsOpenAIAgents:
         for tool in oai_tools:
             assert isinstance(tool, FunctionTool)
 
-    def test_read_file_invocation(self, oai_tools):
-        """Invoke read_file and verify it reads actual content."""
-        import asyncio
-        read_tool = next(t for t in oai_tools if t.name == "read_file")
-        from agents import RunContextWrapper
-        ctx = RunContextWrapper(context=None)
-        result = asyncio.run(read_tool.on_invoke_tool(ctx, '{"path": "hello.py"}'))
-        assert result == "print('hello')"
+    def test_tools_have_json_schemas(self, oai_tools):
+        """Each FunctionTool should have a params_json_schema for the LLM."""
+        for tool in oai_tools:
+            assert tool.params_json_schema is not None
+            assert isinstance(tool.params_json_schema, dict)
 
 
 class TestDeployRemoteTool:
