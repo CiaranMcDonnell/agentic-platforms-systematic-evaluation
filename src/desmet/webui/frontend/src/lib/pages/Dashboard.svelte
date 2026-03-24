@@ -1,39 +1,31 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { fetchPlatforms, fetchConfig, fetchRuns, fetchStories, fetchDashboardStats, fetchInfrastructure, dockerUp, dockerDown } from '../api';
-  import type { Platform, AppConfig, Run, Story, DashboardStats, InfraService } from '../api';
+  import { fetchRuns, fetchDashboardStats, dockerUp, dockerDown } from '../api';
+  import type { Run, DashboardStats } from '../api';
+  import { store, refreshInfra, refreshPlatformStatuses } from '../data.svelte';
   import { currentPage, selectedRunId } from '../stores';
   import type { Page } from '../stores';
   import StatusBadge from '../components/StatusBadge.svelte';
 
-  let platforms = $state<Platform[]>([]);
-  let config = $state<AppConfig | null>(null);
   let runs = $state<Run[]>([]);
-  let stories = $state<Story[]>([]);
   let stats = $state<DashboardStats | null>(null);
-  let infraServices = $state<InfraService[]>([]);
   let infraAction = $state<Record<string, 'idle' | 'starting' | 'stopping' | 'success' | 'error'>>({});
   let infraError = $state<Record<string, string>>({});
 
-  let implemented = $derived(platforms.filter(p => p.implemented).length);
+  let implemented = $derived(store.platforms.filter(p => p.implemented).length);
   let activeRuns = $derived(runs.filter(r => r.status === 'running').length);
   let recentRuns = $derived(runs.slice(-5).reverse());
 
   let storyStats = $derived(() => {
     const byDiff: Record<string, number> = {};
-    for (const s of stories) {
+    for (const s of store.stories) {
       byDiff[s.difficulty] = (byDiff[s.difficulty] || 0) + 1;
     }
     return byDiff;
   });
 
   // Infra health: count running vs total
-  let infraUp = $derived(infraServices.filter(s => s.status === 'running').length);
-
-  async function loadInfra() {
-    const iRes = await fetchInfrastructure();
-    infraServices = iRes.services || [];
-  }
+  let infraUp = $derived(store.infraServices.filter(s => s.status === 'running').length);
 
   async function handleInfra(action: string, serviceId: string) {
     infraAction = { ...infraAction, [serviceId]: action === 'up' ? 'starting' : 'stopping' };
@@ -47,7 +39,7 @@
         infraAction = { ...infraAction, [serviceId]: 'success' };
         setTimeout(() => { infraAction = { ...infraAction, [serviceId]: 'idle' }; }, 3000);
       }
-      await loadInfra();
+      await Promise.all([refreshInfra(), refreshPlatformStatuses()]);
     } catch (err: any) {
       infraAction = { ...infraAction, [serviceId]: 'error' };
       infraError = { ...infraError, [serviceId]: err?.message || 'Unexpected error' };
@@ -55,18 +47,11 @@
   }
 
   onMount(async () => {
-    const [pRes, cfg, rRes, sRes, st] = await Promise.all([
-      fetchPlatforms(),
-      fetchConfig(),
+    const [rRes, st] = await Promise.all([
       fetchRuns(),
-      fetchStories(),
       fetchDashboardStats(),
-      loadInfra(),
     ]);
-    platforms = (pRes as any).platforms || [];
-    config = cfg;
     runs = (rRes as any).runs || [];
-    stories = (sRes as any).stories || [];
     stats = st;
   });
 
@@ -86,12 +71,12 @@
   <!-- ── Stats row ──────────────────────────────────────────── -->
   <div class="stats-row">
     <div class="stat-card">
-      <div class="stat-number">{platforms.length}</div>
+      <div class="stat-number">{store.platforms.length}</div>
       <div class="stat-label">Platforms</div>
       <div class="stat-sub">{implemented} ready · {stats?.platforms_count || 0} evaluated</div>
     </div>
     <div class="stat-card">
-      <div class="stat-number">{stories.length}</div>
+      <div class="stat-number">{store.stories.length}</div>
       <div class="stat-label">Stories</div>
       <div class="stat-sub">
         {#each Object.entries(storyStats()) as [diff, count]}
@@ -112,14 +97,14 @@
     </div>
     <div class="stat-card">
       <div class="stat-number" style="font-size: 18px; padding-top: 6px;">
-        {#if config}
-          <span class="mono">{config.model}</span>
+        {#if store.config}
+          <span class="mono">{store.config.model}</span>
         {:else}
           —
         {/if}
       </div>
       <div class="stat-label">Default Model</div>
-      <div class="stat-sub" style="text-transform: capitalize;">{config?.provider || '—'}</div>
+      <div class="stat-sub" style="text-transform: capitalize;">{store.config?.provider || '—'}</div>
     </div>
   </div>
 
@@ -143,7 +128,7 @@
             </tr>
           </thead>
           <tbody>
-            {#each platforms as p}
+            {#each store.platforms as p}
               <tr style={p.implemented ? '' : 'opacity: 0.45;'}>
                 <td style="font-weight: 500;">{p.name}</td>
                 <td style="font-size: 12px; color: var(--text-2);">{p.category}</td>
@@ -158,7 +143,7 @@
                   {/if}
                 </td>
                 <td style="text-align: right;">
-                  <StatusBadge status={p.status} />
+                  <StatusBadge status={store.platformStatuses[p.id] || p.status} />
                 </td>
               </tr>
             {/each}
@@ -179,10 +164,10 @@
         <div class="status-list">
           {#each ['openrouter', 'openai', 'anthropic', 'google'] as provider}
             <div class="status-row">
-              <span class="status-dot {config?.api_keys_set?.includes(provider) ? 'dot-on' : 'dot-off'}"></span>
+              <span class="status-dot {store.config?.api_keys_set?.includes(provider) ? 'dot-on' : 'dot-off'}"></span>
               <span class="status-name">{provider}</span>
-              <span class="status-detail {config?.api_keys_set?.includes(provider) ? 'detail-ok' : ''}">
-                {config?.api_keys_set?.includes(provider) ? 'configured' : 'missing'}
+              <span class="status-detail {store.config?.api_keys_set?.includes(provider) ? 'detail-ok' : ''}">
+                {store.config?.api_keys_set?.includes(provider) ? 'configured' : 'missing'}
               </span>
             </div>
           {/each}
@@ -194,12 +179,12 @@
         <!-- Infrastructure section -->
         <div class="section-label">
           Infrastructure
-          <span class="section-badge {infraUp === infraServices.length && infraServices.length > 0 ? 'badge-ok' : infraUp > 0 ? 'badge-partial' : 'badge-off'}">
-            {infraUp}/{infraServices.length} up
+          <span class="section-badge {infraUp === store.infraServices.length && store.infraServices.length > 0 ? 'badge-ok' : infraUp > 0 ? 'badge-partial' : 'badge-off'}">
+            {infraUp}/{store.infraServices.length} up
           </span>
         </div>
         <div class="status-list">
-          {#each infraServices as svc}
+          {#each store.infraServices as svc}
             <div class="infra-item">
               <div class="status-row">
                 <span class="status-dot {svc.status === 'running' ? 'dot-on' : 'dot-off'}"></span>
@@ -217,8 +202,8 @@
                 {/if}
               </div>
               <div class="infra-meta">
-                {svc.description}{#if svc.id === 'langfuse' && config?.langfuse_status}
-                  &nbsp;· keys {config.langfuse_status}
+                {svc.description}{#if svc.id === 'langfuse' && store.config?.langfuse_status}
+                  &nbsp;· keys {store.config.langfuse_status}
                 {/if}
               </div>
               {#if infraAction[svc.id] === 'error' && infraError[svc.id]}
