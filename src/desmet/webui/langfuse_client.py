@@ -166,7 +166,7 @@ async def fetch_trace(trace_id: str) -> dict[str, Any] | None:
         return None
 
 
-def _truncate(value: Any, max_len: int = 500) -> str | None:
+def _truncate(value: Any, max_len: int = 4000) -> str | None:
     """Truncate a value to a readable string."""
     if value is None:
         return None
