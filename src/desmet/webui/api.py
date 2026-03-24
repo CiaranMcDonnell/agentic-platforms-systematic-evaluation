@@ -778,6 +778,40 @@ async def scoring_progress():
     }
 
 
+@app.get("/api/dashboard/scoring/matrix")
+async def scoring_matrix():
+    """Platform × 6-dimension rubric average score matrix.
+
+    Returns all platforms sorted by sum of dimension averages (highest first).
+    Platforms with no scored stories have None for all dimensions.
+    """
+    data = load_results_raw()
+    pids = get_platform_ids(data)
+    if not pids:
+        return {"platforms": [], "dimensions": SCORING_DIMENSIONS}
+
+    colours = get_platform_colours(pids)
+    avgs = get_rubric_dim_averages(data)
+
+    rows = []
+    for pid in pids:
+        pdata = data["platforms"][pid]
+        scored_count = sum(
+            1 for sm in pdata.get("story_metrics", []) if is_story_scored(sm)
+        )
+        rows.append({
+            "platform_id": pid,
+            "platform_name": pdata.get("platform_name", pid),
+            "colour": colours.get(pid, "#666"),
+            "scores": avgs.get(pid, {}),
+            "scored_count": scored_count,
+        })
+
+    # Sort highest total first (None counts as 0)
+    rows.sort(key=lambda r: -sum(v or 0.0 for v in r["scores"].values()))
+    return {"platforms": rows, "dimensions": SCORING_DIMENSIONS}
+
+
 # ── Story detail endpoint ───────────────────────────────────────────────
 
 @app.get("/api/dashboard/story/{story_id}")

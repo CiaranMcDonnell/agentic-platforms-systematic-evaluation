@@ -66,3 +66,40 @@ def test_all_six_dims_present():
     for dim in SCORING_DIMENSIONS:
         assert dim in result["test"]
         assert result["test"][dim] == 2.0
+
+
+from fastapi.testclient import TestClient
+from unittest.mock import patch
+
+
+def test_scoring_matrix_endpoint_empty():
+    """Matrix endpoint returns empty list when no results exist."""
+    from desmet.webui.api import app
+    client = TestClient(app)
+    with patch("desmet.webui.api.load_results_raw", return_value={"platforms": {}}):
+        resp = client.get("/api/dashboard/scoring/matrix")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["platforms"] == []
+    assert "dimensions" in body
+
+
+def test_scoring_matrix_endpoint_with_data():
+    """Matrix endpoint returns correct structure and sorted order."""
+    from desmet.dashboard.data import SCORING_DIMENSIONS
+    from desmet.webui.api import app
+    client = TestClient(app)
+
+    fake_data = _make_data({
+        "langgraph": [{dim: 3 for dim in SCORING_DIMENSIONS}],
+        "crewai": [{dim: 1 for dim in SCORING_DIMENSIONS}],
+    })
+    with patch("desmet.webui.api.load_results_raw", return_value=fake_data):
+        resp = client.get("/api/dashboard/scoring/matrix")
+    assert resp.status_code == 200
+    body = resp.json()
+    # langgraph has higher total score, should come first
+    assert body["platforms"][0]["platform_id"] == "langgraph"
+    assert body["platforms"][0]["scores"]["pipeline_completeness"] == 3.0
+    assert body["platforms"][0]["scored_count"] == 1
+    assert body["dimensions"] == SCORING_DIMENSIONS
