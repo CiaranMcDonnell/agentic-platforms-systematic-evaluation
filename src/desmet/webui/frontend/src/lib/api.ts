@@ -35,6 +35,7 @@ export interface AppConfig {
   allow_custom_model?: boolean;
   valid_stages: string[];
   difficulty_levels: string[];
+  langsmith_available?: boolean;
 }
 
 export interface Run {
@@ -103,6 +104,7 @@ export interface StoryScoreData {
   success?: boolean;
   trace?: TraceData | null;
   langfuse_trace_id?: string | null;
+  langsmith_run_id?: string | null;
 }
 
 export interface TraceData {
@@ -163,6 +165,38 @@ export interface LangfuseTraceSummary {
   latency_ms: number;
   total_tokens: number;
   tags: string[];
+}
+
+// ── LangSmith trace types ────────────────
+
+export interface LangSmithRun {
+  id: string;
+  name: string;
+  run_type: 'llm' | 'tool' | 'chain';
+  start_time: string | null;
+  end_time: string | null;
+  latency_ms: number;
+  model: string | null;
+  tokens: { input: number; output: number; total: number };
+  error: string | null;
+  inputs: string | null;
+  outputs: string | null;
+  children: LangSmithRun[];
+}
+
+export interface LangSmithRunTree {
+  run: {
+    id: string;
+    name: string;
+    run_type: string;
+    start_time: string | null;
+    end_time: string | null;
+    latency_ms: number;
+    total_tokens: number;
+    error: string | null;
+    tags: string[];
+  };
+  children: LangSmithRun[];
 }
 
 export interface StoryPlatformRow {
@@ -268,6 +302,14 @@ export const fetchLangfuseTraces = (params?: { session_id?: string; tag?: string
 
 export const fetchLangfuseTrace = (traceId: string) =>
   request<LangfuseTraceDetail>(`/api/langfuse/traces/${traceId}`);
+
+// ── LangSmith ────────────────────────────
+
+export const fetchLangSmithStatus = () =>
+  request<{ available: boolean; project: string | null }>('/api/langsmith/status');
+
+export const fetchLangSmithRun = (runId: string) =>
+  request<LangSmithRunTree>('/api/langsmith/runs/' + runId);
 
 // ── WebSocket ───────────────────────────
 
