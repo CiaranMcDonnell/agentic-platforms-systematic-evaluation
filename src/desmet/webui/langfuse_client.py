@@ -6,6 +6,8 @@ Degrades gracefully when Langfuse is not configured or unreachable.
 
 from __future__ import annotations
 
+import ast
+import json
 import os
 from typing import Any
 
@@ -167,10 +169,25 @@ async def fetch_trace(trace_id: str) -> dict[str, Any] | None:
 
 
 def _truncate(value: Any, max_len: int = 4000) -> str | None:
-    """Truncate a value to a readable string."""
+    """Truncate a value to a readable string.
+
+    dict/list values are serialised as JSON so the browser receives valid JSON
+    rather than Python repr. String values that look like Python literals
+    (e.g. LangGraph message lists stored as str) are similarly converted.
+    """
     if value is None:
         return None
-    s = str(value)
+    if isinstance(value, (dict, list)):
+        s = json.dumps(value, ensure_ascii=False)
+    else:
+        s = str(value)
+        stripped = s.strip()
+        if stripped and stripped[0] in ("{", "["):
+            try:
+                parsed = ast.literal_eval(stripped)
+                s = json.dumps(parsed, ensure_ascii=False)
+            except (ValueError, SyntaxError):
+                pass
     if len(s) > max_len:
         return s[:max_len] + "... [truncated]"
     return s
