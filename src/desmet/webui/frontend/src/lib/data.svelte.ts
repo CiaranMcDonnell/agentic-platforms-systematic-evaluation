@@ -11,48 +11,60 @@ import {
 } from './api';
 import type { Platform, Story, AppConfig, InfraService } from './api';
 
-// ── Static stores (fetched once on app init) ──────────────
-export let platforms: Platform[] = $state([]);
-export let stories: Story[] = $state([]);
-export let config: AppConfig | null = $state(null);
+// ── Shared reactive store object ─────────────────────────
+// Svelte 5 module context: exported $state variables cannot be reassigned,
+// so all mutable state is kept in a single reactive object.
+export const store = $state({
+  // Static (fetched once on app init)
+  platforms: [] as Platform[],
+  stories: [] as Story[],
+  config: null as AppConfig | null,
 
-// ── Slow-live stores (fetched lazily, updated in background) ──
-export let platformStatuses: Record<string, string> = $state({});
-export let infraServices: InfraService[] = $state([]);
+  // Slow-live (fetched lazily, updated in background)
+  platformStatuses: {} as Record<string, string>,
+  infraServices: [] as InfraService[],
 
-// ── Loading flags ─────────────────────────────────────────
-export let initialized = $state(false);
-export let initError: string | null = $state(null);
+  // Loading flags
+  initialized: false,
+  initError: null as string | null,
+});
+
+// ── Convenience re-exports for templates ─────────────────
+export function getPlatforms(): Platform[] { return store.platforms; }
+export function getStories(): Story[] { return store.stories; }
+export function getConfig(): AppConfig | null { return store.config; }
+export function isInitialized(): boolean { return store.initialized; }
+export function getInitError(): string | null { return store.initError; }
 
 // ── Init (called once from App.svelte onMount) ───────────
 export async function initData(): Promise<void> {
-  if (initialized) return;
+  if (store.initialized) return;
   try {
     const [pRes, sRes, cfg] = await Promise.all([
       fetchPlatforms(),
       fetchStories(),
       fetchConfig(),
     ]);
-    platforms = (pRes as any).platforms || [];
-    stories = (sRes as any).stories || [];
-    config = cfg;
-    initialized = true;
+    store.platforms = (pRes as any).platforms || [];
+    store.stories = (sRes as any).stories || [];
+    store.config = cfg;
+    store.initialized = true;
 
     // Fire-and-forget: slow checks resolve in background
     refreshPlatformStatuses().catch(() => {});
     refreshInfra().catch(() => {});
   } catch (e) {
-    initError = e instanceof Error ? e.message : 'Failed to load';
+    store.initError = e instanceof Error ? e.message : 'Failed to load';
   }
 }
 
 // ── Background refreshers ─────────────────────────────────
 export async function refreshPlatformStatuses(): Promise<void> {
   const res = await fetchPlatformStatuses();
-  platformStatuses = res.statuses;
+  store.platformStatuses = res.statuses;
 }
 
 export async function refreshInfra(): Promise<void> {
   const res = await fetchInfrastructure();
-  infraServices = res.services || [];
+  store.infraServices = res.services || [];
 }
