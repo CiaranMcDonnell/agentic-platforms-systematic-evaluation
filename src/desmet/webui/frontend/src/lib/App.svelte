@@ -12,6 +12,12 @@
   import Scoring from './pages/Scoring.svelte';
   import Comparison from './pages/Comparison.svelte';
   import StoryDetail from './pages/StoryDetail.svelte';
+  import { onMount } from 'svelte';
+  import { initData, store } from './data.svelte';
+
+  onMount(() => {
+    initData();
+  });
 
   let page = $state<Page>('dashboard');
   let runId = $state<string | null>(null);
@@ -83,7 +89,14 @@
 
   <!-- Main content -->
   <main class="main-content">
-    {#if page === 'dashboard'}
+    {#if store.initError}
+      <div style="padding: 48px; text-align: center; color: var(--text-2);">
+        <p style="color: #ef4444; margin-bottom: 8px;">Failed to load</p>
+        <p style="font-size: 13px;">{store.initError}</p>
+      </div>
+    {:else if !store.initialized}
+      <div style="padding: 48px; text-align: center; color: var(--text-2);">Loading…</div>
+    {:else if page === 'dashboard'}
       <Dashboard />
     {:else if page === 'platforms'}
       <Platforms />
