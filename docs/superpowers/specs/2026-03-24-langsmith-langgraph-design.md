@@ -103,7 +103,7 @@ class AgentState(TypedDict):
 | `requirements` | File existence + content | Any `.md` or `.txt` in workspace AND file contains ≥ 3 of: `functional`, `non-functional`, `acceptance`, `constraint` (case-insensitive) |
 | `codegen` | File existence + syntax | At least one `.py` file written AND `py_compile.compile()` returns without error |
 | `testing` | Test file + test functions | At least one `test_*.py` or `*_test.py` AND file contains `def test_` |
-| `deploy` | Deployment artefact | `docker-compose.yaml` exists OR most-recent `execute_shell` result contains exit code 0 signal |
+| `deploy` | Deployment artefact | `docker-compose.yaml` exists in workspace |
 
 Validator reads the workspace path from `state["workspace"]`. All checks are pure filesystem
 operations — no LLM call, no token cost.
@@ -111,6 +111,8 @@ operations — no LLM call, no token cost.
 ### 2.5 Conditional routing
 
 ```python
+from langgraph.graph import StateGraph, END
+
 def route_after_validator(state: AgentState) -> str:
     if state["validator_passed"]:
         return END
@@ -135,16 +137,27 @@ and stores it in the stage result for webUI retrieval.
 
 ### 2.7 LangSmith run ID capture
 
-LangGraph exposes the top-level run ID through the config's `run_id` field after streaming
-completes. The adapter reads this and records it alongside the Langfuse trace ID:
+The adapter pre-generates a `run_id` UUID before graph invocation and passes it through the
+LangGraph config. Because `astream()` is called with this config, LangSmith uses it as the
+top-level run ID, making retrieval deterministic — no post-hoc inspection of run manager state.
 
 ```python
+import uuid
+
+# Before astream():
+run_id = uuid.uuid4()
+config = {"run_id": run_id, "callbacks": [...]}
+
+async for chunk in graph.astream(initial_state, config=config):
+    ...
+
 # After astream() completes:
-langsmith_run_id = config.get("run_id")  # set by LangGraph when tracing is active
+langsmith_run_id = str(run_id)  # already known — no need to read from config
 ```
 
 This ID is stored in `StageResult` (new optional field `langsmith_run_id: str | None`) and
-persisted to the stage trace JSON file.
+persisted to the stage trace JSON file. The field is set only when `LANGCHAIN_TRACING_V2=true`
+and `LANGSMITH_API_KEY` are present; otherwise it remains `None`.
 
 ---
 
@@ -188,7 +201,7 @@ async def fetch_run_tree(run_id: str) -> dict[str, Any] | None:
 
 **LangSmith API endpoints used:**
 - `GET /runs/{run_id}` — fetch single run metadata
-- `GET /runs?parent_run={run_id}&limit=100` — fetch child runs (paginated if needed)
+- `GET /runs?parent_run_id={run_id}&limit=100` — fetch child runs (paginated if needed)
 
 Tree is assembled client-side from flat child list.
 
@@ -223,6 +236,19 @@ GET /api/langsmith/runs/{run_id}
 
 Adds `langsmith_available: bool` so the frontend knows whether to show the LangSmith tab.
 
+The `AppConfig` TypeScript interface in `api.ts` gains the corresponding optional field:
+
+```typescript
+interface AppConfig {
+  // ... existing fields ...
+  langsmith_available?: boolean;
+}
+```
+
+The frontend checks `config.langsmith_available` to conditionally render the LangSmith tab.
+If the field is absent or `false`, the tab is hidden and the existing single-tab behaviour is
+preserved.
+
 ### 4.3 Updated: `GET /api/dashboard/scoring/{platform_id}/{story_id}`
 
 Adds `langsmith_run_id: str | None` to the response (read from persisted stage trace JSON).
@@ -235,7 +261,9 @@ New optional field added to `src/desmet/harness/results.py`:
 langsmith_run_id: str | None = None
 ```
 
-Persisted in stage trace JSON and in `StoryMetrics`.
+Persisted in the stage trace JSON file (`{exec_id}_stages.json`). The scoring API endpoint
+reads this value directly from that JSON file when building the `langsmith_run_id` response
+field — no separate `StoryMetrics` dataclass is involved.
 
 ---
 
@@ -262,23 +290,34 @@ existing behaviour is preserved.
 
 Fetches `GET /api/langsmith/runs/{run_id}` and renders the run tree.
 
-Reuses `SpanNode.svelte` after normalising LangSmith run types to Langfuse observation types:
+Reuses `SpanNode.svelte` by normalising each `LangSmithRun` into a `LangfuseObservation`
+before passing it to the component. The mapping is:
 
-| LangSmith `run_type` | Displayed as |
-|---|---|
-| `"llm"` | generation (✨ icon, shows model + tokens) |
-| `"tool"` | tool span (🔧 icon) |
-| `"chain"` | span (📂 icon, shows node name) |
+| LangSmith field | `LangfuseObservation` field | Notes |
+|---|---|---|
+| `run_type === "llm"` | `type: "generation"` | renders ✨ icon, model + tokens |
+| `run_type === "tool"` | `type: "span"` | renders 🔧 icon via `name` prefix |
+| `run_type === "chain"` | `type: "span"` | renders 📂 icon, shows node name |
+| `inputs` | `input` | field renamed |
+| `outputs` | `output` | field renamed |
+| `tokens` | `tokens` | identical shape |
+| `model` | `model` | identical |
+| `latency_ms` | `latency_ms` | identical |
+| `error` | `status_message` | non-null error maps to `status_message` |
+| — | `level: "DEFAULT"` | constant; `SpanNode.svelte` requires this field |
+| — | `cost: 0` | LangSmith does not expose cost; zero prevents render errors |
 
-Node names (`planner_node`, `executor_node`, `tool_node`, `validator_node`) are displayed as
-readable labels in the span tree, giving the evaluator a clear view of graph execution.
+The normalisation function is a pure TypeScript helper inside `LangSmithTraceViewer.svelte`
+and is not exported. Node names (`planner_node`, `executor_node`, `tool_node`,
+`validator_node`) are preserved in the `name` field, giving the evaluator a clear view of
+graph execution.
 
 ### 5.3 API types (`api.ts`)
 
 New types:
 
 ```typescript
-interface LangSmithRun {
+export interface LangSmithRun {
   id: string;
   name: string;
   run_type: 'llm' | 'tool' | 'chain';
@@ -293,8 +332,17 @@ interface LangSmithRun {
   children: LangSmithRun[];
 }
 
-interface LangSmithRunTree {
-  run: { id: string; name: string; run_type: string; start_time: string; total_tokens: number; error: string | null };
+export interface LangSmithRunTree {
+  run: {
+    id: string;
+    name: string;
+    run_type: string;
+    start_time: string | null;
+    end_time: string | null;
+    latency_ms: number;
+    total_tokens: number;
+    error: string | null;
+  };
   children: LangSmithRun[];
 }
 ```
@@ -323,8 +371,8 @@ LangGraph StateGraph execution (per DESMET stage)
         └─▶ messages, tool_calls, tokens, timing
 
 After streaming:
-  adapter reads langsmith_run_id from config["run_id"]
-  stores in StageResult.langsmith_run_id
+  adapter uses pre-generated run_id UUID (set before astream())
+  stores str(run_id) in StageResult.langsmith_run_id
   persisted to {results_dir}/{platform}/{story}/{exec_id}_stages.json
 
 Dashboard API:
