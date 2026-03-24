@@ -1,12 +1,14 @@
 <script lang="ts">
   import EChart from '../components/EChart.svelte';
-  import { fetchStories } from '../api';
-  import type { Story } from '../api';
+  import ScoreMatrix from '../components/ScoreMatrix.svelte';
+  import { fetchStories, fetchScoringMatrix } from '../api';
+  import type { Story, ScoringMatrixData } from '../api';
   import { onMount } from 'svelte';
 
   let stories = $state<Story[]>([]);
   let loading = $state(true);
   let selectedDimension = $state('pipeline_completeness');
+  let matrixData = $state<ScoringMatrixData | null>(null);
 
   const dimensions = [
     { id: 'pipeline_completeness', label: 'Pipeline Completeness' },
@@ -18,10 +20,20 @@
   ];
 
   onMount(async () => {
-    const res = await fetchStories();
-    stories = (res as any).stories || [];
+    const [storiesRes, matrix] = await Promise.all([
+      fetchStories(),
+      fetchScoringMatrix(),
+    ]);
+    stories = (storiesRes as any).stories || [];
+    matrixData = matrix;
     loading = false;
   });
+
+  let hasMatrixData = $derived(
+    matrixData !== null &&
+    matrixData.platforms.length > 0 &&
+    matrixData.platforms.some(p => Object.values(p.scores).some(v => v !== null))
+  );
 </script>
 
 <div>
@@ -35,6 +47,18 @@
   <div class="grid-2" style="margin-bottom: 28px;">
     <EChart endpoint="/api/dashboard/charts/radar" height={380} />
     <EChart endpoint="/api/dashboard/charts/rankings" height={380} />
+  </div>
+
+  <!-- Score matrix -->
+  <div style="margin-bottom: 28px;">
+    <h2 style="font-size: 14px; font-weight: 600; margin-bottom: 12px;">Rubric Score Matrix</h2>
+    {#if hasMatrixData && matrixData}
+      <ScoreMatrix {matrixData} />
+    {:else}
+      <div class="card" style="padding: 24px; color: var(--text-2); font-size: 13px; text-align: center;">
+        Score platforms in the Scoring tab to populate this matrix.
+      </div>
+    {/if}
   </div>
 
   <!-- Per-dimension analysis -->
