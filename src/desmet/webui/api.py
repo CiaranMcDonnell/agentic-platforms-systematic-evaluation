@@ -79,6 +79,12 @@ from desmet.webui.langfuse_client import (
 from desmet.webui.langfuse_client import (
     fetch_traces as langfuse_fetch_traces,
 )
+from desmet.webui.langsmith_client import (
+    check_status as langsmith_check_status,
+)
+from desmet.webui.langsmith_client import (
+    fetch_run_tree as langsmith_fetch_run_tree,
+)
 
 load_dotenv()
 
@@ -211,6 +217,7 @@ async def get_config():
     cfg = get_config_status()
     model = os.getenv("DESMET_MODEL") or os.getenv("DEFAULT_MODEL") or DEFAULT_MODEL
     provider = detect_provider(model)
+    langsmith = await langsmith_check_status()
 
     return {
         "model": cfg.model,
@@ -225,6 +232,7 @@ async def get_config():
         "allow_custom_model": True,
         "valid_stages": ["requirements", "codegen", "testing", "deploy", "all"],
         "difficulty_levels": ["basic", "intermediate", "advanced"],
+        "langsmith_available": langsmith["available"],
     }
 
 
@@ -701,6 +709,7 @@ async def get_story_score(platform_id: str, story_id: str):
     trace_files = list_trace_files(platform_id, story_id)
     trace_data = None
     langfuse_tid = None
+    raw_trace: dict = {}
     if trace_files:
         raw_trace = load_trace(trace_files[-1])  # most recent
         langfuse_tid = raw_trace.get("langfuse_trace_id")
@@ -717,6 +726,13 @@ async def get_story_score(platform_id: str, story_id: str):
     if not langfuse_tid:
         langfuse_tid = story_metric.get("langfuse_trace_id")
 
+    # Extract langsmith_run_id from stage data (LangGraph only)
+    langsmith_run_id = next(
+        (s.get("langsmith_run_id") for s in (raw_trace.get("stages") or {}).values()
+         if s.get("langsmith_run_id")),
+        None,
+    ) if trace_files else None
+
     return {
         "found": True,
         "scored": is_story_scored(story_metric),
@@ -728,6 +744,7 @@ async def get_story_score(platform_id: str, story_id: str):
         "success": story_metric.get("success", False),
         "trace": _sanitize_trace(trace_data) if trace_data else None,
         "langfuse_trace_id": langfuse_tid,
+        "langsmith_run_id": langsmith_run_id,
     }
 
 
@@ -888,6 +905,21 @@ def _sanitize_trace(trace: dict[str, Any]) -> dict[str, Any]:
 @app.get("/api/langfuse/status")
 async def langfuse_status():
     return await langfuse_check_status()
+
+
+@app.get("/api/langsmith/status")
+async def langsmith_status():
+    """Check LangSmith availability."""
+    return await langsmith_check_status()
+
+
+@app.get("/api/langsmith/runs/{run_id}")
+async def langsmith_run(run_id: str):
+    """Proxy a LangSmith run tree for the webUI trace viewer."""
+    result = await langsmith_fetch_run_tree(run_id)
+    if result is None:
+        return {"error": "LangSmith unavailable or run not found"}
+    return result
 
 
 @app.get("/api/langfuse/traces")
