@@ -347,6 +347,30 @@ def get_scoring_progress(
     return progress
 
 
+def get_rubric_dim_averages(
+    data: dict[str, Any],
+) -> dict[str, dict[str, float | None]]:
+    """Per-platform average of each 6-dimension rubric score across scored stories.
+
+    Only scored stories (``sm["scored"] == True``) contribute to the average.
+    Returns ``{platform_id: {dimension: avg_or_None}}``.
+    None means the platform has no scored stories for that dimension.
+    """
+    result: dict[str, dict[str, float | None]] = {}
+    for pid, pdata in data.get("platforms", {}).items():
+        scored = [sm for sm in pdata.get("story_metrics", []) if is_story_scored(sm)]
+        avgs: dict[str, float | None] = {}
+        for dim in SCORING_DIMENSIONS:
+            values = [
+                sm[f"{dim}_score"]
+                for sm in scored
+                if sm.get(f"{dim}_score") is not None
+            ]
+            avgs[dim] = round(sum(values) / len(values), 2) if values else None
+        result[pid] = avgs
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Trace loading
 # ---------------------------------------------------------------------------

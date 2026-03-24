@@ -50,6 +50,7 @@ from desmet.dashboard.data import (
     get_platform_colours,
     get_platform_ids,
     get_platform_summary_df,
+    get_rubric_dim_averages,
     get_scoring_progress,
     get_story_metrics_df,
     is_story_scored,
@@ -569,6 +570,7 @@ async def dashboard_overview():
     summary_df = get_platform_summary_df(data)
     progress = get_scoring_progress(data)
     colours = get_platform_colours(platform_ids)
+    dim_avgs = get_rubric_dim_averages(data)
 
     summary_rows = []
     for _, row in summary_df.iterrows():
@@ -585,6 +587,7 @@ async def dashboard_overview():
             "scored": scored,
             "total_to_score": total,
             "colour": colours.get(pid, "#666"),
+            "dim_scores": dim_avgs.get(pid, {}),
         })
 
     # Sort by score desc
