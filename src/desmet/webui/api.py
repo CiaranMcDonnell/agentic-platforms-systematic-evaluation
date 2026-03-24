@@ -792,13 +792,12 @@ async def scoring_matrix():
 
     colours = get_platform_colours(pids)
     avgs = get_rubric_dim_averages(data)
+    progress = get_scoring_progress(data)
 
     rows = []
     for pid in pids:
         pdata = data["platforms"][pid]
-        scored_count = sum(
-            1 for sm in pdata.get("story_metrics", []) if is_story_scored(sm)
-        )
+        scored_count, _ = progress.get(pid, (0, 0))
         rows.append({
             "platform_id": pid,
             "platform_name": pdata.get("platform_name", pid),
@@ -808,7 +807,10 @@ async def scoring_matrix():
         })
 
     # Sort highest total first (None counts as 0)
-    rows.sort(key=lambda r: -sum(v or 0.0 for v in r["scores"].values()))
+    rows.sort(
+        key=lambda r: sum(v or 0.0 for v in r["scores"].values()),
+        reverse=True,
+    )
     return {"platforms": rows, "dimensions": SCORING_DIMENSIONS}
 
 
