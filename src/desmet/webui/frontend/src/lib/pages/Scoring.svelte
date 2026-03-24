@@ -3,16 +3,15 @@
   import { get } from 'svelte/store';
   import { scoringTarget } from '../stores';
   import {
-    fetchPlatforms, fetchStories, fetchRubric, fetchStoryScore, submitScore, fetchConfig,
+    fetchRubric, fetchStoryScore, submitScore,
+    fetchLangSmithStatus,
   } from '../api';
-  import type { Platform, Story, ScoringRubric, StoryScoreData, AppConfig } from '../api';
+  import type { ScoringRubric, StoryScoreData } from '../api';
+  import { store } from '../data.svelte';
   import TraceViewer from '../components/TraceViewer.svelte';
   import LangSmithTraceViewer from '../components/LangSmithTraceViewer.svelte';
 
-  let platforms = $state<Platform[]>([]);
-  let stories = $state<Story[]>([]);
   let rubric = $state<ScoringRubric | null>(null);
-  let appConfig = $state<AppConfig | null>(null);
 
   let selectedPlatform = $state('');
   let selectedStory = $state('');
@@ -23,18 +22,11 @@
   let saveMsg = $state('');
   let loadingScore = $state(false);
   let activeTab = $state<'langfuse' | 'langsmith'>('langfuse');
+  let langsmithAvailable = $state<boolean | null>(null);
 
   onMount(async () => {
-    const [pRes, sRes, rub, cfg] = await Promise.all([
-      fetchPlatforms(),
-      fetchStories(),
-      fetchRubric(),
-      fetchConfig(),
-    ]);
-    platforms = (pRes as any).platforms || [];
-    stories = (sRes as any).stories || [];
+    const rub = await fetchRubric();
     rubric = rub;
-    appConfig = cfg;
     // init scores
     if (rubric) {
       for (const dim of rubric.dimensions) {
@@ -59,6 +51,10 @@
     scoreData = null;
     scoreData = await fetchStoryScore(selectedPlatform, selectedStory);
     loadingScore = false;
+    // Lazy-check LangSmith only when relevant (langgraph + has run ID)
+    if (selectedPlatform === 'langgraph' && scoreData?.langsmith_run_id && langsmithAvailable === null) {
+      fetchLangSmithStatus().then(s => langsmithAvailable = s.available).catch(() => langsmithAvailable = false);
+    }
     if (scoreData?.scored && scoreData.scores) {
       scores = { ...scoreData.scores };
       notes = { ...(scoreData.notes || {}) };
@@ -106,7 +102,7 @@
       <label class="label" for="score-platform">Platform</label>
       <select id="score-platform" class="input" bind:value={selectedPlatform} onchange={loadScore}>
         <option value="">Select platform…</option>
-        {#each platforms as p}
+        {#each store.platforms as p}
           <option value={p.id}>{p.name}</option>
         {/each}
       </select>
@@ -115,7 +111,7 @@
       <label class="label" for="score-story">Story</label>
       <select id="score-story" class="input" bind:value={selectedStory} onchange={loadScore}>
         <option value="">Select story…</option>
-        {#each stories as s}
+        {#each store.stories as s}
           <option value={s.id}>{s.title}</option>
         {/each}
       </select>
@@ -200,7 +196,7 @@
       {@const showLangSmithTab =
         selectedPlatform === 'langgraph' &&
         !!scoreData.langsmith_run_id &&
-        appConfig?.langsmith_available === true}
+        langsmithAvailable === true}
       <div>
         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
           <h2 style="font-size: 14px; font-weight: 600;">Execution Trace</h2>
