@@ -129,7 +129,7 @@ export interface StoryDetailData {
 export interface LangfuseObservation {
   id: string;
   name: string;
-  type: 'span' | 'generation';
+  type: 'span' | 'generation' | 'tool';
   start_time: string | null;
   end_time: string | null;
   latency_ms: number;
