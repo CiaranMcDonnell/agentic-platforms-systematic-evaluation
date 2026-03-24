@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -120,7 +121,7 @@ async def fetch_trace(trace_id: str) -> dict[str, Any] | None:
                 "type": o.get("type", "span").lower(),
                 "start_time": o.get("startTime"),
                 "end_time": o.get("endTime"),
-                "latency_ms": o.get("latency", 0),
+                "latency_ms": _latency_ms(o),
                 "model": o.get("model"),
                 "tokens": {
                     "input": usage.get("promptTokens") or usage.get("input", 0),
@@ -166,6 +167,28 @@ async def fetch_trace(trace_id: str) -> dict[str, Any] | None:
         }
     except Exception:
         return None
+
+
+def _latency_ms(obs: dict[str, Any]) -> float:
+    """Return latency in milliseconds for an observation.
+
+    Langfuse's `latency` field is populated for SDK spans but is often None
+    for OTEL-instrumented spans (e.g. LangGraph). Fall back to computing from
+    startTime / endTime in that case.
+    """
+    raw = obs.get("latency")
+    if raw is not None and raw > 0:
+        return float(raw)
+    start = obs.get("startTime")
+    end = obs.get("endTime")
+    if start and end:
+        try:
+            s = datetime.fromisoformat(start.replace("Z", "+00:00"))
+            e = datetime.fromisoformat(end.replace("Z", "+00:00"))
+            return max(0.0, (e - s).total_seconds() * 1000)
+        except (ValueError, TypeError):
+            pass
+    return 0.0
 
 
 def _truncate(value: Any, max_len: int = 4000) -> str | None:
