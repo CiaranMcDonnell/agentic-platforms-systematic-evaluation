@@ -1,14 +1,16 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import {
-    fetchPlatforms, fetchStories, fetchRubric, fetchStoryScore, submitScore,
+    fetchPlatforms, fetchStories, fetchRubric, fetchStoryScore, submitScore, fetchConfig,
   } from '../api';
-  import type { Platform, Story, ScoringRubric, StoryScoreData } from '../api';
+  import type { Platform, Story, ScoringRubric, StoryScoreData, AppConfig } from '../api';
   import TraceViewer from '../components/TraceViewer.svelte';
+  import LangSmithTraceViewer from '../components/LangSmithTraceViewer.svelte';
 
   let platforms = $state<Platform[]>([]);
   let stories = $state<Story[]>([]);
   let rubric = $state<ScoringRubric | null>(null);
+  let appConfig = $state<AppConfig | null>(null);
 
   let selectedPlatform = $state('');
   let selectedStory = $state('');
@@ -18,16 +20,19 @@
   let saving = $state(false);
   let saveMsg = $state('');
   let loadingScore = $state(false);
+  let activeTab = $state<'langfuse' | 'langsmith'>('langfuse');
 
   onMount(async () => {
-    const [pRes, sRes, rub] = await Promise.all([
+    const [pRes, sRes, rub, cfg] = await Promise.all([
       fetchPlatforms(),
       fetchStories(),
       fetchRubric(),
+      fetchConfig(),
     ]);
     platforms = (pRes as any).platforms || [];
     stories = (sRes as any).stories || [];
     rubric = rub;
+    appConfig = cfg;
     // init scores
     if (rubric) {
       for (const dim of rubric.dimensions) {
@@ -181,15 +186,37 @@
     </div>
 
     <!-- Trace -->
-    {#if scoreData.langfuse_trace_id}
+    {#if scoreData.langfuse_trace_id || scoreData.trace?.messages?.length}
+      {@const showLangSmithTab =
+        selectedPlatform === 'langgraph' &&
+        !!scoreData.langsmith_run_id &&
+        appConfig?.langsmith_available === true}
       <div>
-        <h2 style="font-size: 14px; font-weight: 600; margin-bottom: 12px;">Execution Trace (Langfuse)</h2>
-        <TraceViewer langfuseTraceId={scoreData.langfuse_trace_id} />
-      </div>
-    {:else if scoreData.trace?.messages?.length}
-      <div>
-        <h2 style="font-size: 14px; font-weight: 600; margin-bottom: 12px;">Execution Trace</h2>
-        <TraceViewer messages={scoreData.trace.messages} />
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+          <h2 style="font-size: 14px; font-weight: 600;">Execution Trace</h2>
+          {#if showLangSmithTab}
+            <div class="trace-tabs">
+              <button
+                class="trace-tab"
+                class:active={activeTab === 'langfuse'}
+                onclick={() => activeTab = 'langfuse'}
+              >Langfuse Trace</button>
+              <button
+                class="trace-tab"
+                class:active={activeTab === 'langsmith'}
+                onclick={() => activeTab = 'langsmith'}
+              >LangSmith Graph</button>
+            </div>
+          {/if}
+        </div>
+
+        {#if showLangSmithTab && activeTab === 'langsmith'}
+          <LangSmithTraceViewer runId={scoreData.langsmith_run_id!} />
+        {:else if scoreData.langfuse_trace_id}
+          <TraceViewer langfuseTraceId={scoreData.langfuse_trace_id} />
+        {:else if scoreData.trace?.messages?.length}
+          <TraceViewer messages={scoreData.trace.messages} />
+        {/if}
       </div>
     {/if}
   {:else if loadingScore}
@@ -216,4 +243,28 @@
   .score-level.active { border-color: var(--text-0); background: var(--bg-2); }
   .score-level-num { font-family: var(--mono); font-size: 12px; font-weight: 700; color: var(--text-0); }
   .score-level-desc { font-size: 10px; color: var(--text-2); line-height: 1.3; }
+  .trace-tabs {
+    display: flex;
+    gap: 4px;
+    background: var(--bg-2);
+    border-radius: 6px;
+    padding: 3px;
+  }
+  .trace-tab {
+    padding: 5px 14px;
+    font-size: 12px;
+    font-family: var(--sans);
+    font-weight: 500;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-2);
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s;
+  }
+  .trace-tab.active {
+    background: var(--bg-0, #fff);
+    color: var(--text-0);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  }
 </style>
