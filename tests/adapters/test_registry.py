@@ -76,10 +76,11 @@ class TestListPlatforms:
         all_set = set(list_all_platforms())
         assert available <= all_set
 
-    def test_langgraph_and_crewai_available(self):
+    def test_implemented_platforms_available(self):
         available = list_available_platforms()
         assert "langgraph" in available
         assert "crewai" in available
+        assert "openai_agents_sdk" in available
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +98,7 @@ class TestGetAdapter:
             get_adapter("nonexistent_platform")
 
     def test_stub_adapters_are_base_platform_adapter(self):
-        stub_ids = ["microsoft_agent_framework", "openai_agents_sdk", "google_adk"]
+        stub_ids = ["microsoft_agent_framework", "google_adk"]
         for pid in stub_ids:
             adapter = get_adapter(pid)
             assert isinstance(adapter, BasePlatformAdapter)
