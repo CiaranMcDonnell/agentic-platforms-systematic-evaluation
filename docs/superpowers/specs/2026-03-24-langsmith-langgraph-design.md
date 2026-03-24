@@ -119,6 +119,18 @@ def route_after_validator(state: AgentState) -> str:
     if state["retry_count"] >= MAX_RETRIES:
         return END   # give up gracefully, stage marked hit_limit=True
     return "executor_node"
+
+# Graph construction (required before calling astream):
+builder = StateGraph(AgentState)
+builder.add_node("planner_node", planner_node)
+builder.add_node("executor_node", executor_node)
+builder.add_node("tool_node", ToolNode(tools))
+builder.add_node("validator_node", validator_node)
+builder.set_entry_point("planner_node")
+builder.add_edge("planner_node", "executor_node")
+# executor_node → tool_node routing is handled automatically by ToolNode
+builder.add_conditional_edges("validator_node", route_after_validator)
+graph = builder.compile()  # compile() returns a CompiledStateGraph (a LangChain Runnable)
 ```
 
 ### 2.6 LangSmith tracing (automatic)
@@ -137,27 +149,37 @@ and stores it in the stage result for webUI retrieval.
 
 ### 2.7 LangSmith run ID capture
 
-The adapter pre-generates a `run_id` UUID before graph invocation and passes it through the
-LangGraph config. Because `astream()` is called with this config, LangSmith uses it as the
-top-level run ID, making retrieval deterministic — no post-hoc inspection of run manager state.
+The adapter pre-generates a `run_id` UUID before each stage's graph invocation and passes it
+through the LangGraph `RunnableConfig`. `RunnableConfig` has an explicit `run_id` field
+(`Optional[uuid.UUID]`); when `LANGCHAIN_TRACING_V2=true`, LangSmith reads this field and
+uses it as the top-level trace run ID, making retrieval deterministic.
 
 ```python
 import uuid
+from langchain_core.runnables import RunnableConfig
 
-# Before astream():
+# Per stage — call once per stage invocation:
 run_id = uuid.uuid4()
-config = {"run_id": run_id, "callbacks": [...]}
+config: RunnableConfig = {
+    "run_id": run_id,
+    "callbacks": [langfuse_callback],      # existing Langfuse callback unchanged
+    "run_name": f"desmet-langgraph-{stage_name}",
+}
 
 async for chunk in graph.astream(initial_state, config=config):
     ...
 
-# After astream() completes:
-langsmith_run_id = str(run_id)  # already known — no need to read from config
+# After astream() completes — run_id is already known, no inspection needed:
+langsmith_run_id = str(run_id) if langsmith_tracing_enabled else None
+stage_result.langsmith_run_id = langsmith_run_id
 ```
 
-This ID is stored in `StageResult` (new optional field `langsmith_run_id: str | None`) and
-persisted to the stage trace JSON file. The field is set only when `LANGCHAIN_TRACING_V2=true`
-and `LANGSMITH_API_KEY` are present; otherwise it remains `None`.
+`langsmith_tracing_enabled` is `True` when both `LANGCHAIN_TRACING_V2=true` and
+`LANGSMITH_API_KEY` are present in the environment. If either is absent, `langsmith_run_id`
+stays `None` and no LangSmith features are activated.
+
+This field is stored in `StageResult` (new optional field `langsmith_run_id: str | None = None`).
+The runner persistence layer serialises it per-stage (see §4.4 for details).
 
 ---
 
@@ -201,7 +223,13 @@ async def fetch_run_tree(run_id: str) -> dict[str, Any] | None:
 
 **LangSmith API endpoints used:**
 - `GET /runs/{run_id}` — fetch single run metadata
-- `GET /runs?parent_run_id={run_id}&limit=100` — fetch child runs (paginated if needed)
+- `GET /runs?parent_run_id={run_id}&limit=100` — fetch child runs
+
+The query parameter name for child-run filtering is `parent_run_id` (consistent with the
+LangSmith Python SDK's `Client.list_runs(parent_run_id=...)` method). Implementers should
+verify against the live API reference at `https://api.smith.langchain.com/docs` if the SDK
+version changes. If raw HTTP calls return empty children, switch to the `langsmith` Python SDK's
+`Client.list_runs()` instead of direct HTTP.
 
 Tree is assembled client-side from flat child list.
 
@@ -236,7 +264,21 @@ GET /api/langsmith/runs/{run_id}
 
 Adds `langsmith_available: bool` so the frontend knows whether to show the LangSmith tab.
 
-The `AppConfig` TypeScript interface in `api.ts` gains the corresponding optional field:
+**Python backend** (`api.py`, `get_config()`):
+
+```python
+from desmet.webui.langsmith_client import check_status as langsmith_check_status
+
+@router.get("/api/config")
+async def get_config():
+    langsmith_status = await langsmith_check_status()
+    return {
+        # ... existing fields ...
+        "langsmith_available": langsmith_status["available"],
+    }
+```
+
+**TypeScript frontend** (`api.ts`, `AppConfig` interface):
 
 ```typescript
 interface AppConfig {
@@ -253,17 +295,54 @@ preserved.
 
 Adds `langsmith_run_id: str | None` to the response (read from persisted stage trace JSON).
 
-### 4.4 `StageResult` model update
+### 4.4 `StageResult` model update and persistence
 
-New optional field added to `src/desmet/harness/results.py`:
+New optional field appended to `StageResult` in `src/desmet/harness/results.py` (after
+`raw_output`):
 
 ```python
 langsmith_run_id: str | None = None
 ```
 
-Persisted in the stage trace JSON file (`{exec_id}_stages.json`). The scoring API endpoint
-reads this value directly from that JSON file when building the `langsmith_run_id` response
-field — no separate `StoryMetrics` dataclass is involved.
+**Runner serialisation** (`src/desmet/harness/runner.py`, `_save_stage_trace`):
+
+The existing `stage_entry` dict built per-stage must include this field:
+
+```python
+stage_entry: dict[str, Any] = {
+    # ... existing fields ...
+    "langsmith_run_id": sr.langsmith_run_id,   # add this line
+}
+```
+
+This writes `langsmith_run_id` into `stages_data[stage_key]` alongside the other per-stage
+fields, producing JSON of the form:
+
+```json
+{
+  "execution_id": "...",
+  "langfuse_trace_id": "...",
+  "stages": {
+    "requirements": { "langsmith_run_id": "uuid-str-or-null", ... },
+    "codegen": { "langsmith_run_id": "uuid-str-or-null", ... }
+  }
+}
+```
+
+**Scoring endpoint** (`GET /api/dashboard/scoring/{platform_id}/{story_id}`):
+
+Reads the first non-`None` `langsmith_run_id` across stages (requirements → codegen → testing →
+deploy):
+
+```python
+stages = raw_trace.get("stages", {})
+langsmith_run_id = next(
+    (s.get("langsmith_run_id") for s in stages.values() if s.get("langsmith_run_id")),
+    None,
+)
+```
+
+No separate `StoryMetrics` dataclass is involved.
 
 ---
 
@@ -286,6 +365,11 @@ two tabs:
 If `langsmith_run_id` is absent (LangSmith not configured or old run), no tabs are shown —
 existing behaviour is preserved.
 
+`platform_id` and `story_id` are already available in `Scoring.svelte` as props passed from
+the parent routing component (line 63–64 of `NewRun.svelte` confirms they are passed as
+`platform_id: selectedPlatform, story_id: selectedStory`). No additional prop threading is
+required.
+
 ### 5.2 New component: `LangSmithTraceViewer.svelte`
 
 Fetches `GET /api/langsmith/runs/{run_id}` and renders the run tree.
@@ -295,17 +379,23 @@ before passing it to the component. The mapping is:
 
 | LangSmith field | `LangfuseObservation` field | Notes |
 |---|---|---|
-| `run_type === "llm"` | `type: "generation"` | renders ✨ icon, model + tokens |
-| `run_type === "tool"` | `type: "span"` | renders 🔧 icon via `name` prefix |
+| `run_type === "llm"` | `type: "generation"` | renders ✨ icon (SpanNode checks `type === 'generation'`) |
+| `run_type === "tool"` | `type: "span"` | renders 📂 icon (SpanNode has no separate tool icon) |
 | `run_type === "chain"` | `type: "span"` | renders 📂 icon, shows node name |
 | `inputs` | `input` | field renamed |
 | `outputs` | `output` | field renamed |
 | `tokens` | `tokens` | identical shape |
 | `model` | `model` | identical |
 | `latency_ms` | `latency_ms` | identical |
-| `error` | `status_message` | non-null error maps to `status_message` |
-| — | `level: "DEFAULT"` | constant; `SpanNode.svelte` requires this field |
+| `error` | `status_message` | non-null error maps to `status_message`; `level` → `"ERROR"` |
+| — (no error) | `level: "DEFAULT"` | constant; `SpanNode.svelte` reads `level` for error styling |
 | — | `cost: 0` | LangSmith does not expose cost; zero prevents render errors |
+| — | `children` | mapped recursively |
+
+**`rootLatency` prop:** `SpanNode.svelte` requires `rootLatency: number` (no default).
+`LangSmithTraceViewer.svelte` must pass the top-level run's `latency_ms` (from
+`LangSmithRunTree.run.latency_ms`) as `rootLatency` when rendering each root-level child,
+and propagate it unchanged through recursive `<svelte:self>` calls.
 
 The normalisation function is a pure TypeScript helper inside `LangSmithTraceViewer.svelte`
 and is not exported. Node names (`planner_node`, `executor_node`, `tool_node`,
@@ -342,8 +432,18 @@ export interface LangSmithRunTree {
     latency_ms: number;
     total_tokens: number;
     error: string | null;
+    tags: string[];
   };
   children: LangSmithRun[];
+}
+```
+
+The existing `StoryScoreData` interface gains `langsmith_run_id`:
+
+```typescript
+export interface StoryScoreData {
+  // ... existing fields ...
+  langsmith_run_id?: string | null;
 }
 ```
 
@@ -393,9 +493,10 @@ Frontend:
 |---|---|
 | `src/desmet/adapters/langgraph.py` | Full rewrite — StateGraph, planner/executor/validator nodes |
 | `src/desmet/harness/results.py` | Add `langsmith_run_id: str | None = None` to `StageResult` |
+| `src/desmet/harness/runner.py` | Add `langsmith_run_id` to `stage_entry` dict in `_save_stage_trace` |
 | `src/desmet/webui/langsmith_client.py` | New — LangSmith REST API client |
 | `src/desmet/webui/api.py` | Add `/api/langsmith/status`, `/api/langsmith/runs/{id}`, update `/api/config` and scoring endpoint |
-| `src/desmet/webui/frontend/src/lib/api.ts` | Add `LangSmithRun`, `LangSmithRunTree` types, `fetchLangSmithRun` |
+| `src/desmet/webui/frontend/src/lib/api.ts` | Add `LangSmithRun`, `LangSmithRunTree` types; update `StoryScoreData` and `AppConfig`; add `fetchLangSmithRun` |
 | `src/desmet/webui/frontend/src/lib/components/LangSmithTraceViewer.svelte` | New component |
 | `src/desmet/webui/frontend/src/lib/pages/Scoring.svelte` | Add two-tab trace section for LangGraph |
 | `.env.example` | Add `LANGSMITH_API_KEY`, `LANGCHAIN_TRACING_V2`, `LANGCHAIN_PROJECT` |
