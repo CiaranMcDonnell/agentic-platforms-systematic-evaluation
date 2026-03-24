@@ -12,6 +12,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from desmet.harness.story import StoryResult, StoryStatus
+
 
 class EvaluationDimension(Enum):
     """DESMET Layer 3 cross-cutting evaluation dimensions.
@@ -95,48 +97,129 @@ class StageMetrics:
 
 @dataclass
 class StoryMetrics:
-    """Metrics from a single story execution."""
-    story_id: str
-    platform_id: str
-    execution_id: str
+    """Facade over StoryResult that adds metrics-only fields.
 
-    # Outcome
-    success: bool = False
-    completed: bool = False
+    Delegates all StoryResult fields as properties to avoid duplication.
+    Use ``StoryMetrics.from_story_result`` to construct an instance.
+    """
 
-    # Timing
-    wall_clock_seconds: float = 0.0
+    _result: StoryResult
+
+    # Metrics-only fields (not present on StoryResult)
     time_budget_seconds: float = 0.0
 
-    # Efficiency
-    iterations: int = 0
-    tool_calls: int = 0
-    tokens_input: int = 0
-    tokens_output: int = 0
-    api_cost_usd: float = 0.0
-
-    # Autonomy
-    human_interventions: int = 0
-    clarifying_questions: int = 0
-    self_corrections: int = 0
-
-    # Framework-centric scores (0-3)
+    # Framework-centric rubric scores (0-3); extracted from result.scores
     pipeline_completeness_score: float = 0.0
     tool_integration_score: float = 0.0
     error_recovery_score: float = 0.0
     trace_quality_score: float = 0.0
+    time_efficiency_score: float = 0.0
+    autonomy_score: float = 0.0
 
-    # Test metrics
-    tests_run: int = 0
-    tests_passed: int = 0
-    coverage_delta: float = 0.0
+    # Automated framework metrics (from StoryResult.framework_metrics)
+    framework_metrics: dict[str, float | None] = field(default_factory=dict)
 
-    # Acceptance criteria
-    criteria_total: int = 0
-    criteria_passed: int = 0
+    @classmethod
+    def from_story_result(
+        cls,
+        result: StoryResult,
+        time_budget_seconds: float = 0.0,
+    ) -> "StoryMetrics":
+        """Create a StoryMetrics facade from a StoryResult."""
+        instance = cls(
+            _result=result,
+            time_budget_seconds=time_budget_seconds,
+        )
+        # Extract rubric scores from result.scores by dimension name
+        score_map = {s.dimension: s.score for s in result.scores}
+        for attr, dimension in (
+            ("pipeline_completeness_score", "pipeline_completeness"),
+            ("tool_integration_score", "tool_integration"),
+            ("error_recovery_score", "error_recovery"),
+            ("trace_quality_score", "trace_quality"),
+            ("time_efficiency_score", "time_efficiency"),
+            ("autonomy_score", "autonomy"),
+        ):
+            if dimension in score_map:
+                setattr(instance, attr, score_map[dimension])
+        instance.framework_metrics = getattr(result, "framework_metrics", {}) or {}
+        return instance
 
-    # Langfuse trace linkage
-    langfuse_trace_id: str | None = None
+    # ------------------------------------------------------------------
+    # Delegating properties — read directly from the wrapped StoryResult
+    # ------------------------------------------------------------------
+
+    @property
+    def story_id(self) -> str:
+        return self._result.story_id
+
+    @property
+    def platform_id(self) -> str:
+        return self._result.platform_id
+
+    @property
+    def execution_id(self) -> str:
+        return self._result.execution_id
+
+    @property
+    def success(self) -> bool:
+        return self._result.success
+
+    @property
+    def completed(self) -> bool:
+        return self._result.status == StoryStatus.COMPLETED
+
+    @property
+    def wall_clock_seconds(self) -> float:
+        return self._result.wall_clock_seconds
+
+    @property
+    def iterations(self) -> int:
+        return self._result.iterations
+
+    @property
+    def tool_calls(self) -> int:
+        return self._result.tool_calls
+
+    @property
+    def tokens_input(self) -> int:
+        return self._result.tokens_input
+
+    @property
+    def tokens_output(self) -> int:
+        return self._result.tokens_output
+
+    @property
+    def api_cost_usd(self) -> float:
+        return self._result.api_cost_usd
+
+    @property
+    def human_interventions(self) -> int:
+        return self._result.human_interventions
+
+    @property
+    def tests_run(self) -> int:
+        return self._result.tests_run
+
+    @property
+    def tests_passed(self) -> int:
+        return self._result.tests_passed
+
+    @property
+    def coverage_delta(self) -> float:
+        return self._result.coverage_delta
+
+    @property
+    def criteria_total(self) -> int:
+        return len(self._result.criteria_results)
+
+    @property
+    def criteria_passed(self) -> int:
+        return sum(1 for v in self._result.criteria_results.values() if v)
+
+    @property
+    def langfuse_trace_id(self) -> str | None:
+        return self._result.langfuse_trace_id
 
 
 @dataclass
@@ -227,13 +310,15 @@ class EvaluationMetrics:
 
         # ------------------------------------------------------------------
         # Efficiency
-        # Measures: framework orchestration overhead (time + tokens).
-        #   time_component = max(1, 5 - (avg_time_ratio - 1) * 2)
+        # Measures: framework orchestration overhead (time + tokens + cost).
+        #   time_component  = max(1, 5 - (avg_time_ratio - 1) * 2)
         #   token_component = max(1, 5 - (avg_tokens / token_budget - 1) * 2)
-        #   efficiency_score = (time_component + token_component) / 2
-        # token_budget: 100,000 tokens per story (adjust as evaluation matures).
+        #   cost_component  = max(1, 5 - (avg_cost / cost_budget - 1) * 2)
+        # When cost data is unavailable (all zeros), cost_component is omitted
+        # and efficiency is the average of time + token components only.
         # ------------------------------------------------------------------
         token_budget = 100_000
+        cost_budget = 0.50  # USD per story
 
         timed_metrics = [m for m in self.story_metrics if m.time_budget_seconds > 0]
         if timed_metrics:
@@ -247,11 +332,22 @@ class EvaluationMetrics:
             m.tokens_input + m.tokens_output for m in self.story_metrics
         ) / n
 
+        total_cost = sum(m.api_cost_usd for m in self.story_metrics)
+        avg_cost_per_story = total_cost / n if total_cost > 0 else 0.0
+
         time_component = max(1.0, 5.0 - (avg_time_ratio - 1.0) * 2.0)
         token_component = max(
             1.0, 5.0 - (avg_tokens_per_story / token_budget - 1.0) * 2.0
         )
-        efficiency_score = (time_component + token_component) / 2.0
+
+        if avg_cost_per_story > 0:
+            cost_component = max(
+                1.0, 5.0 - (avg_cost_per_story / cost_budget - 1.0) * 2.0
+            )
+            efficiency_score = (time_component + token_component + cost_component) / 3.0
+        else:
+            cost_component = None
+            efficiency_score = (time_component + token_component) / 2.0
 
         self.dimension_scores.append(DimensionScore(
             dimension=EvaluationDimension.EFFICIENCY,
@@ -260,8 +356,11 @@ class EvaluationMetrics:
                 "avg_time_ratio": avg_time_ratio,
                 "avg_tokens_per_story": avg_tokens_per_story,
                 "token_budget": token_budget,
+                "avg_cost_per_story": avg_cost_per_story,
+                "cost_budget": cost_budget,
                 "time_component": time_component,
                 "token_component": token_component,
+                "cost_component": cost_component,
             }
         ))
 
@@ -362,10 +461,16 @@ class EvaluationMetrics:
                     "wall_clock_seconds": m.wall_clock_seconds,
                     "iterations": m.iterations,
                     "tool_calls": m.tool_calls,
+                    "tokens_input": m.tokens_input,
+                    "tokens_output": m.tokens_output,
+                    "api_cost_usd": m.api_cost_usd,
                     "pipeline_completeness_score": m.pipeline_completeness_score,
                     "tool_integration_score": m.tool_integration_score,
                     "error_recovery_score": m.error_recovery_score,
                     "trace_quality_score": m.trace_quality_score,
+                    "time_efficiency_score": m.time_efficiency_score,
+                    "autonomy_score": m.autonomy_score,
+                    "framework_metrics": m.framework_metrics,
                 }
                 for m in self.story_metrics
             ],
