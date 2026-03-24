@@ -1,13 +1,68 @@
-"""Tests for OpenAI Agents SDK adapter."""
+"""Tests for the OpenAI Agents SDK idiomatic adapter (handoff chain)."""
+from __future__ import annotations
 import inspect
 
 import pytest
 
-from desmet.adapters.openai_agents import OpenAIAgentsAdapter
 
+class TestImplementationPlan:
+    def test_creates_valid_plan(self):
+        from desmet.adapters.openai_agents import ImplementationPlan
+        plan = ImplementationPlan(
+            steps=["Create models", "Create views"],
+            files_to_create=["models.py", "views.py"],
+            files_to_modify=[],
+        )
+        assert len(plan.steps) == 2
+        assert plan.files_to_create == ["models.py", "views.py"]
+
+    def test_plan_requires_steps(self):
+        from desmet.adapters.openai_agents import ImplementationPlan
+        with pytest.raises(Exception):
+            ImplementationPlan(files_to_create=[], files_to_modify=[])
+
+
+class TestOpenAIRunContext:
+    def test_creates_with_none_plan(self):
+        from desmet.adapters.openai_agents import OpenAIRunContext
+        ctx = OpenAIRunContext(stage_context=None, plan=None)
+        assert ctx.plan is None
+
+    def test_plan_can_be_set(self):
+        from desmet.adapters.openai_agents import OpenAIRunContext, ImplementationPlan
+        ctx = OpenAIRunContext(stage_context=None, plan=None)
+        ctx.plan = ImplementationPlan(
+            steps=["step 1"], files_to_create=[], files_to_modify=[]
+        )
+        assert ctx.plan is not None
+        assert len(ctx.plan.steps) == 1
+
+
+class TestOpenAIAdapterStructure:
+    def test_imports(self):
+        from desmet.adapters.openai_agents import OpenAIAgentsAdapter
+        adapter = OpenAIAgentsAdapter()
+        assert adapter.TOOL_FORMAT is not None
+
+    def test_observability_mentions_handoff(self):
+        from desmet.adapters.openai_agents import OpenAIAgentsAdapter
+        adapter = OpenAIAgentsAdapter()
+        info = adapter.get_observability_info()
+        assert "handoff" in info.get("notes", "").lower()
+
+    def test_failure_handling_mentions_guardrail(self):
+        from desmet.adapters.openai_agents import OpenAIAgentsAdapter
+        adapter = OpenAIAgentsAdapter()
+        info = adapter.get_failure_handling_info()
+        assert "guardrail" in info.get("notes", "").lower()
+        assert info["has_auto_recovery"] is True
+
+
+# ── Existing interface tests (kept) ──────────────────────────────────────────
 
 @pytest.fixture
 def adapter():
+    from desmet.adapters.openai_agents import OpenAIAgentsAdapter
     return OpenAIAgentsAdapter(config={"model": "gpt-4o"})
 
 
