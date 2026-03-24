@@ -17,16 +17,16 @@ import os
 import shutil
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from desmet.adapters.registry import (
     AdapterNotImplementedError,
@@ -64,26 +64,25 @@ from desmet.harness.loader import StoryLoadError, load_all_stories, resolve_base
 from desmet.harness.runner import EvaluationRunner, RunnerConfig
 from desmet.harness.story import DifficultyLevel
 from desmet.infra import (
+    PLATFORM_CONTAINERS,
+    PLATFORM_NAMES,
+    PLATFORM_PACKAGES,
     compose_down,
     compose_up,
     get_config_status,
+    get_docker_platform_statuses,
     get_infra_statuses,
     get_platform_statuses,
+    is_package_importable,
 )
 from desmet.llm_config import DEFAULT_MODEL, detect_provider
 from desmet.webui.langfuse_client import (
     check_status as langfuse_check_status,
-)
-from desmet.webui.langfuse_client import (
     fetch_trace as langfuse_fetch_trace,
-)
-from desmet.webui.langfuse_client import (
     fetch_traces as langfuse_fetch_traces,
 )
 from desmet.webui.langsmith_client import (
     check_status as langsmith_check_status,
-)
-from desmet.webui.langsmith_client import (
     fetch_run_tree as langsmith_fetch_run_tree,
 )
 
@@ -189,27 +188,50 @@ class ScoreSubmission(BaseModel):
     scores: dict[str, float]
     notes: dict[str, str]
 
+    @field_validator("scores")
+    @classmethod
+    def scores_in_range(cls, v: dict[str, float]) -> dict[str, float]:
+        for dim, score in v.items():
+            if not (0 <= score <= 3):
+                raise ValueError(f"Score for '{dim}' must be between 0 and 3, got {score}")
+        return v
+
 
 # ── Platform endpoints ──────────────────────────────────────────────────
 
 @app.get("/api/platforms")
 async def get_platforms():
-    """Return all platforms with their status, category, and implementation state."""
-    statuses = get_platform_statuses()
+    """Return all platforms with registry data (no docker calls)."""
     implemented = set(list_available_platforms())
 
     platforms = []
-    for ps in statuses:
+    for pid in PLATFORM_PACKAGES:
+        name = PLATFORM_NAMES[pid]
+        package = PLATFORM_PACKAGES[pid]
+
+        if package is not None:
+            status = "ready" if is_package_importable(package) else "not installed"
+            infra_type = "Python SDK"
+        else:
+            status = "unknown"
+            infra_type = "Docker"
+
         platforms.append({
-            "id": ps.platform_id,
-            "name": ps.name,
-            "infra_type": ps.infra_type,
-            "status": ps.status,
-            "implemented": ps.platform_id in implemented,
-            "category": _get_platform_category(ps.platform_id),
+            "id": pid,
+            "name": name,
+            "infra_type": infra_type,
+            "status": status,
+            "implemented": pid in implemented,
+            "category": _get_platform_category(pid),
         })
 
     return {"platforms": platforms}
+
+
+@app.get("/api/platforms/status")
+async def get_platform_statuses_endpoint():
+    """Return live container status for docker-based platforms (slow — docker inspect)."""
+    return {"statuses": get_docker_platform_statuses()}
 
 
 @app.get("/api/config")
@@ -218,13 +240,13 @@ async def get_config():
     cfg = get_config_status()
     model = os.getenv("DESMET_MODEL") or os.getenv("DEFAULT_MODEL") or DEFAULT_MODEL
     provider = detect_provider(model)
-    langsmith = await langsmith_check_status()
 
     return {
         "model": cfg.model,
         "provider": provider.value,
         "api_keys_set": cfg.api_keys_set,
         "langfuse_status": cfg.langfuse_status,
+        "deploy_status": cfg.deploy_status,
         "temperature": float(os.getenv("DESMET_TEMPERATURE", "0.0")),
         "available_models": [
             "gpt-5.4-2026-03-05",
@@ -233,7 +255,7 @@ async def get_config():
         "allow_custom_model": True,
         "valid_stages": ["requirements", "codegen", "testing", "deploy", "all"],
         "difficulty_levels": ["basic", "intermediate", "advanced"],
-        "langsmith_available": langsmith["available"],
+        "langsmith_available": None,
     }
 
 
@@ -346,7 +368,7 @@ async def start_run(req: RunRequest):
 async def get_run(run_id: str):
     run = _runs.get(run_id)
     if not run:
-        return {"error": "Run not found"}
+        raise HTTPException(status_code=404, detail="Run not found")
     return {
         "run_id": run.run_id,
         "status": run.status,
@@ -363,7 +385,7 @@ async def get_run(run_id: str):
 async def cancel_run(run_id: str):
     run = _runs.get(run_id)
     if not run:
-        return {"error": "Run not found"}
+        raise HTTPException(status_code=404, detail="Run not found")
     if run.status in ("pending", "running"):
         task = _running_tasks.get(run_id)
         if task and not task.done():
@@ -371,7 +393,7 @@ async def cancel_run(run_id: str):
         else:
             # Task already done or not tracked — just update state
             run.status = "cancelled"
-            run.finished_at = datetime.now()
+            run.finished_at = datetime.now(timezone.utc)
             await _broadcast_log(run_id, "[CANCELLED] Run cancelled by user")
     return {"status": run.status}
 
@@ -395,10 +417,17 @@ async def _broadcast_log(run_id: str, message: str):
     run = _runs.get(run_id)
     if run:
         run.logs.append(message)
-    for ws in _ws_clients.get(run_id, []):
+    clients = _ws_clients.get(run_id, [])
+    stale: list[WebSocket] = []
+    for ws in clients:
         try:
             await ws.send_text(message)
         except Exception:
+            stale.append(ws)
+    for ws in stale:
+        try:
+            clients.remove(ws)
+        except ValueError:
             pass
 
 
@@ -406,7 +435,7 @@ async def _broadcast_log(run_id: str, message: str):
 
 async def _execute_run(run: RunState, req: RunRequest):
     run.status = "running"
-    run.started_at = datetime.now()
+    run.started_at = datetime.now(timezone.utc)
 
     # Initialize Langfuse tracing for this run
     from desmet.observability import init_langfuse, start_session
@@ -474,8 +503,19 @@ async def _execute_run(run: RunState, req: RunRequest):
         if req.difficulties:
             config.difficulty_levels = [DifficultyLevel(d) for d in req.difficulties]
 
+        # Sync→async bridge: adapters call this from any thread (incl.
+        # CrewAI's background thread) and it schedules the broadcast on
+        # the event loop.
+        _loop = asyncio.get_running_loop()
+
+        def _progress(msg: str) -> None:
+            asyncio.run_coroutine_threadsafe(
+                _broadcast_log(run.run_id, msg), _loop,
+            )
+
         runner = EvaluationRunner(
-            config=config, platforms=adapters, stories=stories, baseline_repo=baseline,
+            config=config, platforms=adapters, stories=stories,
+            baseline_repo=baseline, progress_callback=_progress,
         )
 
         await _broadcast_log(run.run_id, "[RUN] Executing evaluation pipeline...")
@@ -508,7 +548,7 @@ async def _execute_run(run: RunState, req: RunRequest):
 
     except asyncio.CancelledError:
         run.status = "cancelled"
-        run.finished_at = datetime.now()
+        run.finished_at = datetime.now(timezone.utc)
         await _broadcast_log(run.run_id, "[CANCELLED] Run cancelled by user")
         raise  # must re-raise so asyncio marks the task as cancelled
     except Exception as exc:
@@ -516,7 +556,7 @@ async def _execute_run(run: RunState, req: RunRequest):
         run.error = str(exc)
         await _broadcast_log(run.run_id, f"[ERROR] {exc}")
     finally:
-        run.finished_at = datetime.now()
+        run.finished_at = datetime.now(timezone.utc)
         _running_tasks.pop(run.run_id, None)
 
 
@@ -957,7 +997,7 @@ async def langsmith_run(run_id: str):
     """Proxy a LangSmith run tree for the webUI trace viewer."""
     result = await langsmith_fetch_run_tree(run_id)
     if result is None:
-        return {"error": "LangSmith unavailable or run not found"}
+        raise HTTPException(status_code=404, detail="LangSmith unavailable or run not found")
     return result
 
 
@@ -976,7 +1016,7 @@ async def langfuse_traces(
 async def langfuse_trace_detail(trace_id: str):
     data = await langfuse_fetch_trace(trace_id)
     if data is None:
-        return {"error": "Trace not found or Langfuse unavailable"}
+        raise HTTPException(status_code=404, detail="Trace not found or Langfuse unavailable")
     return data
 
 
