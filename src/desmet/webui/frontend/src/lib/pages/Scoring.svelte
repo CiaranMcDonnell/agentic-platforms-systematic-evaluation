@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { get } from 'svelte/store';
+  import { scoringTarget } from '../stores';
   import {
     fetchPlatforms, fetchStories, fetchRubric, fetchStoryScore, submitScore, fetchConfig,
   } from '../api';
@@ -39,6 +41,14 @@
         scores[dim] = 0;
         notes[dim] = '';
       }
+    }
+    // Pre-select from navigation hint (e.g. "Score this" from Story Detail)
+    const target = get(scoringTarget);   // get() reads store value imperatively
+    if (target) {
+      selectedPlatform = target.platform_id;
+      selectedStory = target.story_id;
+      scoringTarget.set(null);
+      await loadScore();
     }
   });
 

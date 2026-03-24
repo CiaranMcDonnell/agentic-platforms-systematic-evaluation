@@ -1,9 +1,20 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { fetchStories, fetchStoryDetail, fetchChartJSON } from '../api';
+  import { fetchStories, fetchStoryDetail } from '../api';
   import type { Story, StoryDetailData } from '../api';
   import TraceViewer from '../components/TraceViewer.svelte';
   import EChart from '../components/EChart.svelte';
+  import DimScorePills from '../components/DimScorePills.svelte';
+  import { currentPage, scoringTarget } from '../stores';
+
+  const SCORING_DIMS = [
+    'pipeline_completeness',
+    'tool_integration',
+    'error_recovery',
+    'time_efficiency',
+    'autonomy',
+    'trace_quality',
+  ];
 
   let stories = $state<Story[]>([]);
   let selectedStory = $state('');
@@ -19,6 +30,24 @@
     if (!selectedStory) return;
     expandedTrace = null;
     detail = await fetchStoryDetail(selectedStory);
+  }
+
+  function dimScores(platform: Record<string, unknown>): Record<string, number | null> {
+    const out: Record<string, number | null> = {};
+    for (const dim of SCORING_DIMS) {
+      const v = platform[`${dim}_score`];
+      out[dim] = (v !== undefined && v !== null) ? Number(v) : null;
+    }
+    return out;
+  }
+
+  function hasAnyDimScore(scores: Record<string, number | null>): boolean {
+    return Object.values(scores).some(v => v !== null);
+  }
+
+  function goToScoring(platformId: string) {
+    scoringTarget.set({ platform_id: platformId, story_id: selectedStory });
+    currentPage.set('scoring');
   }
 </script>
 
@@ -64,6 +93,8 @@
         </thead>
         <tbody>
           {#each detail.platforms as p}
+            {@const scores = dimScores(p)}
+            {@const scored = hasAnyDimScore(scores)}
             <tr>
               <td>
                 <span style="display: inline-flex; align-items: center; gap: 8px;">
@@ -94,6 +125,21 @@
                 {/if}
               </td>
             </tr>
+            <!-- Dim score sub-row -->
+            <tr class="dim-subrow">
+              <td colspan="6">
+                {#if scored}
+                  <DimScorePills {scores} />
+                {:else}
+                  <span class="no-scores">
+                    Not scored —
+                    <button class="score-link" onclick={() => goToScoring(p.platform_id)}>
+                      Score this →
+                    </button>
+                  </span>
+                {/if}
+              </td>
+            </tr>
             {#if expandedTrace === p.platform_id}
               <tr>
                 <td colspan="6" style="padding: 0;">
@@ -118,3 +164,25 @@
     <div class="card" style="padding: 40px; color: var(--text-2); text-align: center;">Loading…</div>
   {/if}
 </div>
+
+<style>
+  .dim-subrow td {
+    padding: 4px 12px 10px;
+    border-top: none;
+  }
+  .no-scores {
+    font-size: 11px;
+    color: var(--text-2);
+  }
+  .score-link {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 11px;
+    color: var(--text-1);
+    padding: 0;
+    font-family: var(--sans);
+    text-decoration: underline;
+  }
+  .score-link:hover { color: var(--text-0); }
+</style>
