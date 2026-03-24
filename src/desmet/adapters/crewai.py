@@ -12,7 +12,8 @@ import time
 from typing import Any
 
 from desmet.adapters._base import ToolAgentAdapter
-from desmet.adapters._prompts import STAGE_EXPECTED_OUTPUTS, get_stage_persona
+from desmet.adapters._prompts import STAGE_EXPECTED_OUTPUTS, get_stage_persona, get_sub_persona
+from desmet.adapters._validation import validate_workspace
 from desmet.adapters._tools import ToolFormat
 from desmet.adapters._tracing import (
     finish_trace,
@@ -28,6 +29,16 @@ from desmet.llm_config import Provider
 from desmet.llm_config import get_config as get_llm_config
 
 _log = logging.getLogger(__name__)
+
+
+def _compute_iter_budget(max_iterations: int) -> tuple[int, int, int]:
+    """Compute per-agent max_iter from total budget (20%/60%/20%).
+    Returns (planner, executor, reviewer).
+    """
+    planner = max(1, int(max_iterations * 0.2))
+    reviewer = max(1, int(max_iterations * 0.2))
+    executor = max(1, max_iterations - planner - reviewer)
+    return planner, executor, reviewer
 
 
 def _format_crewai_tool_detail(name: str, tool_input: Any) -> str:
@@ -252,12 +263,11 @@ class CrewAIAdapter(ToolAgentAdapter):
         trace: AgentTrace,
         context: StageContext,
     ) -> tuple[int, bool]:
-        """Run a CrewAI agent. Returns (iterations, hit_limit)."""
+        """Run a 3-agent sequential CrewAI crew. Returns (iterations, hit_limit)."""
         import asyncio
 
         from crewai import Agent, Crew, Process, Task
 
-        persona = get_stage_persona(stage_name)
         llm = self._create_llm(context)
         cfg = get_llm_config(
             model=context.model or self.config.get("model"),
@@ -265,28 +275,85 @@ class CrewAIAdapter(ToolAgentAdapter):
         )
         model_name = cfg.model
 
-        # In CrewAI the system message is injected via backstory since
-        # there is no separate system-message slot.
-        backstory = persona.backstory
-        if system_msg:
-            backstory = f"{backstory}\n\n{system_msg}"
+        planner_budget, executor_budget, reviewer_budget = _compute_iter_budget(
+            context.max_iterations
+        )
 
-        agent = Agent(
-            role=persona.role,
-            goal=persona.goal,
-            backstory=backstory,
+        # ── Helper: inject system_msg into backstory ──────────────────────
+        def _make_backstory(persona_backstory: str) -> str:
+            if system_msg:
+                return f"{persona_backstory}\n\n{system_msg}"
+            return persona_backstory
+
+        # ── 1. Planner — Technical Lead ───────────────────────────────────
+        planner_persona = get_sub_persona("planner")
+        planner_agent = Agent(
+            role=planner_persona.role,
+            goal=planner_persona.goal,
+            backstory=_make_backstory(planner_persona.backstory),
             verbose=False,
             allow_delegation=False,
             llm=llm,
             tools=tools,
+            max_iter=planner_budget,
         )
 
-        task = Task(
+        # ── 2. Executor — stage-specific persona ─────────────────────────
+        executor_persona = get_stage_persona(stage_name)
+        executor_agent = Agent(
+            role=executor_persona.role,
+            goal=executor_persona.goal,
+            backstory=_make_backstory(executor_persona.backstory),
+            verbose=False,
+            allow_delegation=False,
+            llm=llm,
+            tools=tools,
+            max_iter=executor_budget,
+        )
+
+        # ── 3. Reviewer — Code Reviewer ───────────────────────────────────
+        reviewer_persona = get_sub_persona("reviewer")
+        reviewer_agent = Agent(
+            role=reviewer_persona.role,
+            goal=reviewer_persona.goal,
+            backstory=_make_backstory(reviewer_persona.backstory),
+            verbose=False,
+            allow_delegation=False,
+            llm=llm,
+            tools=tools,
+            max_iter=reviewer_budget,
+        )
+
+        # ── Tasks with context chaining ───────────────────────────────────
+        analyse_task = Task(
+            description=(
+                f"Analyse the following task and produce a numbered implementation "
+                f"plan identifying all files to create or modify.\n\n{prompt}"
+            ),
+            expected_output="A numbered implementation plan with files to create/modify",
+            agent=planner_agent,
+        )
+
+        implement_task = Task(
             description=prompt,
             expected_output=STAGE_EXPECTED_OUTPUTS.get(
                 stage_name, "Complete the task as described."
             ),
-            agent=agent,
+            agent=executor_agent,
+            context=[analyse_task],
+        )
+
+        review_task = Task(
+            description=(
+                "Review the implementation against the plan. Verify all required "
+                "artefacts are present in the workspace and outputs are complete "
+                "and correct."
+            ),
+            expected_output=(
+                "Validation report confirming all artefacts are present and correct"
+            ),
+            agent=reviewer_agent,
+            context=[analyse_task, implement_task],
         )
 
         step_cb, task_cb, counter = self._create_trace_callbacks(
@@ -295,9 +362,11 @@ class CrewAIAdapter(ToolAgentAdapter):
         )
 
         crew = Crew(
-            agents=[agent],
-            tasks=[task],
+            agents=[planner_agent, executor_agent, reviewer_agent],
+            tasks=[analyse_task, implement_task, review_task],
             process=Process.sequential,
+            planning=True,
+            planning_llm=llm,
             verbose=False,
             step_callback=step_cb,
             task_callback=task_cb,
@@ -366,6 +435,12 @@ class CrewAIAdapter(ToolAgentAdapter):
                     output_tokens=completion_tokens,
                     model=model_name,
                 )
+
+        # ── Deterministic workspace validation ────────────────────────────
+        valid = validate_workspace(stage_name, str(context.workspace))
+        if context.progress_callback is not None:
+            status = "passed" if valid else "failed"
+            context.progress_callback(f"    workspace validation: {status}")
 
         iterations = counter[0]
         hit_limit = iterations >= context.max_iterations
@@ -454,13 +529,21 @@ class CrewAIAdapter(ToolAgentAdapter):
             "has_state_inspection": True,
             "has_memory_inspection": True,
             "trace_format": "Custom logs",
+            "notes": (
+                "Multi-agent sequential crew (planner/executor/reviewer) with "
+                "planning=True. Per-agent step callbacks + event bus for LLM call tracing."
+            ),
         }
 
     def get_failure_handling_info(self) -> dict[str, Any]:
         return {
             "has_checkpointing": False,
-            "has_auto_recovery": False,
-            "has_graceful_degradation": False,
+            "has_auto_recovery": True,
+            "has_graceful_degradation": True,
             "supports_human_handoff": True,
             "is_idempotent": False,
+            "notes": (
+                "Post-crew validate_workspace() gate. Per-agent max_iter limits. "
+                "Crew planning mode aligns agents before execution."
+            ),
         }
