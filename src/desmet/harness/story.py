@@ -5,7 +5,7 @@ Defines the structure of user stories and their results.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -126,6 +126,7 @@ class StoryResult:
     tool_calls: int = 0
     tokens_input: int = 0
     tokens_output: int = 0
+    api_cost_usd: float = 0.0
     human_interventions: int = 0
 
     # Acceptance criteria
@@ -149,6 +150,9 @@ class StoryResult:
 
     # Raw data
     raw_result: Any = None
+
+    # Aggregated framework metrics across stages
+    framework_metrics: dict[str, float | None] = field(default_factory=dict)
 
     @property
     def success(self) -> bool:
@@ -176,7 +180,7 @@ class StoryResult:
 
     def finalize_timing(self) -> None:
         """Set end_time and compute wall_clock_seconds from start_time."""
-        self.end_time = datetime.now()
+        self.end_time = datetime.now(timezone.utc)
         if self.start_time is not None:
             self.wall_clock_seconds = (self.end_time - self.start_time).total_seconds()
 
@@ -212,6 +216,7 @@ class StoryResult:
             "tokens_input": self.tokens_input,
             "tokens_output": self.tokens_output,
             "tokens_total": self.tokens_total,
+            "api_cost_usd": self.api_cost_usd,
             "human_interventions": self.human_interventions,
             "criteria_results": self.criteria_results,
             "criteria_pass_rate": self.criteria_pass_rate,

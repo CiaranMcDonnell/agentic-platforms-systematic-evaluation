@@ -41,6 +41,7 @@ class AgentTrace:
     total_tokens_input: int = 0
     total_tokens_output: int = 0
     total_cost_usd: float = 0.0
+    total_llm_duration_ms: float = 0.0
     start_time: datetime | None = None
     end_time: datetime | None = None
     final_state: dict[str, Any] = field(default_factory=dict)

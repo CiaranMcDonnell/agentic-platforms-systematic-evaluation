@@ -49,6 +49,9 @@ class StageResult:
     cost_usd: float = 0.0
     human_interventions: int = 0
 
+    # Automated framework metrics (computed from trace data)
+    framework_metrics: dict[str, float | None] = field(default_factory=dict)
+
     # Timestamps
     start_time: datetime | None = None
     end_time: datetime | None = None
