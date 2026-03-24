@@ -4,7 +4,7 @@ Platform Adapters
 Each module implements BasePlatformAdapter for a specific agentic platform.
 """
 
-from desmet.harness.base import BasePlatformAdapter, VisualPlatformAdapter
+from desmet.harness.adapter import BasePlatformAdapter, VisualPlatformAdapter
 
 from .registry import (
     AdapterNotImplementedError,

@@ -1,9 +1,9 @@
 """Tests for the shared adapter tool factory."""
 
-import pytest
-from pathlib import Path
 
-from desmet.adapters._tools import AVAILABLE_TOOLS, ToolFormat, create_tools, _safe_resolve
+import pytest
+
+from desmet.adapters._tools import AVAILABLE_TOOLS, ToolFormat, _safe_resolve, create_tools
 
 
 @pytest.fixture
@@ -15,13 +15,14 @@ def workspace(tmp_path):
 
 
 class TestAvailableTools:
-    def test_all_five_tools_present(self):
-        assert len(AVAILABLE_TOOLS) == 5
+    def test_all_six_tools_present(self):
+        assert len(AVAILABLE_TOOLS) == 6
         assert "read_file" in AVAILABLE_TOOLS
         assert "write_file" in AVAILABLE_TOOLS
         assert "list_directory" in AVAILABLE_TOOLS
         assert "execute_shell" in AVAILABLE_TOOLS
         assert "search_code" in AVAILABLE_TOOLS
+        assert "deploy_remote" in AVAILABLE_TOOLS
 
     def test_is_tuple(self):
         assert isinstance(AVAILABLE_TOOLS, tuple)
@@ -58,7 +59,8 @@ class TestCreateToolsCallable:
         tools = create_tools(workspace, ["read_file", "write_file"])
         assert len(tools) == 2
 
-    def test_returns_all_five_tools_when_all_requested(self, workspace):
+    def test_returns_five_tools_without_platform_context(self, workspace):
+        # deploy_remote is filtered out when platform_id/story_id are not provided
         tools = create_tools(workspace, list(AVAILABLE_TOOLS))
         assert len(tools) == 5
 
@@ -72,7 +74,8 @@ class TestCreateToolsCallable:
     def test_tools_have_meaningful_names(self, workspace):
         tools = create_tools(workspace, list(AVAILABLE_TOOLS))
         names = {t.__name__ for t in tools}
-        assert names == set(AVAILABLE_TOOLS)
+        # deploy_remote is excluded without platform context
+        assert names == set(AVAILABLE_TOOLS) - {"deploy_remote"}
 
     def test_read_file_reads_content(self, workspace):
         tools = create_tools(workspace, ["read_file"])
@@ -194,11 +197,12 @@ class TestCreateToolsLangchain:
         )
 
     def test_returns_correct_count(self, lc_tools):
+        # deploy_remote filtered out without platform context
         assert len(lc_tools) == 5
 
     def test_tools_have_correct_names(self, lc_tools):
         names = {t.name for t in lc_tools}
-        assert names == set(AVAILABLE_TOOLS)
+        assert names == set(AVAILABLE_TOOLS) - {"deploy_remote"}
 
     def test_read_file_tool_works(self, lc_tools):
         read_tool = next(t for t in lc_tools if t.name == "read_file")
@@ -226,11 +230,12 @@ class TestCreateToolsCrewAI:
         )
 
     def test_returns_correct_count(self, crewai_tools):
+        # deploy_remote filtered out without platform context
         assert len(crewai_tools) == 5
 
     def test_tools_have_correct_names(self, crewai_tools):
         names = {t.name for t in crewai_tools}
-        assert names == set(AVAILABLE_TOOLS)
+        assert names == set(AVAILABLE_TOOLS) - {"deploy_remote"}
 
     def test_read_file_tool_works(self, crewai_tools):
         read_tool = next(t for t in crewai_tools if t.name == "read_file")
@@ -279,3 +284,41 @@ class TestCreateToolsOpenAI:
     def test_raises_not_implemented(self, workspace):
         with pytest.raises(NotImplementedError, match="OpenAI"):
             create_tools(workspace, ["read_file"], fmt=ToolFormat.OPENAI_FUNCTION)
+
+
+class TestDeployRemoteTool:
+    def test_deploy_remote_excluded_without_platform_id(self, workspace):
+        tools = create_tools(workspace, ["deploy_remote"], fmt=ToolFormat.CALLABLE)
+        assert len(tools) == 0
+
+    def test_deploy_remote_included_with_platform_id(self, workspace):
+        tools = create_tools(
+            workspace, ["deploy_remote"], fmt=ToolFormat.CALLABLE,
+            platform_id="crewai", story_id="US-001",
+        )
+        assert len(tools) == 1
+
+    def test_deploy_remote_callable_format(self, workspace):
+        tools = create_tools(
+            workspace, ["deploy_remote"], fmt=ToolFormat.CALLABLE,
+            platform_id="crewai", story_id="US-001",
+        )
+        assert len(tools) == 1
+        # Tool should be callable
+        assert callable(tools[0])
+
+    def test_deploy_remote_crewai_format(self, workspace):
+        pytest.importorskip("crewai", reason="crewai not installed")
+        tools = create_tools(
+            workspace, ["deploy_remote"], fmt=ToolFormat.CREWAI,
+            platform_id="crewai", story_id="US-001",
+        )
+        assert len(tools) == 1
+        assert tools[0].name == "deploy_remote"
+
+    def test_existing_tools_unaffected_by_new_kwargs(self, workspace):
+        tools = create_tools(
+            workspace, ["read_file", "write_file"], fmt=ToolFormat.CALLABLE,
+            platform_id="crewai", story_id="US-001",
+        )
+        assert len(tools) == 2

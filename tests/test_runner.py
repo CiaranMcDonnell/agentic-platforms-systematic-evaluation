@@ -4,22 +4,19 @@ Verifies that _run_story executes four sequential stages (requirements,
 codegen, testing, deploy), accumulates artifacts on the StageContext,
 tolerates individual stage failures, and respects dry_run.
 """
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
-from pathlib import Path
 
-from desmet.harness.runner import EvaluationRunner, RunnerConfig
-from desmet.harness.base import (
-    RequirementsResult,
+from desmet.harness.context import StageContext
+from desmet.harness.results import (
     CodeResult,
-    TestResult,
     DeployResult,
-    StageContext,
-    StageResult,
-    AgentTrace,
+    RequirementsResult,
+    TestResult,
 )
-from desmet.harness.story import UserStory, DifficultyLevel, StoryStatus
-
+from desmet.harness.runner import EvaluationRunner, RunnerConfig
+from desmet.harness.story import DifficultyLevel, StoryStatus, UserStory
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -290,3 +287,45 @@ class TestRunnerStageExecution:
         adapter.generate_tests.assert_called_once()
         adapter.build_and_deploy.assert_called_once()
         assert result.status == StoryStatus.COMPLETED
+
+
+def test_stage_result_has_langsmith_run_id():
+    from desmet.harness.results import StageResult
+    result = StageResult(platform_id="langgraph", stage_name="requirements")
+    assert result.langsmith_run_id is None  # field exists, defaults to None
+
+
+def test_stage_result_langsmith_run_id_can_be_set():
+    from desmet.harness.results import StageResult
+    result = StageResult(platform_id="langgraph", stage_name="requirements")
+    result.langsmith_run_id = "abc-123"
+    assert result.langsmith_run_id == "abc-123"
+
+
+def test_save_stage_traces_includes_langsmith_run_id(tmp_path):
+    """langsmith_run_id written per-stage into the JSON trace file."""
+    import json
+    from desmet.harness.runner import EvaluationRunner, RunnerConfig
+    from desmet.harness.results import RequirementsResult
+    from desmet.harness.story import StoryResult, StoryStatus
+
+    cfg = RunnerConfig(results_dir=tmp_path, logs_dir=tmp_path / "logs")
+    # Bypass __init__ (requires platforms/stories/baseline_repo) — only config is needed
+    runner = object.__new__(EvaluationRunner)
+    runner.config = cfg
+    (tmp_path / "logs").mkdir(parents=True, exist_ok=True)
+
+    story_result = StoryResult(
+        story_id="US001", platform_id="langgraph", execution_id="exec-1",
+        status=StoryStatus.COMPLETED,
+    )
+
+    req_result = RequirementsResult(platform_id="langgraph", stage_name="requirements")
+    req_result.langsmith_run_id = "ls-run-abc"
+
+    runner._save_stage_traces(story_result, {"requirements": req_result})
+
+    trace_files = list((tmp_path / "logs" / "langgraph" / "US001").glob("*_stages.json"))
+    assert trace_files, "No trace file written"
+    data = json.loads(trace_files[0].read_text())
+    assert data["stages"]["requirements"]["langsmith_run_id"] == "ls-run-abc"

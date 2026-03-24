@@ -1,17 +1,12 @@
 """Tests for infrastructure management module."""
 
-import subprocess
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from desmet.infra import (
     COMPOSE_FILE,
     PLATFORM_CONTAINERS,
     PLATFORM_PACKAGES,
     PROFILE_TARGETS,
-    ConfigStatus,
-    PlatformStatus,
     get_config_status,
     get_container_status,
     get_platform_statuses,

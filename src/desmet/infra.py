@@ -26,16 +26,17 @@ PROFILE_TARGETS: dict[str, list[str]] = {
     "dify": ["dify"],
     "n8n": ["n8n"],
     "langfuse": ["langfuse"],
+    "infrastructure": ["infrastructure"],
     "all": ["flowise", "langflow", "dify", "n8n", "langfuse"],
 }
 
+# ── Evaluation platforms ────────────────────────────────────────────────
 PLATFORM_PACKAGES: dict[str, str | None] = {
     "langgraph": "langgraph",
     "crewai": "crewai",
-    "microsoft_autogen": "autogen",
+    "microsoft_agent_framework": "agent_framework",
     "openai_agents_sdk": "agents",
     "google_adk": "google.adk",
-    "semantic_kernel": "semantic_kernel",
     "flowise": None,
     "langflow": None,
     "dify": None,
@@ -45,10 +46,9 @@ PLATFORM_PACKAGES: dict[str, str | None] = {
 PLATFORM_CONTAINERS: dict[str, str | None] = {
     "langgraph": None,
     "crewai": None,
-    "microsoft_autogen": None,
+    "microsoft_agent_framework": None,
     "openai_agents_sdk": None,
     "google_adk": None,
-    "semantic_kernel": None,
     "flowise": "desmet-flowise",
     "langflow": "desmet-langflow",
     "dify": "desmet-dify-api",
@@ -58,22 +58,37 @@ PLATFORM_CONTAINERS: dict[str, str | None] = {
 PLATFORM_NAMES: dict[str, str] = {
     "langgraph": "LangGraph",
     "crewai": "CrewAI",
-    "microsoft_autogen": "AutoGen",
+    "microsoft_agent_framework": "Microsoft Agent Framework",
     "openai_agents_sdk": "OpenAI Agents SDK",
     "google_adk": "Google ADK",
-    "semantic_kernel": "Semantic Kernel",
     "flowise": "Flowise",
     "langflow": "LangFlow",
     "dify": "Dify",
     "n8n": "n8n",
 }
 
-_API_KEY_VARS = (
-    "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "GOOGLE_API_KEY",
-    "OPENROUTER_API_KEY",
-)
+# ── Infrastructure services (not evaluation targets) ───────────────────
+INFRA_SERVICES: dict[str, dict] = {
+    "langfuse": {
+        "name": "Langfuse",
+        "description": "Observability & tracing",
+        "container": "desmet-langfuse-web",
+        "profile": "langfuse",
+    },
+    "infrastructure": {
+        "name": "Postgres + Redis",
+        "description": "Shared database & cache",
+        "container": "desmet-postgres",
+        "profile": "infrastructure",
+    },
+}
+
+_API_KEY_VARS: dict[str, str] = {
+    "OPENAI_API_KEY": "openai",
+    "ANTHROPIC_API_KEY": "anthropic",
+    "GOOGLE_API_KEY": "google",
+    "OPENROUTER_API_KEY": "openrouter",
+}
 
 
 @dataclass
@@ -128,7 +143,7 @@ def get_platform_statuses() -> list[PlatformStatus]:
             statuses.append(PlatformStatus(
                 platform_id=pid,
                 name=name,
-                infra_type="none needed",
+                infra_type="Python SDK",
                 status="ready" if installed else "not installed",
             ))
         else:
@@ -143,6 +158,20 @@ def get_platform_statuses() -> list[PlatformStatus]:
     return statuses
 
 
+def get_infra_statuses() -> list[dict]:
+    """Return status of infrastructure services (Langfuse, Postgres+Redis)."""
+    results = []
+    for sid, info in INFRA_SERVICES.items():
+        status = get_container_status(info["container"])
+        results.append({
+            "id": sid,
+            "name": info["name"],
+            "description": info["description"],
+            "status": status,
+        })
+    return results
+
+
 def get_config_status() -> ConfigStatus:
     model = (
         os.getenv("DESMET_MODEL")
@@ -150,7 +179,7 @@ def get_config_status() -> ConfigStatus:
         or DEFAULT_MODEL
     )
 
-    api_keys_set = [var for var in _API_KEY_VARS if os.getenv(var)]
+    api_keys_set = [provider for var, provider in _API_KEY_VARS.items() if os.getenv(var)]
 
     langfuse_pub = os.getenv("LANGFUSE_PUBLIC_KEY")
     langfuse_sec = os.getenv("LANGFUSE_SECRET_KEY")

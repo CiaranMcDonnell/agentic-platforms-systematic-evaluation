@@ -1,9 +1,9 @@
 """Tests for Stage 1: Story loading and StageContext preparation."""
-import pytest
-from pathlib import Path
 
-from desmet.harness.story import UserStory, DifficultyLevel
-from desmet.harness.base import StageContext
+import pytest
+
+from desmet.harness.context import StageContext
+from desmet.harness.story import DifficultyLevel, UserStory
 from desmet.stages.stage1_stories.loader import prepare_stage_context
 
 
@@ -50,3 +50,13 @@ class TestPrepareStageContext:
     def test_custom_model(self, sample_story, tmp_path):
         ctx = prepare_stage_context(sample_story, workspace=tmp_path, model="claude-sonnet-4-6")
         assert ctx.model == "claude-sonnet-4-6"
+
+
+def test_prepare_stage_context_accepts_platform_id(sample_story, tmp_path):
+    ctx = prepare_stage_context(sample_story, workspace=tmp_path, platform_id="crewai")
+    assert ctx.platform_id == "crewai"
+
+
+def test_prepare_stage_context_platform_id_defaults_to_empty(sample_story, tmp_path):
+    ctx = prepare_stage_context(sample_story, workspace=tmp_path)
+    assert ctx.platform_id == ""

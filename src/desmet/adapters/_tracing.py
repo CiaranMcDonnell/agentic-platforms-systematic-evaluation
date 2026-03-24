@@ -14,8 +14,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from desmet.harness.base import AgentMessage, AgentTrace, StageResult, ToolCall
-
+from desmet.harness.results import StageResult
+from desmet.harness.trace import AgentMessage, AgentTrace, ToolCall
 
 # ── Trace lifecycle ─────────────────────────────────────────────────────
 
@@ -70,10 +70,12 @@ def record_usage(
     trace: AgentTrace,
     input_tokens: int = 0,
     output_tokens: int = 0,
+    cost_usd: float = 0.0,
 ) -> None:
-    """Accumulate token usage into the trace."""
+    """Accumulate token usage and cost into the trace."""
     trace.total_tokens_input += input_tokens
     trace.total_tokens_output += output_tokens
+    trace.total_cost_usd += cost_usd
 
 
 def record_tool_call(
@@ -140,6 +142,7 @@ def build_stage_result(
         tool_calls_count=len(trace.tool_calls),
         tokens_input=trace.total_tokens_input,
         tokens_output=trace.total_tokens_output,
+        cost_usd=trace.total_cost_usd,
         start_time=trace.start_time,
         end_time=trace.end_time,
         **extra_fields,

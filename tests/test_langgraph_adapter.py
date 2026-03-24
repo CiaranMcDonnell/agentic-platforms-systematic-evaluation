@@ -1,15 +1,9 @@
 """Tests for LangGraph adapter's new SDLC stage methods."""
-import pytest
 import inspect
 
+import pytest
+
 from desmet.adapters.langgraph import LangGraphAdapter
-from desmet.harness.base import (
-    StageContext,
-    RequirementsResult,
-    CodeResult,
-    TestResult,
-    DeployResult,
-)
 
 
 @pytest.fixture
@@ -33,11 +27,6 @@ class TestLangGraphAdapterInterface:
     def test_has_build_and_deploy(self, adapter):
         assert hasattr(adapter, "build_and_deploy")
         assert callable(adapter.build_and_deploy)
-
-    def test_execute_story_inherited(self, adapter):
-        """execute_story() is now inherited from BasePlatformAdapter."""
-        assert hasattr(adapter, "execute_story")
-        assert callable(adapter.execute_story)
 
     def test_has_run_agent(self, adapter):
         """_run_agent() is the extracted core LangGraph loop."""

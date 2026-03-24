@@ -1,14 +1,8 @@
 """Tests for the adapter interface contract."""
-import pytest
 import inspect
 
-from desmet.harness.base import (
+from desmet.harness.adapter import (
     BasePlatformAdapter,
-    StageContext,
-    RequirementsResult,
-    CodeResult,
-    TestResult,
-    DeployResult,
 )
 
 
@@ -43,7 +37,3 @@ class TestAdapterInterface:
         assert "generate_code" in abstract_methods
         assert "generate_tests" in abstract_methods
         assert "build_and_deploy" in abstract_methods
-
-    def test_execute_story_still_exists(self):
-        """execute_story is deprecated but still present for backwards compat."""
-        assert hasattr(BasePlatformAdapter, "execute_story")

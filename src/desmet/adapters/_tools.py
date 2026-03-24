@@ -7,12 +7,13 @@ so that each adapter does not need to redefine them.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import subprocess
+from collections.abc import Sequence
 from enum import Enum
 from pathlib import Path
-from typing import Sequence
 
 
 class ToolFormat(Enum):
@@ -30,6 +31,7 @@ AVAILABLE_TOOLS: tuple[str, ...] = (
     "list_directory",
     "execute_shell",
     "search_code",
+    "deploy_remote",
 )
 
 
@@ -67,7 +69,7 @@ def _read_file(workspace: Path, path: str) -> str:
     except ValueError as exc:
         return f"Error: {exc}"
     if full_path.exists():
-        return full_path.read_text()
+        return full_path.read_text(encoding="utf-8")
     return f"File not found: {path}"
 
 
@@ -78,7 +80,7 @@ def _write_file(workspace: Path, path: str, content: str) -> str:
     except ValueError as exc:
         return f"Error: {exc}"
     full_path.parent.mkdir(parents=True, exist_ok=True)
-    full_path.write_text(content)
+    full_path.write_text(content, encoding="utf-8")
     return f"Successfully wrote to {path}"
 
 
@@ -96,8 +98,33 @@ def _list_directory(workspace: Path, path: str = ".") -> str:
     return f"Directory not found: {path}"
 
 
+def _find_bash() -> str | None:
+    """Find a bash executable (Git Bash or WSL) on Windows, None on Unix."""
+    import shutil
+    import sys
+
+    if sys.platform != "win32":
+        return None  # Unix already uses bash via shell=True
+
+    # Prefer Git Bash, then WSL bash
+    for candidate in [
+        r"C:\Program Files\Git\usr\bin\bash.exe",
+        r"C:\Windows\System32\bash.exe",
+    ]:
+        if Path(candidate).exists():
+            return candidate
+    return shutil.which("bash")
+
+
+_BASH_PATH: str | None = _find_bash()
+
+
 def _execute_shell(workspace: Path, command: str) -> str:
     """Run a shell command with cwd=workspace, timeout 30 s.
+
+    Uses bash when available (Git Bash / WSL on Windows) instead of
+    cmd.exe, which avoids PowerShell profile errors and gives agents
+    a Unix-compatible shell.
 
     NOTE: This tool is intentionally unsandboxed beyond cwd — it can run
     arbitrary shell commands.  Production deployments should rely on
@@ -106,14 +133,23 @@ def _execute_shell(workspace: Path, command: str) -> str:
     tool for stories that don't need shell access.
     """
     try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            cwd=workspace,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        if _BASH_PATH:
+            result = subprocess.run(
+                [_BASH_PATH, "-c", command],
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        else:
+            result = subprocess.run(
+                command,
+                shell=True,
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
         output = result.stdout + result.stderr
         return output if output else "(no output)"
     except subprocess.TimeoutExpired:
@@ -165,11 +201,73 @@ def _search_code(workspace: Path, pattern: str, path: str = ".") -> str:
     return "\n".join(matches)
 
 
+def _deploy_port(platform_id: str, story_id: str) -> int:
+    """Deterministic port from platform_id + story_id (range 9000-9999)."""
+    h = int(hashlib.sha256(f"{platform_id}/{story_id}".encode()).hexdigest(), 16)
+    return 9000 + (h % 1000)
+
+
+def _deploy_remote(
+    workspace: Path,
+    platform_id: str,
+    story_id: str,
+    action: str,
+    url: str = "/health",
+) -> str:
+    """Execute a remote deploy operation via SSH."""
+    host = os.environ.get("DEPLOY_HOST")
+    user = os.environ.get("DEPLOY_USER")
+    key = os.environ.get("DEPLOY_KEY_PATH")
+    base = os.environ.get("DEPLOY_BASE_PATH", "/opt/desmet")
+
+    if not all([host, user, key]):
+        return "Error: DEPLOY_HOST, DEPLOY_USER, and DEPLOY_KEY_PATH must be set"
+
+    remote_path = f"{base}/{platform_id}/{story_id}"
+    port = _deploy_port(platform_id, story_id)
+    ssh_opts = f"ssh -i {key} -o StrictHostKeyChecking=accept-new"
+
+    timeouts = {"push": 120, "restart": 180, "health_check": 30}
+
+    if action == "push":
+        cmd = (
+            f'rsync -azP -e "{ssh_opts}" '
+            f"--include='dist/***' --include='docker-compose.yaml' --include='docs/***' "
+            f"--exclude='*' "
+            f"{workspace}/ {user}@{host}:{remote_path}/"
+        )
+    elif action == "restart":
+        cmd = (
+            f'{ssh_opts} {user}@{host} '
+            f'"cd {remote_path} && COMPOSE_PROJECT_NAME={platform_id}-{story_id} '
+            f'PORT={port} docker compose up -d --build"'
+        )
+    elif action == "health_check":
+        cmd = (
+            f'{ssh_opts} {user}@{host} '
+            f'"curl -sf http://localhost:{port}{url}"'
+        )
+    else:
+        return f"Error: unknown action '{action}'. Use push, restart, or health_check."
+
+    try:
+        result = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True,
+            timeout=timeouts.get(action, 60),
+        )
+        output = result.stdout + result.stderr
+        return output if output else "(no output)"
+    except subprocess.TimeoutExpired:
+        return f"Error: {action} timed out"
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
 # ---------------------------------------------------------------------------
 # Format builders
 # ---------------------------------------------------------------------------
 
-def _build_callable_tools(workspace: Path, tool_names: list[str]) -> list:
+def _build_callable_tools(workspace: Path, tool_names: list[str], platform_id=None, story_id=None) -> list:
     """Return plain callables with meaningful ``__name__`` attributes."""
     tools: list = []
 
@@ -204,12 +302,18 @@ def _build_callable_tools(workspace: Path, tool_names: list[str]) -> list:
                 return _search_code(workspace, pattern, path)
             tools.append(search_code)
 
+        elif name == "deploy_remote":
+            def deploy_remote_fn(*, action: str, url: str = "/health") -> str:
+                """Deploy to the remote server."""
+                return _deploy_remote(workspace, platform_id, story_id, action, url)
+            tools.append(deploy_remote_fn)
+
     return tools
 
 
-def _build_langchain_tools(workspace: Path, tool_names: list[str]) -> list:
+def _build_langchain_tools(workspace: Path, tool_names: list[str], platform_id=None, story_id=None) -> list:
     """Return LangChain ``@tool`` decorated functions."""
-    from langchain_core.tools import tool as lc_tool
+    from langchain.tools import tool as lc_tool
 
     tools: list = []
 
@@ -249,10 +353,17 @@ def _build_langchain_tools(workspace: Path, tool_names: list[str]) -> list:
                 return _search_code(workspace, pattern, path)
             tools.append(search_code)
 
+        elif name == "deploy_remote":
+            @lc_tool
+            def deploy_remote(action: str, url: str = "/health") -> str:
+                """Deploy to remote server: push artifacts, restart Docker, or health check."""
+                return _deploy_remote(workspace, platform_id, story_id, action, url)
+            tools.append(deploy_remote)
+
     return tools
 
 
-def _build_crewai_tools(workspace: Path, tool_names: list[str]) -> list:
+def _build_crewai_tools(workspace: Path, tool_names: list[str], platform_id=None, story_id=None) -> list:
     """Return CrewAI ``BaseTool`` subclasses.
 
     Each tool is a class with a Pydantic ``args_schema`` so that CrewAI
@@ -342,6 +453,22 @@ def _build_crewai_tools(workspace: Path, tool_names: list[str]) -> list:
 
         tools.append(SearchCodeTool())
 
+    if "deploy_remote" in tool_names:
+
+        class DeployRemoteInput(BaseModel):
+            action: str = Field(description="One of: push, restart, health_check")
+            url: str = Field(default="/health", description="Health check endpoint path")
+
+        class DeployRemoteTool(CrewAIBaseTool):
+            name: str = "deploy_remote"
+            description: str = "Deploy to remote server: push artifacts, restart Docker, or health check"
+            args_schema: type[BaseModel] = DeployRemoteInput
+
+            def _run(self, action: str, url: str = "/health") -> str:
+                return _deploy_remote(workspace, platform_id, story_id, action, url)
+
+        tools.append(DeployRemoteTool())
+
     return tools
 
 
@@ -353,6 +480,9 @@ def create_tools(
     workspace: Path,
     allowed_tools: Sequence[str],
     fmt: ToolFormat = ToolFormat.CALLABLE,
+    *,
+    platform_id: str | None = None,
+    story_id: str | None = None,
 ) -> list:
     """Create sandboxed tools for the given workspace.
 
@@ -364,23 +494,31 @@ def create_tools(
         Tool names to include.  Unknown names are silently skipped.
     fmt:
         Output format — see :class:`ToolFormat`.
+    platform_id:
+        Platform identifier, required for ``deploy_remote``.
+    story_id:
+        Story identifier, required for ``deploy_remote``.
 
     Returns
     -------
     list
         Tools in the requested format.
     """
-    # Filter to only known tool names, preserving order
     tool_names = [t for t in allowed_tools if t in AVAILABLE_TOOLS]
+    # deploy_remote requires platform context
+    if platform_id is None or story_id is None:
+        tool_names = [t for t in tool_names if t != "deploy_remote"]
+
+    kwargs = dict(platform_id=platform_id, story_id=story_id)
 
     if fmt is ToolFormat.CALLABLE:
-        return _build_callable_tools(workspace, tool_names)
+        return _build_callable_tools(workspace, tool_names, **kwargs)
 
     if fmt is ToolFormat.LANGCHAIN:
-        return _build_langchain_tools(workspace, tool_names)
+        return _build_langchain_tools(workspace, tool_names, **kwargs)
 
     if fmt is ToolFormat.CREWAI:
-        return _build_crewai_tools(workspace, tool_names)
+        return _build_crewai_tools(workspace, tool_names, **kwargs)
 
     if fmt is ToolFormat.OPENAI_FUNCTION:
         raise NotImplementedError("OpenAI function tools not yet implemented")

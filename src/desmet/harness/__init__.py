@@ -2,69 +2,79 @@
 Evaluation Harness
 
 Core evaluation engine: adapter interface, runner, metrics, and story management.
+
+The harness.base module is a re-export shim; the canonical locations are:
+  models.py, trace.py, context.py, results.py, adapter.py
 """
 
-from .base import (
-    BasePlatformAdapter,
-    VisualPlatformAdapter,
-    EvaluationContext,
-    ExecutionResult,
-    PlatformInfo,
-    PlatformCategory,
-    PlatformRuntime,
-    AgentTrace,
-    AgentMessage,
-    ToolCall,
-)
-from .runner import EvaluationRunner, RunnerConfig
+from .adapter import BasePlatformAdapter, VisualPlatformAdapter
+from .context import StageContext
+from .loader import StoryLoadError, load_all_stories, load_story
 from .metrics import (
-    MetricsCollector,
-    EvaluationMetrics,
     DimensionScore,
     EvaluationDimension,
-    StoryMetrics,
+    EvaluationMetrics,
+    MetricsCollector,
     SetupMetrics,
+    StageMetrics,
+    StoryMetrics,
 )
+from .models import PlatformCategory, PlatformInfo, PlatformRuntime
+from .results import (
+    CodeResult,
+    DeployResult,
+    RequirementsResult,
+    StageResult,
+    TestResult,
+    UMLDiagram,
+)
+from .runner import EvaluationRunner, RunnerConfig
 from .story import (
-    UserStory,
+    SCORING_DIMENSIONS,
+    SCORING_RUBRIC,
+    AcceptanceCriterion,
+    DifficultyLevel,
     StoryResult,
     StoryScore,
     StoryStatus,
-    DifficultyLevel,
-    AcceptanceCriterion,
-    SCORING_DIMENSIONS,
-    SCORING_RUBRIC,
+    UserStory,
 )
-from .loader import load_story, load_all_stories, StoryLoadError
+from .trace import AgentMessage, AgentTrace, ToolCall
 
 __all__ = [
-    "BasePlatformAdapter",
-    "VisualPlatformAdapter",
-    "EvaluationContext",
-    "ExecutionResult",
-    "PlatformInfo",
-    "PlatformCategory",
-    "PlatformRuntime",
-    "AgentTrace",
     "AgentMessage",
-    "ToolCall",
-    "EvaluationRunner",
-    "RunnerConfig",
-    "MetricsCollector",
-    "EvaluationMetrics",
+    "AgentTrace",
+    "AcceptanceCriterion",
+    "BasePlatformAdapter",
+    "CodeResult",
+    "DeployResult",
+    "DifficultyLevel",
     "DimensionScore",
     "EvaluationDimension",
-    "StoryMetrics",
+    "EvaluationMetrics",
+    "EvaluationRunner",
+    "MetricsCollector",
+    "PlatformCategory",
+    "PlatformInfo",
+    "PlatformRuntime",
+    "RequirementsResult",
+    "RunnerConfig",
+    "SCORING_DIMENSIONS",
+    "SCORING_RUBRIC",
     "SetupMetrics",
-    "UserStory",
+    "StageContext",
+    "StageMetrics",
+    "StageResult",
+    "StoryLoadError",
+    "StoryMetrics",
     "StoryResult",
     "StoryScore",
     "StoryStatus",
-    "DifficultyLevel",
-    "AcceptanceCriterion",
-    "SCORING_DIMENSIONS",
-    "SCORING_RUBRIC",
-    "load_story",
+    "TestResult",
+    "ToolCall",
+    "UMLDiagram",
+    "UserStory",
+    "VisualPlatformAdapter",
     "load_all_stories",
-    "StoryLoadError",
+    "load_story",
 ]

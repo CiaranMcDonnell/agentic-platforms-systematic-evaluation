@@ -4,6 +4,11 @@ CrewAI Platform Adapter
 Implements the evaluation interface for CrewAI.
 """
 
+from __future__ import annotations
+
+import json
+import logging
+import threading
 from typing import Any
 
 from desmet.adapters._prompts import (
@@ -24,20 +29,82 @@ from desmet.adapters._tracing import (
     record_usage,
     start_trace,
 )
-from desmet.harness.base import (
-    AgentTrace,
-    BasePlatformAdapter,
+from desmet.adapters.registry import load_platform_info
+from desmet.harness.adapter import BasePlatformAdapter
+from desmet.harness.context import StageContext
+from desmet.harness.models import PlatformInfo
+from desmet.harness.results import (
     CodeResult,
     DeployResult,
-    PlatformCategory,
-    PlatformInfo,
-    PlatformRuntime,
     RequirementsResult,
-    StageContext,
     TestResult,
 )
+from desmet.harness.trace import AgentTrace
+from desmet.llm_config import Provider
 from desmet.llm_config import get_config as get_llm_config
-from desmet.observability import enable_litellm_callbacks
+
+_log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# HTTP interceptor for cost extraction
+# ---------------------------------------------------------------------------
+
+class _CostInterceptor:
+    """Extracts ``usage.cost`` from raw HTTP responses (e.g. OpenRouter).
+
+    Plugs into CrewAI's ``BaseInterceptor`` transport hook so we can read
+    cost data from the response JSON before the provider SDK parses it.
+
+    Falls back to a plain object (no interception) when CrewAI's hook
+    infrastructure is not available.
+    """
+
+    def __init__(self) -> None:
+        self.total_cost: float = 0.0
+        self._cost_lock = threading.Lock()
+        self._interceptor: Any = None
+        self._init_interceptor()
+
+    def _init_interceptor(self) -> None:
+        """Try to create a real BaseInterceptor subclass."""
+        try:
+            import httpx
+            from crewai.llms.hooks.base import BaseInterceptor
+
+            outer = self
+
+            class _Inner(BaseInterceptor[httpx.Request, httpx.Response]):
+                def on_outbound(self, request: httpx.Request) -> httpx.Request:
+                    return request
+
+                def on_inbound(self, response: httpx.Response) -> httpx.Response:
+                    try:
+                        # Ensure body is loaded at the transport layer;
+                        # .content caches after .read() so downstream
+                        # consumers (OpenAI SDK) can re-read safely.
+                        response.read()
+                        body = json.loads(response.content)
+                        cost = body.get("usage", {}).get("cost", 0)
+                        if cost:
+                            with outer._cost_lock:
+                                outer.total_cost += float(cost)
+                    except (json.JSONDecodeError, AttributeError, TypeError):
+                        pass
+                    return response
+
+            self._interceptor = _Inner()
+        except ImportError:
+            _log.debug("crewai.llms.hooks not available — cost interception disabled")
+
+    @property
+    def interceptor(self) -> Any:
+        """Return the underlying ``BaseInterceptor`` instance (or ``None``)."""
+        return self._interceptor
+
+    def reset(self) -> None:
+        with self._cost_lock:
+            self.total_cost = 0.0
 
 
 class CrewAIAdapter(BasePlatformAdapter):
@@ -47,23 +114,18 @@ class CrewAIAdapter(BasePlatformAdapter):
     CrewAI is a role-based multi-agent collaboration framework.
     """
 
+    TOOL_FORMAT = ToolFormat.CREWAI
+
     def __init__(self, config: dict[str, Any] | None = None):
         super().__init__(config)
         self._crew = None
+        self._cost_interceptor = _CostInterceptor()
 
     @property
     def platform_info(self) -> PlatformInfo:
-        return PlatformInfo(
-            name="CrewAI",
-            id="crewai",
-            category=PlatformCategory.MULTI_AGENT_FRAMEWORK,
-            runtime=PlatformRuntime.PYTHON,
-            version=self._get_version(),
-            vendor="CrewAI Inc",
-            description="Role-based multi-agent collaboration framework",
-            documentation_url="https://docs.crewai.com/",
-            repository_url="https://github.com/joaomdmoura/crewAI",
-        )
+        info = load_platform_info("crewai")
+        info.version = self._get_version()
+        return info
 
     def _get_version(self) -> str:
         try:
@@ -77,9 +139,13 @@ class CrewAIAdapter(BasePlatformAdapter):
         try:
             from crewai import Agent, Crew, Process, Task  # noqa: F401 — verify core components
 
-            # Register Langfuse as a litellm callback so every LLM call
-            # CrewAI makes is automatically traced.
-            enable_litellm_callbacks()
+            # OTEL instrumentation for CrewAI orchestration layer
+            # (crew → task → agent → tool spans in Langfuse)
+            try:
+                from openinference.instrumentation.crewai import CrewAIInstrumentor
+                CrewAIInstrumentor().instrument(skip_dep_check=True)
+            except ImportError:
+                pass  # optional — tracing degrades gracefully
 
             self._initialized = True
         except ImportError as e:
@@ -95,23 +161,55 @@ class CrewAIAdapter(BasePlatformAdapter):
     def _create_llm(self, context: StageContext):
         """Build a CrewAI LLM from centralised config + stage context overrides.
 
-        CrewAI uses litellm under the hood.  Litellm routes requests based on
-        a ``provider/model`` prefix in the model string rather than a
-        ``base_url``, so we use ``cfg.litellm_model`` which prepends the
-        correct prefix (e.g. ``openrouter/minimax/minimax-m2.5``).
+        CrewAI v1.6+ removed litellm and routes through native provider SDKs.
+        We instantiate the appropriate native provider directly (bypassing the
+        ``LLM`` factory which has no OpenRouter entry) and attach our HTTP
+        cost interceptor for providers that return ``usage.cost`` (OpenRouter).
         """
-        from crewai import LLM
-
         cfg = get_llm_config(
             model=context.model or self.config.get("model"),
             temperature=context.temperature,
         )
-        kwargs: dict = dict(
-            model=cfg.litellm_model,
+
+        interceptor = self._cost_interceptor.interceptor
+
+        if cfg.provider in (Provider.OPENAI, Provider.OPENROUTER):
+            from crewai.llms.providers.openai.completion import OpenAICompletion
+            return OpenAICompletion(
+                model=cfg.model,
+                temperature=cfg.temperature,
+                api_key=cfg.api_key,
+                base_url=cfg.base_url,
+                interceptor=interceptor,
+            )
+
+        if cfg.provider == Provider.ANTHROPIC:
+            from crewai.llms.providers.anthropic.completion import AnthropicCompletion
+            return AnthropicCompletion(
+                model=cfg.model,
+                temperature=cfg.temperature,
+                api_key=cfg.api_key,
+                interceptor=interceptor,
+            )
+
+        if cfg.provider == Provider.GOOGLE:
+            from crewai.llms.providers.gemini.completion import GeminiCompletion
+            return GeminiCompletion(
+                model=cfg.model,
+                temperature=cfg.temperature,
+                api_key=cfg.api_key,
+                interceptor=interceptor,
+            )
+
+        # Fallback: treat as OpenAI-compatible with custom base_url
+        from crewai.llms.providers.openai.completion import OpenAICompletion
+        return OpenAICompletion(
+            model=cfg.model,
             temperature=cfg.temperature,
             api_key=cfg.api_key,
+            base_url=cfg.base_url,
+            interceptor=interceptor,
         )
-        return LLM(**kwargs)
 
     # =========================================================================
     # Core Agent Runner
@@ -171,12 +269,16 @@ class CrewAIAdapter(BasePlatformAdapter):
         )
 
         record_message(trace, "user", prompt)
+
+        # Reset cost interceptor before kickoff so we capture only this run
+        self._cost_interceptor.reset()
+
         result = await asyncio.to_thread(crew.kickoff)
         record_message(trace, "assistant", str(result))
 
-        # Extract token usage from the CrewOutput.  CrewAI populates
-        # ``token_usage`` (a UsageMetrics object) after kickoff via litellm.
-        # Field names follow the litellm / OpenAI convention.
+        # Extract token usage from CrewOutput.  CrewAI v1.6+ populates
+        # ``token_usage`` (a UsageMetrics object) natively via BaseLLM.
+        # Cost comes from our HTTP interceptor reading OpenRouter responses.
         usage = getattr(result, "token_usage", None)
         if usage is not None:
             prompt_tokens = (
@@ -189,7 +291,12 @@ class CrewAIAdapter(BasePlatformAdapter):
                 or getattr(usage, "output_tokens", 0)
                 or 0
             )
-            record_usage(trace, input_tokens=prompt_tokens, output_tokens=completion_tokens)
+            record_usage(
+                trace,
+                input_tokens=prompt_tokens,
+                output_tokens=completion_tokens,
+                cost_usd=self._cost_interceptor.total_cost,
+            )
 
         iterations = counter[0]
         hit_limit = iterations >= context.max_iterations
@@ -201,102 +308,43 @@ class CrewAIAdapter(BasePlatformAdapter):
     # SDLC Stage Methods
     # =========================================================================
 
-    async def generate_requirements(
-        self,
-        context: StageContext,
-    ) -> RequirementsResult:
-        """Stage 2 -- Requirements Analysis."""
+    async def _execute_stage(self, stage_name, prompt_fn, result_cls, context):
+        """Template method for all SDLC stages."""
         trace = start_trace()
         try:
-            prompt = build_requirements_prompt(context.story)
+            if stage_name == "codegen":
+                prior = context.get_prior_result("requirements")
+                prompt = prompt_fn(context.story, prior_requirements=prior)
+            else:
+                prompt = prompt_fn(context.story)
             system_msg = build_system_message(context.story)
-            tools = create_tools(context.workspace, context.allowed_tools, fmt=ToolFormat.CREWAI)
-            iterations, hit_limit = await self._run_agent(
-                "requirements", prompt, system_msg, tools, trace, context,
+            tools = create_tools(
+                context.workspace, context.allowed_tools, fmt=self.TOOL_FORMAT,
+                platform_id=context.platform_id, story_id=context.story.id,
             )
+            iterations, hit_limit = await self._run_agent(stage_name, prompt, system_msg, tools, trace, context)
             return build_stage_result(
-                RequirementsResult, self.platform_info.id, "requirements",
+                result_cls, self.platform_info.id, stage_name,
                 trace, success=not hit_limit, iterations=iterations,
             )
         except Exception as e:
             finish_trace(trace, error=str(e))
             return build_stage_result(
-                RequirementsResult, self.platform_info.id, "requirements",
+                result_cls, self.platform_info.id, stage_name,
                 trace, success=False, iterations=0, error_message=str(e),
             )
 
-    async def generate_code(
-        self,
-        context: StageContext,
-    ) -> CodeResult:
-        """Stage 3 -- Code Generation."""
-        trace = start_trace()
-        try:
-            prior = context.get_prior_result("requirements")
-            prompt = build_codegen_prompt(context.story, prior_requirements=prior)
-            system_msg = build_system_message(context.story)
-            tools = create_tools(context.workspace, context.allowed_tools, fmt=ToolFormat.CREWAI)
-            iterations, hit_limit = await self._run_agent(
-                "codegen", prompt, system_msg, tools, trace, context,
-            )
-            return build_stage_result(
-                CodeResult, self.platform_info.id, "codegen",
-                trace, success=not hit_limit, iterations=iterations,
-            )
-        except Exception as e:
-            finish_trace(trace, error=str(e))
-            return build_stage_result(
-                CodeResult, self.platform_info.id, "codegen",
-                trace, success=False, iterations=0, error_message=str(e),
-            )
+    async def generate_requirements(self, context: StageContext) -> RequirementsResult:
+        return await self._execute_stage("requirements", build_requirements_prompt, RequirementsResult, context)
 
-    async def generate_tests(
-        self,
-        context: StageContext,
-    ) -> TestResult:
-        """Stage 4 -- Test Generation & Execution."""
-        trace = start_trace()
-        try:
-            prompt = build_testing_prompt(context.story)
-            system_msg = build_system_message(context.story)
-            tools = create_tools(context.workspace, context.allowed_tools, fmt=ToolFormat.CREWAI)
-            iterations, hit_limit = await self._run_agent(
-                "testing", prompt, system_msg, tools, trace, context,
-            )
-            return build_stage_result(
-                TestResult, self.platform_info.id, "testing",
-                trace, success=not hit_limit, iterations=iterations,
-            )
-        except Exception as e:
-            finish_trace(trace, error=str(e))
-            return build_stage_result(
-                TestResult, self.platform_info.id, "testing",
-                trace, success=False, iterations=0, error_message=str(e),
-            )
+    async def generate_code(self, context: StageContext) -> CodeResult:
+        return await self._execute_stage("codegen", build_codegen_prompt, CodeResult, context)
 
-    async def build_and_deploy(
-        self,
-        context: StageContext,
-    ) -> DeployResult:
-        """Stage 5 -- Build & Deployment Verification."""
-        trace = start_trace()
-        try:
-            prompt = build_deploy_prompt(context.story)
-            system_msg = build_system_message(context.story)
-            tools = create_tools(context.workspace, context.allowed_tools, fmt=ToolFormat.CREWAI)
-            iterations, hit_limit = await self._run_agent(
-                "deploy", prompt, system_msg, tools, trace, context,
-            )
-            return build_stage_result(
-                DeployResult, self.platform_info.id, "deploy",
-                trace, success=not hit_limit, iterations=iterations,
-            )
-        except Exception as e:
-            finish_trace(trace, error=str(e))
-            return build_stage_result(
-                DeployResult, self.platform_info.id, "deploy",
-                trace, success=False, iterations=0, error_message=str(e),
-            )
+    async def generate_tests(self, context: StageContext) -> TestResult:
+        return await self._execute_stage("testing", build_testing_prompt, TestResult, context)
+
+    async def build_and_deploy(self, context: StageContext) -> DeployResult:
+        return await self._execute_stage("deploy", build_deploy_prompt, DeployResult, context)
 
     # =========================================================================
     # Trace Callbacks

@@ -15,12 +15,13 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any, Generator
+from datetime import datetime
+from typing import Any
 
 import structlog
 from structlog.stdlib import ProcessorFormatter
-
 
 # ---------------------------------------------------------------------------
 # structlog configuration
@@ -78,8 +79,10 @@ def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
 # Langfuse (optional)
 # ---------------------------------------------------------------------------
 
+_Langfuse: type | None = None
+
 try:
-    from langfuse import Langfuse as _Langfuse  # noqa: N811
+    from langfuse import Langfuse as _Langfuse  # type: ignore[assignment]  # noqa: N811
 
     _langfuse_available = True
 except ImportError:
@@ -88,6 +91,18 @@ except ImportError:
 _langfuse_client: Any | None = None
 
 _log = get_logger("desmet.observability")
+
+
+def _suppress_otel_noise() -> None:
+    """Silence OpenTelemetry export errors when no collector is running.
+
+    Langfuse v3 auto-registers an OTel exporter that tries to POST to
+    ``localhost:3100``.  When Langfuse isn't configured we silence the
+    noisy ``ConnectionRefused`` tracebacks by raising the OTel SDK log
+    level to CRITICAL.
+    """
+    for name in ("opentelemetry", "opentelemetry.sdk", "opentelemetry.exporter"):
+        logging.getLogger(name).setLevel(logging.CRITICAL)
 
 
 def init_langfuse() -> Any | None:
@@ -100,6 +115,7 @@ def init_langfuse() -> Any | None:
 
     if not _langfuse_available:
         _log.info("langfuse_status", status="not installed — tracing disabled")
+        _suppress_otel_noise()
         return None
 
     public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
@@ -108,13 +124,20 @@ def init_langfuse() -> Any | None:
 
     if not public_key or not secret_key:
         _log.info("langfuse_status", status="not configured — set LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY")
+        _suppress_otel_noise()
         return None
 
+    assert _Langfuse is not None  # guarded by _langfuse_available check above
     _langfuse_client = _Langfuse(
         public_key=public_key,
         secret_key=secret_key,
         host=host,
     )
+    # Langfuse v3 registers an OTel TracerProvider on init; downstream
+    # libraries (LangChain, litellm) may try to register their own,
+    # triggering a harmless but noisy "Overriding of current TracerProvider
+    # is not allowed" warning.  Suppress it.
+    _suppress_otel_noise()
     _log.info("langfuse_status", status="connected", host=host)
     return _langfuse_client
 
@@ -134,6 +157,33 @@ def shutdown_langfuse() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Session management
+# ---------------------------------------------------------------------------
+
+_session_id: str | None = None
+
+
+def start_session(label: str | None = None) -> str:
+    """Create a new Langfuse session ID for this evaluation run.
+
+    All traces created after this call will be grouped under the same
+    session in the Langfuse UI.  Call once at the start of an evaluation.
+
+    Returns the generated session ID.
+    """
+    global _session_id  # noqa: PLW0603
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    _session_id = f"desmet-{label}-{ts}" if label else f"desmet-{ts}"
+    _log.info("langfuse_session", session_id=_session_id)
+    return _session_id
+
+
+def get_session_id() -> str | None:
+    """Return the current session ID, or ``None``."""
+    return _session_id
+
+
+# ---------------------------------------------------------------------------
 # Trace / span context managers  (Langfuse SDK v3 API)
 # ---------------------------------------------------------------------------
 
@@ -145,6 +195,10 @@ def langfuse_trace(
 ) -> Generator[Any | None, None, None]:
     """Open a top-level Langfuse span (acts as trace root).
 
+    If a session has been started via ``start_session()``, the trace is
+    automatically associated with that session so all traces in one
+    evaluation run are grouped together in the Langfuse UI.
+
     Yields the ``LangfuseSpan`` or ``None`` when unavailable.
     """
     client = get_langfuse()
@@ -152,12 +206,15 @@ def langfuse_trace(
         yield None
         return
 
-    # v3: start_as_current_span returns a context manager that auto-ends
-    with client.start_as_current_span(name=name, metadata=metadata or {}) as span:
-        # Tags are set via update_trace on the span
-        if tags:
-            span.update_trace(tags=tags)
-        yield span
+    session_id = get_session_id()
+
+    from langfuse import propagate_attributes  # type: ignore[import-untyped]
+
+    ctx = propagate_attributes(session_id=session_id) if session_id else propagate_attributes()
+
+    with ctx:
+        with client.start_as_current_observation(name=name, metadata=metadata or {}) as span:
+            yield span
 
 
 @contextmanager
@@ -172,9 +229,32 @@ def langfuse_span(
         yield None
         return
 
-    # v3: start_as_current_span on the parent span
-    with parent.start_as_current_span(name=name, metadata=metadata or {}, input=input) as span:
+    with parent.start_as_current_observation(name=name, metadata=metadata or {}, input=input) as span:
         yield span
+
+
+# ---------------------------------------------------------------------------
+# Framework-native callback helpers
+# ---------------------------------------------------------------------------
+
+
+def get_langchain_callback(*, session_id: str | None = None) -> Any | None:
+    """Return a Langfuse CallbackHandler for LangChain/LangGraph, or None.
+
+    The handler automatically captures every LLM call, tool invocation,
+    and chain execution as nested spans in Langfuse.  When *session_id*
+    is omitted the module-level session (from ``start_session()``) is used.
+    """
+    if get_langfuse() is None:
+        return None
+    try:
+        from langfuse.langchain import CallbackHandler  # type: ignore[import-untyped]
+
+        # In Langfuse v4, session_id is propagated via propagate_attributes()
+        # context manager (set in langfuse_trace), not via the constructor.
+        return CallbackHandler()
+    except ImportError:
+        return None
 
 
 def record_generation(
@@ -184,18 +264,23 @@ def record_generation(
     input: Any | None = None,  # noqa: A002
     output: Any | None = None,
     usage: dict[str, int] | None = None,
+    cost: float | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> None:
     """Record an LLM generation observation on *parent*.  No-op if ``None``."""
     if parent is None:
         return
 
-    with parent.start_as_current_generation(
+    cost_details = {"total": cost} if cost else {}
+
+    with parent.start_as_current_observation(
         name=name,
+        as_type="generation",
         model=model,
         input=input,
         output=output,
         usage_details=usage or {},
+        cost_details=cost_details,
         metadata=metadata or {},
     ):
         pass  # generation is recorded and ended on context exit

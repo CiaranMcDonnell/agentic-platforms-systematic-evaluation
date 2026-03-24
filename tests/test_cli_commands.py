@@ -1,5 +1,7 @@
 """Tests for CLI command registration."""
 
+from unittest.mock import patch
+
 from typer.testing import CliRunner
 
 from desmet.cli import app
@@ -7,27 +9,22 @@ from desmet.cli import app
 runner = CliRunner()
 
 
-class TestUpCommand:
-    def test_no_args_shows_targets(self):
-        result = runner.invoke(app, ["up"])
+class TestWebuiCommand:
+    def test_help_shows_webui(self):
+        result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
-        assert "flowise" in result.output
-        assert "langfuse" in result.output
+        assert "webui" in result.output
 
-    def test_invalid_target(self):
-        result = runner.invoke(app, ["up", "nonexistent"])
-        assert result.exit_code == 1
-        assert "Unknown target" in result.output
-
-
-class TestDownCommand:
-    def test_invalid_target(self):
-        result = runner.invoke(app, ["down", "nonexistent"])
-        assert result.exit_code == 1
-        assert "Unknown target" in result.output
-
-
-class TestStatusCommand:
-    def test_status_runs(self):
-        result = runner.invoke(app, ["status"])
-        assert result.exit_code == 0
+    @patch("desmet.cli.uvicorn")
+    def test_webui_default_options(self, mock_uvicorn):
+        """Verify webui passes correct defaults to uvicorn."""
+        # We patch uvicorn at the module level where it's lazily imported
+        with patch("uvicorn.run") as mock_run:
+            runner.invoke(app, ["webui"])
+            mock_run.assert_called_once_with(
+                "desmet.webui.api:app",
+                host="127.0.0.1",
+                port=8042,
+                reload=False,
+                log_level="info",
+            )

@@ -14,15 +14,16 @@ from typing import Any
 
 
 class EvaluationDimension(Enum):
-    """DESMET cross-cutting evaluation dimensions."""
-    EFFECTIVENESS = "effectiveness"
+    """DESMET Layer 3 cross-cutting evaluation dimensions.
+
+    Four primary dimensions measure **framework capability** for building
+    SE pipelines, not LLM output quality.  Each is normalised to a 1-5
+    Likert scale and aggregated from the per-story 0-3 rubric scores.
+    """
+    PIPELINE_COMPLETENESS = "pipeline_completeness"
     EFFICIENCY = "efficiency"
-    QUALITY = "quality"
+    ORCHESTRATION = "orchestration"
     AUTONOMY = "autonomy"
-    REPRODUCIBILITY = "reproducibility"
-    USABILITY = "usability"
-    OBSERVABILITY = "observability"
-    FAILURE_HANDLING = "failure_handling"
 
 
 @dataclass
@@ -66,6 +67,8 @@ class SetupMetrics:
 class StageMetrics:
     """Metrics for a single stage execution.
 
+    All score fields measure **framework capability**, not LLM output quality.
+
     TODO: Wire StageMetrics into the runner so that each stage result
     (RequirementsResult, CodeResult, TestResult, DeployResult) is
     automatically converted to a StageMetrics entry and appended to
@@ -84,9 +87,10 @@ class StageMetrics:
     tokens_output: int = 0
     human_interventions: int = 0
 
-    correctness_score: float = 0.0
-    completeness_score: float = 0.0
-    quality_score: float = 0.0
+    # Framework-centric scores (0-3)
+    pipeline_completeness_score: float = 0.0
+    tool_integration_score: float = 0.0
+    error_recovery_score: float = 0.0
 
 
 @dataclass
@@ -116,11 +120,11 @@ class StoryMetrics:
     clarifying_questions: int = 0
     self_corrections: int = 0
 
-    # Quality scores (0-3)
-    correctness_score: float = 0.0
-    completeness_score: float = 0.0
-    code_quality_score: float = 0.0
-    test_quality_score: float = 0.0
+    # Framework-centric scores (0-3)
+    pipeline_completeness_score: float = 0.0
+    tool_integration_score: float = 0.0
+    error_recovery_score: float = 0.0
+    trace_quality_score: float = 0.0
 
     # Test metrics
     tests_run: int = 0
@@ -130,6 +134,9 @@ class StoryMetrics:
     # Acceptance criteria
     criteria_total: int = 0
     criteria_passed: int = 0
+
+    # Langfuse trace linkage
+    langfuse_trace_id: str | None = None
 
 
 @dataclass
@@ -168,15 +175,16 @@ class EvaluationMetrics:
         self.stories_total += 1
         if metrics.completed:
             self.stories_completed += 1
-        elif not metrics.success:
+        if not metrics.completed and not metrics.success:
             self.stories_failed += 1
 
     def calculate_dimension_scores(self):
         """Calculate Layer 3 benchmarking dimension scores from collected metrics.
 
-        Implements the formulas defined in the DESMET report for the four
-        primary cross-cutting dimensions: Effectiveness, Efficiency, Quality,
-        and Autonomy.  All scores are on a 1-5 Likert scale.
+        All primary dimensions measure **framework capability** for building
+        SE pipelines, not LLM output quality.  The four primary dimensions
+        are: Pipeline Completeness, Efficiency, Orchestration, and Autonomy.
+        All scores are on a 1-5 Likert scale.
 
         Note: REPRODUCIBILITY, OBSERVABILITY, and FAILURE_HANDLING are Layer 2
         assessments (qualitative platform capability reviews) and are NOT
@@ -190,49 +198,42 @@ class EvaluationMetrics:
         n = len(self.story_metrics)
 
         # ------------------------------------------------------------------
-        # Effectiveness
-        # Formula: (stages_supported/total_stages)*0.4
-        #          + avg(correctness_scores)*0.3
-        #          + avg(completeness_scores)*0.3
+        # Pipeline Completeness
+        # Measures: can the framework run all SDLC stages end-to-end?
+        # Formula: completion_ratio * 0.5
+        #          + avg(pipeline_completeness_score) / 3 * 0.5
         # Scaled to 1-5.
-        # stages_supported is approximated here by the story completion rate;
-        # the runner should replace this with a per-stage support ratio once
-        # StageMetrics wiring is in place.
         # ------------------------------------------------------------------
-        stages_supported_ratio = (
+        completion_ratio = (
             self.stories_completed / self.stories_total if self.stories_total > 0 else 0.0
         )
-        avg_correctness = sum(m.correctness_score for m in self.story_metrics) / n
-        avg_completeness = sum(m.completeness_score for m in self.story_metrics) / n
-        # correctness_score and completeness_score are on 0-3; normalise to 0-1
-        effectiveness_raw = (
-            stages_supported_ratio * 0.4
-            + (avg_correctness / 3.0) * 0.3
-            + (avg_completeness / 3.0) * 0.3
+        avg_pipeline_score = (
+            sum(m.pipeline_completeness_score for m in self.story_metrics) / n
         )
-        # Raw is 0-1; scale to 1-5
-        effectiveness_score = 1.0 + effectiveness_raw * 4.0
+        pipeline_raw = (
+            completion_ratio * 0.5
+            + (avg_pipeline_score / 3.0) * 0.5
+        )
+        pipeline_completeness_score = 1.0 + pipeline_raw * 4.0
 
         self.dimension_scores.append(DimensionScore(
-            dimension=EvaluationDimension.EFFECTIVENESS,
-            score=min(5.0, max(1.0, effectiveness_score)),
+            dimension=EvaluationDimension.PIPELINE_COMPLETENESS,
+            score=min(5.0, max(1.0, pipeline_completeness_score)),
             metrics={
-                "stages_supported_ratio": stages_supported_ratio,
-                "avg_correctness": avg_correctness,
-                "avg_completeness": avg_completeness,
+                "completion_ratio": completion_ratio,
+                "avg_pipeline_completeness_rubric": avg_pipeline_score,
             }
         ))
 
         # ------------------------------------------------------------------
         # Efficiency
-        # Single-platform approximation (rank normalisation is cross-platform
-        # and applied at comparison time):
+        # Measures: framework orchestration overhead (time + tokens).
         #   time_component = max(1, 5 - (avg_time_ratio - 1) * 2)
-        #   token_component = max(1, 5 - (avg_tokens_per_story / TOKEN_BUDGET - 1) * 2)
+        #   token_component = max(1, 5 - (avg_tokens / token_budget - 1) * 2)
         #   efficiency_score = (time_component + token_component) / 2
-        # TOKEN_BUDGET: 100,000 tokens per story (adjust as evaluation matures).
+        # token_budget: 100,000 tokens per story (adjust as evaluation matures).
         # ------------------------------------------------------------------
-        TOKEN_BUDGET = 100_000
+        token_budget = 100_000
 
         timed_metrics = [m for m in self.story_metrics if m.time_budget_seconds > 0]
         if timed_metrics:
@@ -248,7 +249,7 @@ class EvaluationMetrics:
 
         time_component = max(1.0, 5.0 - (avg_time_ratio - 1.0) * 2.0)
         token_component = max(
-            1.0, 5.0 - (avg_tokens_per_story / TOKEN_BUDGET - 1.0) * 2.0
+            1.0, 5.0 - (avg_tokens_per_story / token_budget - 1.0) * 2.0
         )
         efficiency_score = (time_component + token_component) / 2.0
 
@@ -258,56 +259,56 @@ class EvaluationMetrics:
             metrics={
                 "avg_time_ratio": avg_time_ratio,
                 "avg_tokens_per_story": avg_tokens_per_story,
-                "token_budget": TOKEN_BUDGET,
+                "token_budget": token_budget,
                 "time_component": time_component,
                 "token_component": token_component,
             }
         ))
 
         # ------------------------------------------------------------------
-        # Quality
-        # Formula: avg(all 0-3 rubric scores) * 5/3
-        # Uses ALL available rubric scores: correctness, completeness,
-        # code_quality, test_quality.  Additional rubric fields (e.g.
-        # requirement quality) should be added to StageMetrics and averaged
-        # in here once the runner wiring is complete.
+        # Orchestration
+        # Measures: how well the framework handles tool integration, error
+        # recovery, and trace production — pure framework concerns.
+        # Formula: avg(tool_integration, error_recovery, trace_quality) * 5/3
         # ------------------------------------------------------------------
-        all_rubric_scores: list[float] = []
+        all_orchestration_scores: list[float] = []
         for m in self.story_metrics:
-            all_rubric_scores.extend([
-                m.correctness_score,
-                m.completeness_score,
-                m.code_quality_score,
-                m.test_quality_score,
+            all_orchestration_scores.extend([
+                m.tool_integration_score,
+                m.error_recovery_score,
+                m.trace_quality_score,
             ])
 
-        avg_rubric = sum(all_rubric_scores) / len(all_rubric_scores) if all_rubric_scores else 0.0
-        quality_score = avg_rubric * (5.0 / 3.0)
+        avg_orchestration = (
+            sum(all_orchestration_scores) / len(all_orchestration_scores)
+            if all_orchestration_scores else 0.0
+        )
+        orchestration_score = avg_orchestration * (5.0 / 3.0)
 
         self.dimension_scores.append(DimensionScore(
-            dimension=EvaluationDimension.QUALITY,
-            score=min(5.0, max(1.0, quality_score)),
+            dimension=EvaluationDimension.ORCHESTRATION,
+            score=min(5.0, max(1.0, orchestration_score)),
             metrics={
-                "avg_rubric_score": avg_rubric,
-                "rubric_fields_used": ["correctness", "completeness", "code_quality", "test_quality"],
-                "rubric_samples": len(all_rubric_scores),
+                "avg_orchestration_rubric": avg_orchestration,
+                "rubric_fields_used": [
+                    "tool_integration",
+                    "error_recovery",
+                    "trace_quality",
+                ],
+                "rubric_samples": len(all_orchestration_scores),
             }
         ))
 
         # ------------------------------------------------------------------
         # Autonomy
+        # Measures: how much human intervention the framework requires.
         # Formula: 5 - min(4, avg(interventions_per_stage))
-        # interventions_per_stage is sourced from StageMetrics.human_interventions
-        # when available; falls back to StoryMetrics.human_interventions
-        # divided by the number of stages (4) as an approximation.
         # ------------------------------------------------------------------
         if self.stage_metrics:
-            # Preferred path: per-stage granularity
             avg_interventions_per_stage = (
                 sum(sm.human_interventions for sm in self.stage_metrics) / len(self.stage_metrics)
             )
         else:
-            # Fallback: story-level human_interventions spread across 4 stages
             avg_story_interventions = (
                 sum(m.human_interventions for m in self.story_metrics) / n
             )
@@ -324,41 +325,11 @@ class EvaluationMetrics:
             }
         ))
 
-        # ------------------------------------------------------------------
-        # Usability (secondary / Layer 2-adjacent)
-        # Kept because SetupMetrics data is already collected; deprioritised
-        # in the overall score.  REPRODUCIBILITY, OBSERVABILITY, and
-        # FAILURE_HANDLING are NOT computed here — they are Layer 2
-        # assessments populated by manual evaluation outside this method.
-        # ------------------------------------------------------------------
-        if self.setup_metrics:
-            usability_score = float(self.setup_metrics.documentation_clarity_score)
-            time_penalty = min(2.0, self.setup_metrics.time_to_first_agent_minutes / 30.0)
-            usability_score = max(1.0, usability_score - time_penalty)
-
-            self.dimension_scores.append(DimensionScore(
-                dimension=EvaluationDimension.USABILITY,
-                score=usability_score,
-                confidence=0.7,  # lower confidence — single observer, setup only
-                metrics={
-                    "documentation_score": self.setup_metrics.documentation_clarity_score,
-                    "time_to_first_agent": self.setup_metrics.time_to_first_agent_minutes,
-                },
-                notes="Layer 2 / setup-phase indicator; not derived from benchmarking runs.",
-            ))
-
-        # Overall score: average the four primary Layer 3 dimensions only
-        primary_dimensions = {
-            EvaluationDimension.EFFECTIVENESS,
-            EvaluationDimension.EFFICIENCY,
-            EvaluationDimension.QUALITY,
-            EvaluationDimension.AUTONOMY,
-        }
-        primary_scores = [
-            d.score for d in self.dimension_scores if d.dimension in primary_dimensions
-        ]
-        if primary_scores:
-            self.overall_score = sum(primary_scores) / len(primary_scores)
+        # Overall score: average of the four Layer 3 dimensions
+        if self.dimension_scores:
+            self.overall_score = (
+                sum(d.score for d in self.dimension_scores) / len(self.dimension_scores)
+            )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -391,8 +362,10 @@ class EvaluationMetrics:
                     "wall_clock_seconds": m.wall_clock_seconds,
                     "iterations": m.iterations,
                     "tool_calls": m.tool_calls,
-                    "correctness_score": m.correctness_score,
-                    "completeness_score": m.completeness_score,
+                    "pipeline_completeness_score": m.pipeline_completeness_score,
+                    "tool_integration_score": m.tool_integration_score,
+                    "error_recovery_score": m.error_recovery_score,
+                    "trace_quality_score": m.trace_quality_score,
                 }
                 for m in self.story_metrics
             ],

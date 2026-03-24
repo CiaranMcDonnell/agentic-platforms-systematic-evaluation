@@ -84,17 +84,6 @@ class UserStory:
     author: str = ""
     notes: str = ""
 
-    def to_evaluation_context(self, repo_path) -> dict:
-        """Convert to EvaluationContext parameters."""
-        return {
-            "story_id": self.id,
-            "story_prompt": self.prompt,
-            "story_context": self.context,
-            "repo_path": repo_path,
-            "target_files": self.target_files,
-            "time_budget_seconds": self.time_budget_seconds,
-            "max_iterations": self.max_iterations,
-        }
 
 
 @dataclass
@@ -156,6 +145,7 @@ class StoryResult:
     git_diff: str | None = None
     trace_file: str | None = None
     log_file: str | None = None
+    langfuse_trace_id: str | None = None
 
     # Raw data
     raw_result: Any = None
@@ -183,6 +173,12 @@ class StoryResult:
     @property
     def tokens_total(self) -> int:
         return self.tokens_input + self.tokens_output
+
+    def finalize_timing(self) -> None:
+        """Set end_time and compute wall_clock_seconds from start_time."""
+        self.end_time = datetime.now()
+        if self.start_time is not None:
+            self.wall_clock_seconds = (self.end_time - self.start_time).total_seconds()
 
     def add_score(
         self,
@@ -234,44 +230,41 @@ class StoryResult:
             "tests_failed": self.tests_failed,
             "coverage_delta": self.coverage_delta,
             "output_files": self.output_files,
+            "langfuse_trace_id": self.langfuse_trace_id,
         }
 
 
-# Scoring dimensions
+# Scoring dimensions — framework-centric (NOT LLM output quality).
+# These measure how well the *platform/framework* supports building
+# and running software-engineering pipelines.
 SCORING_DIMENSIONS = [
-    "correctness",
-    "completeness",
-    "code_quality",
-    "test_quality",
+    "pipeline_completeness",
+    "tool_integration",
+    "error_recovery",
     "time_efficiency",
     "autonomy",
+    "trace_quality",
 ]
 
-# Scoring rubric
+# Scoring rubric (0-3 per dimension)
 SCORING_RUBRIC = {
-    "correctness": {
-        0: "Does not compile/run",
-        1: "Runs but wrong behavior",
-        2: "Mostly correct, minor issues",
-        3: "Fully correct",
+    "pipeline_completeness": {
+        0: "Cannot run any stage",
+        1: "Runs 1-2 stages",
+        2: "Runs 3 stages",
+        3: "Runs all 4 stages end-to-end",
     },
-    "completeness": {
-        0: "No meaningful output",
-        1: "Partial implementation",
-        2: "Most requirements met",
-        3: "All requirements met",
+    "tool_integration": {
+        0: "No tool use",
+        1: "Tools defined but frequently fail",
+        2: "Tools work with workarounds",
+        3: "Clean, reliable tool execution",
     },
-    "code_quality": {
-        0: "Unreadable/unmaintainable",
-        1: "Poor style, no structure",
-        2: "Acceptable quality",
-        3: "Clean, idiomatic code",
-    },
-    "test_quality": {
-        0: "No tests",
-        1: "Tests exist but trivial",
-        2: "Tests cover main paths",
-        3: "Comprehensive tests",
+    "error_recovery": {
+        0: "Crashes on first error",
+        1: "Errors halt pipeline",
+        2: "Logs errors, continues partially",
+        3: "Self-corrects and retries",
     },
     "time_efficiency": {
         0: "Exceeded budget by 2x+",
@@ -284,5 +277,11 @@ SCORING_RUBRIC = {
         1: "Frequent intervention",
         2: "Occasional intervention",
         3: "Fully autonomous",
+    },
+    "trace_quality": {
+        0: "No execution trace",
+        1: "Partial trace data",
+        2: "Messages + tool calls traced",
+        3: "Full trace with tokens, timing, state",
     },
 }

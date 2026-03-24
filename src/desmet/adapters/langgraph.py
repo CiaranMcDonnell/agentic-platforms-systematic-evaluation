@@ -22,15 +22,14 @@ from desmet.adapters._tracing import (
     record_usage,
     start_trace,
 )
-from desmet.harness.base import (
-    BasePlatformAdapter,
+from desmet.adapters.registry import load_platform_info
+from desmet.harness.adapter import BasePlatformAdapter
+from desmet.harness.context import StageContext
+from desmet.harness.models import PlatformInfo
+from desmet.harness.results import (
     CodeResult,
     DeployResult,
-    PlatformCategory,
-    PlatformInfo,
-    PlatformRuntime,
     RequirementsResult,
-    StageContext,
     TestResult,
 )
 from desmet.llm_config import Provider
@@ -46,25 +45,18 @@ class LangGraphAdapter(BasePlatformAdapter):
     built on LangChain.
     """
 
+    TOOL_FORMAT = ToolFormat.LANGCHAIN
+
     def __init__(self, config: dict[str, Any] | None = None):
         super().__init__(config)
         self._checkpointer = None
         self._llm = None
-        self._graph = None
 
     @property
     def platform_info(self) -> PlatformInfo:
-        return PlatformInfo(
-            name="LangGraph",
-            id="langgraph",
-            category=PlatformCategory.MULTI_AGENT_FRAMEWORK,
-            runtime=PlatformRuntime.PYTHON,
-            version=self._get_version(),
-            vendor="LangChain Inc",
-            description="Graph-based agent orchestration built on LangChain",
-            documentation_url="https://langchain-ai.github.io/langgraph/",
-            repository_url="https://github.com/langchain-ai/langgraph",
-        )
+        info = load_platform_info("langgraph")
+        info.version = self._get_version()
+        return info
 
     def _get_version(self) -> str:
         try:
@@ -78,9 +70,6 @@ class LangGraphAdapter(BasePlatformAdapter):
         """Initialize LangGraph components."""
         try:
             from langgraph.checkpoint.memory import MemorySaver
-            from langgraph.graph import (
-                StateGraph,  # noqa: F401 — needed for custom graphs in later stages
-            )
 
             cfg = get_llm_config(model=self.config.get("model"))
             self._llm = self._create_chat_model(cfg)
@@ -120,7 +109,6 @@ class LangGraphAdapter(BasePlatformAdapter):
         """Clean up LangGraph resources."""
         self._checkpointer = None
         self._llm = None
-        self._graph = None
         self._initialized = False
 
     async def health_check(self) -> bool:
@@ -150,16 +138,18 @@ class LangGraphAdapter(BasePlatformAdapter):
         context: StageContext,
     ) -> tuple[int, bool]:
         """Run a LangGraph ReAct agent. Returns (iterations, hit_limit)."""
-        from langchain_core.messages import HumanMessage, SystemMessage
-        from langgraph.prebuilt import create_react_agent
+        from langchain.agents import create_agent
+        from langchain.messages import HumanMessage
 
-        agent = create_react_agent(self._llm, tools, checkpointer=self._checkpointer)
+        agent = create_agent(
+            self._llm,
+            tools,
+            system_prompt=system_msg,
+            checkpointer=self._checkpointer,
+        )
         execution_id = self._create_execution_id()
 
-        messages = []
-        if system_msg:
-            messages.append(SystemMessage(content=system_msg))
-        messages.append(HumanMessage(content=prompt))
+        messages = [HumanMessage(content=prompt)]
 
         record_message(trace, "user", prompt)
 
@@ -186,14 +176,19 @@ class LangGraphAdapter(BasePlatformAdapter):
                 role = getattr(last_msg, "type", "assistant")
                 if content:
                     record_message(trace, role, str(content))
-                # Token usage (handles both Anthropic and OpenAI key formats)
-                usage = getattr(last_msg, "response_metadata", {}).get("usage", {})
-                if usage:
+
+                # Token usage — always check, even on tool-call messages with empty content
+                resp_meta = getattr(last_msg, "response_metadata", {})
+                usage = resp_meta.get("token_usage") or resp_meta.get("usage") or {}
+                if usage and isinstance(usage, dict) and usage.get("total_tokens", 0) > 0:
+                    cost = usage.get("cost") or 0.0
                     record_usage(
                         trace,
-                        input_tokens=usage.get("input_tokens", 0) or usage.get("prompt_tokens", 0),
-                        output_tokens=usage.get("output_tokens", 0) or usage.get("completion_tokens", 0),
+                        input_tokens=usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0),
+                        output_tokens=usage.get("completion_tokens", 0) or usage.get("output_tokens", 0),
+                        cost_usd=float(cost),
                     )
+
                 # Record tool calls
                 tool_calls = getattr(last_msg, "tool_calls", [])
                 for tc in tool_calls:
@@ -211,82 +206,43 @@ class LangGraphAdapter(BasePlatformAdapter):
     # SDLC Stage Methods
     # =========================================================================
 
-    async def generate_requirements(self, context: StageContext) -> RequirementsResult:
-        """Stage 2 -- Requirements Analysis."""
+    async def _execute_stage(self, stage_name, prompt_fn, result_cls, context):
+        """Template method for all SDLC stages."""
         trace = start_trace()
         try:
-            prompt = build_requirements_prompt(context.story)
+            if stage_name == "codegen":
+                prior = context.get_prior_result("requirements")
+                prompt = prompt_fn(context.story, prior_requirements=prior)
+            else:
+                prompt = prompt_fn(context.story)
             system_msg = build_system_message(context.story)
-            tools = create_tools(context.workspace, context.allowed_tools, fmt=ToolFormat.LANGCHAIN)
+            tools = create_tools(
+                context.workspace, context.allowed_tools, fmt=self.TOOL_FORMAT,
+                platform_id=context.platform_id, story_id=context.story.id,
+            )
             iterations, hit_limit = await self._run_agent(prompt, system_msg, tools, trace, context)
             return build_stage_result(
-                RequirementsResult, self.platform_info.id, "requirements",
+                result_cls, self.platform_info.id, stage_name,
                 trace, success=not hit_limit, iterations=iterations,
             )
         except Exception as e:
             finish_trace(trace, error=str(e))
             return build_stage_result(
-                RequirementsResult, self.platform_info.id, "requirements",
+                result_cls, self.platform_info.id, stage_name,
                 trace, success=False, iterations=0, error_message=str(e),
             )
+
+    async def generate_requirements(self, context: StageContext) -> RequirementsResult:
+        return await self._execute_stage("requirements", build_requirements_prompt, RequirementsResult, context)
 
     async def generate_code(self, context: StageContext) -> CodeResult:
-        """Stage 3 -- Code Generation."""
-        trace = start_trace()
-        try:
-            prior = context.get_prior_result("requirements")
-            prompt = build_codegen_prompt(context.story, prior_requirements=prior)
-            system_msg = build_system_message(context.story)
-            tools = create_tools(context.workspace, context.allowed_tools, fmt=ToolFormat.LANGCHAIN)
-            iterations, hit_limit = await self._run_agent(prompt, system_msg, tools, trace, context)
-            return build_stage_result(
-                CodeResult, self.platform_info.id, "codegen",
-                trace, success=not hit_limit, iterations=iterations,
-            )
-        except Exception as e:
-            finish_trace(trace, error=str(e))
-            return build_stage_result(
-                CodeResult, self.platform_info.id, "codegen",
-                trace, success=False, iterations=0, error_message=str(e),
-            )
+        return await self._execute_stage("codegen", build_codegen_prompt, CodeResult, context)
 
     async def generate_tests(self, context: StageContext) -> TestResult:
-        """Stage 4 -- Test Generation & Execution."""
-        trace = start_trace()
-        try:
-            prompt = build_testing_prompt(context.story)
-            system_msg = build_system_message(context.story)
-            tools = create_tools(context.workspace, context.allowed_tools, fmt=ToolFormat.LANGCHAIN)
-            iterations, hit_limit = await self._run_agent(prompt, system_msg, tools, trace, context)
-            return build_stage_result(
-                TestResult, self.platform_info.id, "testing",
-                trace, success=not hit_limit, iterations=iterations,
-            )
-        except Exception as e:
-            finish_trace(trace, error=str(e))
-            return build_stage_result(
-                TestResult, self.platform_info.id, "testing",
-                trace, success=False, iterations=0, error_message=str(e),
-            )
+        return await self._execute_stage("testing", build_testing_prompt, TestResult, context)
 
     async def build_and_deploy(self, context: StageContext) -> DeployResult:
-        """Stage 5 -- Build & Deployment Verification."""
-        trace = start_trace()
-        try:
-            prompt = build_deploy_prompt(context.story)
-            system_msg = build_system_message(context.story)
-            tools = create_tools(context.workspace, context.allowed_tools, fmt=ToolFormat.LANGCHAIN)
-            iterations, hit_limit = await self._run_agent(prompt, system_msg, tools, trace, context)
-            return build_stage_result(
-                DeployResult, self.platform_info.id, "deploy",
-                trace, success=not hit_limit, iterations=iterations,
-            )
-        except Exception as e:
-            finish_trace(trace, error=str(e))
-            return build_stage_result(
-                DeployResult, self.platform_info.id, "deploy",
-                trace, success=False, iterations=0, error_message=str(e),
-            )
+        return await self._execute_stage("deploy", build_deploy_prompt, DeployResult, context)
 
     # =========================================================================
     # Metadata & Lifecycle
@@ -315,8 +271,3 @@ class LangGraphAdapter(BasePlatformAdapter):
             "notes": "Supports human-in-the-loop via interrupt nodes",
         }
 
-    async def reset_state(self) -> None:
-        """Reset LangGraph state between runs."""
-        if self._checkpointer:
-            # MemorySaver doesn't persist, so nothing to clear
-            pass

@@ -1,6 +1,4 @@
 """Tests for per-stage metrics tracking."""
-import pytest
-from pathlib import Path
 
 from desmet.harness.metrics import MetricsCollector, StageMetrics
 

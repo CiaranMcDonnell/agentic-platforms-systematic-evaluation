@@ -1,16 +1,12 @@
 """Tests for CrewAI adapter's new SDLC stage methods."""
-import pytest
 import inspect
 from types import SimpleNamespace
 
+import pytest
+
 from desmet.adapters.crewai import CrewAIAdapter
-from desmet.harness.base import (
+from desmet.harness.trace import (
     AgentTrace,
-    StageContext,
-    RequirementsResult,
-    CodeResult,
-    TestResult,
-    DeployResult,
 )
 
 
@@ -35,11 +31,6 @@ class TestCrewAIAdapterInterface:
     def test_has_build_and_deploy(self, adapter):
         assert hasattr(adapter, "build_and_deploy")
         assert callable(adapter.build_and_deploy)
-
-    def test_execute_story_inherited(self, adapter):
-        """execute_story should exist (inherited from BasePlatformAdapter)."""
-        assert hasattr(adapter, "execute_story")
-        assert callable(adapter.execute_story)
 
     def test_has_run_agent(self, adapter):
         """_run_agent is the shared CrewAI-specific runner."""
@@ -82,10 +73,6 @@ class TestCrewAIAdapterInterface:
         info = adapter.platform_info
         assert info.id == "crewai"
         assert info.name == "CrewAI"
-
-    def test_execute_story_is_coroutine(self, adapter):
-        """execute_story must remain async for backwards compat."""
-        assert inspect.iscoroutinefunction(adapter.execute_story)
 
     def test_has_create_trace_callbacks(self, adapter):
         assert hasattr(adapter, "_create_trace_callbacks")

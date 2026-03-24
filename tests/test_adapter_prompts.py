@@ -14,9 +14,8 @@ from desmet.adapters._prompts import (
     build_testing_prompt,
     get_stage_persona,
 )
-from desmet.harness.base import RequirementsResult
+from desmet.harness.results import RequirementsResult
 from desmet.harness.story import DifficultyLevel, UserStory
-
 
 # ---------------------------------------------------------------------------
 # Helper

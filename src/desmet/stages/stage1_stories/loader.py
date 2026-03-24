@@ -5,19 +5,20 @@ Loads user stories from YAML and prepares StageContext for downstream stages.
 This is a harness-only stage — no adapter call.
 """
 from pathlib import Path
-from typing import Optional
 
-from desmet.harness.base import StageContext
+from desmet.harness.context import StageContext
 from desmet.harness.story import UserStory
+from desmet.llm_config import get_config as _get_llm_config
 
 
 def prepare_stage_context(
     story: UserStory,
     workspace: Path,
-    time_budget_seconds: Optional[int] = None,
-    max_iterations: Optional[int] = None,
+    time_budget_seconds: int | None = None,
+    max_iterations: int | None = None,
     timeout_multiplier: float = 1.0,
-    model: str = "gpt-4.1",
+    model: str | None = None,
+    platform_id: str = "",
 ) -> StageContext:
     """
     Prepare a StageContext from a UserStory for pipeline execution.
@@ -38,10 +39,13 @@ def prepare_stage_context(
 
     iterations = max_iterations if max_iterations is not None else story.max_iterations
 
+    resolved_model = model or _get_llm_config().model
+
     return StageContext(
         story=story,
         workspace=workspace,
+        platform_id=platform_id,
         time_budget_seconds=budget,
         max_iterations=iterations,
-        model=model,
+        model=resolved_model,
     )

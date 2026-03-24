@@ -8,13 +8,15 @@ gherkin (.feature) file references.  Backward-compatible: inline ``prompt``/
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
 from .story import AcceptanceCriterion, DifficultyLevel, UserStory
+
+logger = logging.getLogger(__name__)
 
 
 class StoryLoadError(Exception):
@@ -40,12 +42,13 @@ def _parse_prompt_file(content: str) -> tuple[str, str]:
     absent.
     """
     sections: dict[str, list[str]] = {}
-    current: Optional[str] = None
+    current: str | None = None
 
     for line in content.splitlines():
         header = re.match(r"^#\s+(.+)$", line)
         if header:
             current = header.group(1).strip().lower()
+            assert current is not None  # re.Match.group() always returns str
             sections[current] = []
         elif current is not None:
             sections[current].append(line)
@@ -68,7 +71,7 @@ def _parse_feature_file(content: str) -> dict[str, str]:
     Returns ``{"AC-001-1": "Given …\\nWhen …\\nThen …", …}``.
     """
     mapping: dict[str, str] = {}
-    current_id: Optional[str] = None
+    current_id: str | None = None
     body_lines: list[str] = []
 
     for line in content.splitlines():
@@ -165,18 +168,22 @@ def load_story(
     prompt_file = raw.get("prompt_file")
     if prompt_file:
         pf = data_dir / prompt_file
-        if not pf.exists():
-            raise StoryLoadError(f"prompt_file not found: {pf}")
-        prompt, context = _parse_prompt_file(pf.read_text(encoding="utf-8"))
+        if pf.exists():
+            prompt, context = _parse_prompt_file(pf.read_text(encoding="utf-8"))
+        elif prompt:
+            logger.warning("prompt_file not found: %s — using inline prompt", pf)
+        else:
+            raise StoryLoadError(f"prompt_file not found: {pf} (and no inline prompt)")
 
     # --- Resolve gherkin per criterion -----------------------------------
     gherkin_map: dict[str, str] = {}
     gherkin_file = raw.get("gherkin_file")
     if gherkin_file:
         gf = data_dir / gherkin_file
-        if not gf.exists():
-            raise StoryLoadError(f"gherkin_file not found: {gf}")
-        gherkin_map = _parse_feature_file(gf.read_text(encoding="utf-8"))
+        if gf.exists():
+            gherkin_map = _parse_feature_file(gf.read_text(encoding="utf-8"))
+        else:
+            logger.warning("gherkin_file not found: %s — skipping gherkin enrichment", gf)
 
     # --- Build acceptance criteria ---------------------------------------
     criteria: list[AcceptanceCriterion] = []

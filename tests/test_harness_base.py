@@ -1,19 +1,17 @@
 """Tests for the harness base data models."""
-import pytest
-from pathlib import Path
-from datetime import datetime
 
-from desmet.harness.base import (
-    StageContext,
-    StageResult,
-    RequirementsResult,
+import pytest
+
+from desmet.harness.context import StageContext
+from desmet.harness.results import (
     CodeResult,
-    TestResult,
     DeployResult,
-    AgentTrace,
+    RequirementsResult,
+    StageResult,
+    TestResult,
     UMLDiagram,
 )
-from desmet.harness.story import UserStory, DifficultyLevel
+from desmet.harness.story import DifficultyLevel, UserStory
 
 
 @pytest.fixture

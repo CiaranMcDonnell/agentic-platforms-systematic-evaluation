@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import pytest
-
 from desmet.adapters._tracing import (
     build_stage_result,
     finish_trace,
@@ -14,15 +12,16 @@ from desmet.adapters._tracing import (
     record_usage,
     start_trace,
 )
-from desmet.harness.base import (
-    AgentMessage,
-    AgentTrace,
+from desmet.harness.results import (
     DeployResult,
     RequirementsResult,
     StageResult,
+)
+from desmet.harness.trace import (
+    AgentMessage,
+    AgentTrace,
     ToolCall,
 )
-
 
 # ── TestStartTrace ──────────────────────────────────────────────────────
 
@@ -293,7 +292,7 @@ class TestBuildStageResult:
 
         result = build_stage_result(
             DeployResult,
-            platform_id="autogen",
+            platform_id="agent_framework",
             stage_name="deploy",
             trace=trace,
             success=True,

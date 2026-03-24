@@ -19,7 +19,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import structlog
 
@@ -31,20 +31,10 @@ from desmet.observability import (
 )
 from desmet.stages.stage1_stories.loader import prepare_stage_context
 
-from .base import (
-    BasePlatformAdapter,
-    EvaluationContext,
-    ExecutionResult,
-    StageContext,
-    StageResult,
-    RequirementsResult,
-    CodeResult,
-    TestResult,
-    DeployResult,
-)
-from .story import UserStory, StoryResult, StoryStatus, DifficultyLevel
-from .metrics import MetricsCollector, StoryMetrics, SetupMetrics
-
+from .adapter import BasePlatformAdapter
+from .metrics import MetricsCollector, SetupMetrics, StageMetrics, StoryMetrics
+from .results import CodeResult, StageResult, TestResult
+from .story import DifficultyLevel, StoryResult, StoryStatus, UserStory
 
 logger = get_logger(__name__)
 
@@ -201,6 +191,12 @@ class EvaluationRunner:
         adapter = self.platforms[platform_id]
         await adapter.initialize()
 
+        # Ensure metrics container exists for this platform
+        self.metrics.get_or_create_platform_metrics(
+            platform_id=platform_id,
+            platform_name=adapter.platform_info.name,
+        )
+
         with langfuse_trace(
             f"desmet-single-{platform_id}-{story_id}",
             metadata={"platform_id": platform_id, "story_id": story_id},
@@ -208,6 +204,9 @@ class EvaluationRunner:
         ) as trace:
             try:
                 result = await self._run_story(platform_id, adapter, story, trace=trace)
+                self._record_story_metrics(platform_id, story, result)
+                self.metrics.finalize_platform(platform_id)
+                self._export_results()
                 return result
             finally:
                 await adapter.shutdown()
@@ -311,6 +310,12 @@ class EvaluationRunner:
             return result
 
         with langfuse_span(trace, f"story-{story.id}", metadata={"platform_id": platform_id}) as span:
+            # Capture Langfuse trace ID for linking in the web UI
+            from desmet.observability import get_langfuse
+            lf_client = get_langfuse()
+            if lf_client is not None:
+                result.langfuse_trace_id = lf_client.get_current_trace_id()
+
             try:
                 # Create isolated workspace: copy baseline into per-platform directory
                 workspace = (
@@ -329,6 +334,7 @@ class EvaluationRunner:
                     story,
                     workspace=workspace,
                     timeout_multiplier=self.config.story_timeout_multiplier,
+                    platform_id=platform_id,
                 )
 
                 # Accumulator for per-stage results
@@ -354,6 +360,24 @@ class EvaluationRunner:
                             stage_result = await stage_method(stage_ctx)
                             stage_ctx.add_artifacts(stage_key, stage_result)
                             stage_results[stage_key] = stage_result
+
+                            # Record per-stage metrics
+                            self.metrics.record_stage_metrics(
+                                platform_id,
+                                StageMetrics(
+                                    story_id=story.id,
+                                    platform_id=platform_id,
+                                    stage_name=stage_key,
+                                    success=stage_result.success,
+                                    wall_clock_seconds=stage_result.wall_clock_seconds,
+                                    iterations=stage_result.iterations,
+                                    tool_calls=stage_result.tool_calls_count,
+                                    tokens_input=stage_result.tokens_input,
+                                    tokens_output=stage_result.tokens_output,
+                                    human_interventions=stage_result.human_interventions,
+                                ),
+                            )
+
                             logger.info(
                                 f"stage_{stage_key}_completed",
                                 success=stage_result.success,
@@ -364,8 +388,7 @@ class EvaluationRunner:
 
                 # ----- Aggregate results into StoryResult -----
                 result.status = StoryStatus.COMPLETED
-                result.end_time = datetime.now()
-                result.wall_clock_seconds = (result.end_time - result.start_time).total_seconds()
+                result.finalize_timing()
 
                 # Sum metrics across all completed stages
                 result.iterations = sum(
@@ -410,15 +433,23 @@ class EvaluationRunner:
                     result.error_message = "; ".join(errors)
 
                 # Record generation observation in Langfuse (aggregate)
+                from desmet.llm_config import get_config as _get_llm_config
+                _llm_cfg = _get_llm_config()
+                # Sum cost from stage traces
+                total_cost = sum(
+                    sr.trace.total_cost_usd for sr in stage_results.values() if sr.trace
+                )
                 record_generation(
                     parent=span,
                     name=f"execute-{story.id}",
+                    model=_llm_cfg.model,
                     input=story.prompt,
                     output=result.error_message or "success",
                     usage={
                         "input": result.tokens_input,
                         "output": result.tokens_output,
                     },
+                    cost=total_cost if total_cost > 0 else None,
                     metadata={
                         "iterations": result.iterations,
                         "tool_calls": result.tool_calls,
@@ -441,15 +472,13 @@ class EvaluationRunner:
             except asyncio.TimeoutError:
                 result.status = StoryStatus.TIMEOUT
                 result.error_message = "Execution timed out"
-                result.end_time = datetime.now()
-                result.wall_clock_seconds = (result.end_time - result.start_time).total_seconds()
+                result.finalize_timing()
                 logger.warning("story_timeout", duration_seconds=round(result.wall_clock_seconds, 1))
 
             except Exception as e:
                 result.status = StoryStatus.FAILED
                 result.error_message = str(e)
-                result.end_time = datetime.now()
-                result.wall_clock_seconds = (result.end_time - result.start_time).total_seconds()
+                result.finalize_timing()
                 logger.error("story_error", error=str(e))
 
         structlog.contextvars.unbind_contextvars("story_id", "execution_id")
@@ -475,60 +504,26 @@ class EvaluationRunner:
             tokens_input=result.tokens_input,
             tokens_output=result.tokens_output,
             human_interventions=result.human_interventions,
-            correctness_score=next(
-                (s.score for s in result.scores if s.dimension == "correctness"), 0
+            pipeline_completeness_score=next(
+                (s.score for s in result.scores if s.dimension == "pipeline_completeness"), 0
             ),
-            completeness_score=next(
-                (s.score for s in result.scores if s.dimension == "completeness"), 0
+            tool_integration_score=next(
+                (s.score for s in result.scores if s.dimension == "tool_integration"), 0
             ),
-            code_quality_score=next(
-                (s.score for s in result.scores if s.dimension == "code_quality"), 0
+            error_recovery_score=next(
+                (s.score for s in result.scores if s.dimension == "error_recovery"), 0
             ),
-            test_quality_score=next(
-                (s.score for s in result.scores if s.dimension == "test_quality"), 0
+            trace_quality_score=next(
+                (s.score for s in result.scores if s.dimension == "trace_quality"), 0
             ),
             tests_run=result.tests_run,
             tests_passed=result.tests_passed,
             coverage_delta=result.coverage_delta,
             criteria_total=len(story.acceptance_criteria),
             criteria_passed=sum(1 for v in result.criteria_results.values() if v),
+            langfuse_trace_id=result.langfuse_trace_id,
         )
         self.metrics.record_story_metrics(platform_id, metrics)
-
-    def _save_trace(
-        self,
-        result: StoryResult,
-        exec_result: ExecutionResult,
-    ) -> Path:
-        """Save execution trace to file (legacy single-result path)."""
-        trace_dir = self.config.logs_dir / result.platform_id / result.story_id
-        trace_dir.mkdir(parents=True, exist_ok=True)
-
-        trace_path = trace_dir / f"{result.execution_id}_trace.json"
-
-        trace_data = {
-            "execution_id": result.execution_id,
-            "platform_id": result.platform_id,
-            "story_id": result.story_id,
-            "start_time": result.start_time.isoformat() if result.start_time else None,
-            "end_time": result.end_time.isoformat() if result.end_time else None,
-            "status": result.status.value,
-            "iterations": result.iterations,
-            "tool_calls": result.tool_calls,
-            "messages": [
-                {
-                    "role": msg.role,
-                    "content": msg.content[:500] + "..." if len(msg.content) > 500 else msg.content,
-                    "timestamp": msg.timestamp.isoformat(),
-                }
-                for msg in exec_result.trace.messages
-            ] if exec_result.trace.messages else [],
-        }
-
-        with open(trace_path, "w", encoding="utf-8") as f:
-            json.dump(trace_data, f, indent=2)
-
-        return trace_path
 
     def _save_stage_traces(
         self,
@@ -557,9 +552,11 @@ class EvaluationRunner:
                 "tool_calls_count": sr.tool_calls_count,
                 "tokens_input": sr.tokens_input,
                 "tokens_output": sr.tokens_output,
+                "cost_usd": sr.cost_usd,
                 "human_interventions": sr.human_interventions,
                 "start_time": sr.start_time.isoformat() if sr.start_time else None,
                 "end_time": sr.end_time.isoformat() if sr.end_time else None,
+                "langsmith_run_id": sr.langsmith_run_id,
             }
             # Include message trace when available
             if sr.trace and sr.trace.messages:
@@ -581,6 +578,7 @@ class EvaluationRunner:
             "execution_id": result.execution_id,
             "platform_id": result.platform_id,
             "story_id": result.story_id,
+            "langfuse_trace_id": result.langfuse_trace_id,
             "start_time": result.start_time.isoformat() if result.start_time else None,
             "end_time": result.end_time.isoformat() if result.end_time else None,
             "status": result.status.value,
