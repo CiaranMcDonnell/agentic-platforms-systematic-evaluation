@@ -80,12 +80,26 @@ export interface OverviewPlatform {
   scored: number;
   total_to_score: number;
   colour: string;
+  dim_scores?: Record<string, number | null>;
 }
 
 export interface OverviewData {
   has_data: boolean;
   platforms?: OverviewPlatform[];
   category_colours?: Record<string, Record<string, string>>;
+}
+
+export interface ScoringMatrixPlatform {
+  platform_id: string;
+  platform_name: string;
+  colour: string;
+  scores: Record<string, number | null>;
+  scored_count: number;
+}
+
+export interface ScoringMatrixData {
+  platforms: ScoringMatrixPlatform[];
+  dimensions: string[];
 }
 
 export interface ScoringRubric {
@@ -274,6 +288,9 @@ export const fetchChartJSON = (endpoint: string) =>
 
 export const fetchRubric = () =>
   request<ScoringRubric>('/api/dashboard/scoring/rubric');
+
+export const fetchScoringMatrix = () =>
+  request<ScoringMatrixData>('/api/dashboard/scoring/matrix');
 
 export const fetchStoryScore = (pid: string, sid: string) =>
   request<StoryScoreData>(`/api/dashboard/scoring/${pid}/${sid}`);
