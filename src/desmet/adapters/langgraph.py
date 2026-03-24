@@ -4,11 +4,12 @@ LangGraph Platform Adapter — StateGraph implementation.
 Each DESMET SDLC stage runs an explicit StateGraph:
   START → planner_node → executor_node ⇄ tool_node → validator_node → (retry | END)
 """
+
 from __future__ import annotations
 
 import os
+import time
 import uuid
-from pathlib import Path
 from typing import Annotated, Any
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
@@ -18,39 +19,40 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from typing_extensions import TypedDict
 
-from desmet.adapters._prompts import (
-    build_codegen_prompt,
-    build_deploy_prompt,
-    build_requirements_prompt,
-    build_system_message,
-    build_testing_prompt,
-)
-from desmet.adapters._tools import ToolFormat, create_tools
-from desmet.adapters._validation import validate_workspace
+from desmet.adapters._base import ToolAgentAdapter
+from desmet.adapters._tools import ToolFormat
 from desmet.adapters._tracing import (
-    build_stage_result,
     finish_trace,
     record_message,
     record_node_event,
     record_tool_call,
     record_usage,
-    start_trace,
 )
+from desmet.adapters._validation import validate_workspace
 from desmet.adapters.registry import load_platform_info
-from desmet.harness.adapter import BasePlatformAdapter
 from desmet.harness.context import StageContext
 from desmet.harness.models import PlatformInfo
-from desmet.harness.results import (
-    CodeResult,
-    DeployResult,
-    RequirementsResult,
-    TestResult,
-)
 from desmet.llm_config import Provider
 from desmet.llm_config import get_config as get_llm_config
 from desmet.observability import get_langchain_callback
 
 MAX_RETRIES = 3
+
+
+def _format_tool_detail(name: str, args: dict) -> str:
+    """Format a tool call for human-readable progress logging."""
+    if name in ("read_file", "write_file") and "path" in args:
+        return f"{name} → {args['path']}"
+    if name == "execute_shell" and "command" in args:
+        cmd = args["command"]
+        return f"{name} → {cmd[:60]}{'…' if len(cmd) > 60 else ''}"
+    if name == "search_code" and "pattern" in args:
+        return f"{name} → /{args['pattern']}/"
+    if name == "list_directory":
+        return f"{name} → {args.get('path', '.')}"
+    if name == "deploy_remote" and "action" in args:
+        return f"{name} → {args['action']}"
+    return name
 
 
 class AgentState(TypedDict):
@@ -62,7 +64,7 @@ class AgentState(TypedDict):
     validator_passed: bool
 
 
-class LangGraphAdapter(BasePlatformAdapter):
+class LangGraphAdapter(ToolAgentAdapter):
     """LangGraph adapter using an explicit StateGraph per DESMET stage."""
 
     TOOL_FORMAT = ToolFormat.LANGCHAIN
@@ -70,6 +72,8 @@ class LangGraphAdapter(BasePlatformAdapter):
     def __init__(self, config: dict[str, Any] | None = None):
         super().__init__(config)
         self._llm = None
+        self._model_name: str | None = None
+        self._last_langsmith_run_id: str | None = None
 
     @property
     def platform_info(self) -> PlatformInfo:
@@ -80,6 +84,7 @@ class LangGraphAdapter(BasePlatformAdapter):
     def _get_version(self) -> str:
         try:
             import langgraph
+
             return getattr(langgraph, "__version__", "unknown")
         except ImportError:
             return "not installed"
@@ -88,6 +93,7 @@ class LangGraphAdapter(BasePlatformAdapter):
         try:
             cfg = get_llm_config(model=self.config.get("model"))
             self._llm = self._create_chat_model(cfg)
+            self._model_name = cfg.model
             self._initialized = True
         except ImportError as e:
             raise RuntimeError(f"Failed to import LangGraph: {e}")
@@ -98,10 +104,14 @@ class LangGraphAdapter(BasePlatformAdapter):
     def _create_chat_model(cfg):
         if cfg.provider == Provider.ANTHROPIC:
             from langchain_anthropic import ChatAnthropic
+
             return ChatAnthropic(
-                model=cfg.model, temperature=cfg.temperature, api_key=cfg.api_key,
+                model=cfg.model,
+                temperature=cfg.temperature,
+                api_key=cfg.api_key,
             )
         from langchain_openai import ChatOpenAI
+
         kwargs: dict = dict(model=cfg.model, temperature=cfg.temperature, api_key=cfg.api_key)
         if cfg.base_url:
             kwargs["base_url"] = cfg.base_url
@@ -125,22 +135,31 @@ class LangGraphAdapter(BasePlatformAdapter):
     def _build_graph(self, llm, tools: list):
         """Build and compile the StateGraph for a single stage run."""
         llm_with_tools = llm.bind_tools(tools)
+        _llm_durations: list[float] = []
 
         def planner_node(state: AgentState) -> dict:
-            sys = SystemMessage(content=(
-                f"You are a planning assistant for the '{state['stage']}' stage of a "
-                "software development lifecycle. Produce a concise numbered plan."
-            ))
+            sys = SystemMessage(
+                content=(
+                    f"You are a planning assistant for the '{state['stage']}' stage of a "
+                    "software development lifecycle. Produce a concise numbered plan."
+                )
+            )
+            t0 = time.monotonic()
             response = llm.invoke([sys] + state["messages"])
+            _llm_durations.append((time.monotonic() - t0) * 1000)
             return {"plan": response.content, "messages": [response]}
 
         def executor_node(state: AgentState) -> dict:
-            sys = SystemMessage(content=(
-                f"Stage: {state['stage']}\nPlan:\n{state['plan']}\n"
-                "Execute the next step. Use tools to write files or run commands. "
-                f"Working directory: {state['workspace']}"
-            ))
+            sys = SystemMessage(
+                content=(
+                    f"Stage: {state['stage']}\nPlan:\n{state['plan']}\n"
+                    "Execute the next step. Use tools to write files or run commands. "
+                    f"Working directory: {state['workspace']}"
+                )
+            )
+            t0 = time.monotonic()
             response = llm_with_tools.invoke([sys] + state["messages"])
+            _llm_durations.append((time.monotonic() - t0) * 1000)
             return {"messages": [response]}
 
         def validator_node(state: AgentState) -> dict:
@@ -167,7 +186,7 @@ class LangGraphAdapter(BasePlatformAdapter):
         builder.add_edge("tool_node", "executor_node")
         builder.add_conditional_edges("executor_node", self._route_executor)
         builder.add_conditional_edges("validator_node", route_after_validator)
-        return builder.compile()
+        return builder.compile(), _llm_durations
 
     @staticmethod
     def _route_executor(state: AgentState) -> str:
@@ -181,25 +200,22 @@ class LangGraphAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _langsmith_enabled() -> bool:
-        return (
-            os.environ.get("LANGCHAIN_TRACING_V2", "").lower() == "true"
-            and bool(os.environ.get("LANGSMITH_API_KEY", ""))
+        return os.environ.get("LANGCHAIN_TRACING_V2", "").lower() == "true" and bool(
+            os.environ.get("LANGSMITH_API_KEY", "")
         )
 
-    async def _run_graph(
+    async def _run_agent(
         self,
+        stage_name: str,
         prompt: str,
         system_msg: str | None,
         tools: list,
         trace,
         context: StageContext,
-        stage_name: str,
-    ) -> tuple[int, bool, str | None]:
-        """
-        Stream a compiled StateGraph for one SDLC stage.
-        Returns (iterations, hit_limit, langsmith_run_id | None).
-        """
-        graph = self._build_graph(self._llm, tools)
+    ) -> tuple[int, bool]:
+        """Stream a compiled StateGraph for one SDLC stage."""
+        self._last_langsmith_run_id = None
+        graph, llm_durations = self._build_graph(self._llm, tools)
 
         initial_messages: list[BaseMessage] = []
         if system_msg:
@@ -227,8 +243,11 @@ class LangGraphAdapter(BasePlatformAdapter):
         }
 
         iteration = 0
+        tool_call_count = 0
         hit_limit = False
         final_state: dict[str, Any] = {}
+        t0 = time.monotonic()
+        cb = context.progress_callback
 
         async for chunk in graph.astream(initial_state, config=config, stream_mode="updates"):
             iteration += 1
@@ -240,6 +259,11 @@ class LangGraphAdapter(BasePlatformAdapter):
                 # Accumulate full state so finish_trace has something meaningful.
                 if isinstance(node_update, dict):
                     final_state.update(node_update)
+
+                # Emit node transitions for visibility
+                if cb is not None and node_name in ("planner_node", "executor_node"):
+                    elapsed = time.monotonic() - t0
+                    cb(f"    [{node_name}]  ({elapsed:.0f}s)")
 
                 messages = node_update.get("messages", []) if isinstance(node_update, dict) else []
                 for msg in messages:
@@ -257,13 +281,27 @@ class LangGraphAdapter(BasePlatformAdapter):
                     if isinstance(usage, dict) and usage.get("total_tokens", 0) > 0:
                         record_usage(
                             trace,
-                            input_tokens=usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0),
-                            output_tokens=usage.get("completion_tokens", 0) or usage.get("output_tokens", 0),
+                            input_tokens=usage.get("prompt_tokens", 0)
+                            or usage.get("input_tokens", 0),
+                            output_tokens=usage.get("completion_tokens", 0)
+                            or usage.get("output_tokens", 0),
                             cost_usd=float(usage.get("cost") or 0.0),
+                            model=self._model_name,
                         )
 
                     for tc in getattr(msg, "tool_calls", []):
-                        record_tool_call(trace, tc.get("name", "unknown"), tc.get("args", {}), "")
+                        tool_call_count += 1
+                        tc_name = tc.get("name", "unknown")
+                        tc_args = tc.get("args", {})
+                        record_tool_call(trace, tc_name, tc_args, "")
+                        if cb is not None:
+                            elapsed = time.monotonic() - t0
+                            detail = _format_tool_detail(tc_name, tc_args)
+                            tokens = trace.total_tokens_input + trace.total_tokens_output
+                            cb(
+                                f"    tool {tool_call_count} — {detail}"
+                                f"  ({elapsed:.0f}s, {tokens:,} tokens)"
+                            )
 
                 # Capture validator outcomes as named node events for per-retry visibility.
                 if node_name == "validator_node" and isinstance(node_update, dict):
@@ -273,58 +311,35 @@ class LangGraphAdapter(BasePlatformAdapter):
                         validator_passed=node_update.get("validator_passed", False),
                         retry_count=node_update.get("retry_count", 0),
                     )
+                    if cb is not None:
+                        passed = node_update.get("validator_passed", False)
+                        retry = node_update.get("retry_count", 0)
+                        if passed:
+                            cb("    validator: PASSED")
+                        else:
+                            from desmet.adapters._tools import _check_completion
+
+                            _, hint = _check_completion(context.workspace, stage_name)
+                            cb(f"    validator: FAILED (attempt {retry}/{MAX_RETRIES}) — {hint}")
 
             if iteration >= context.max_iterations:
                 hit_limit = True
                 break
 
+        from desmet.adapters._tracing import record_llm_duration
+        for d in llm_durations:
+            record_llm_duration(trace, d)
         trace.total_iterations = iteration
         finish_trace(trace, final_state=final_state)
-        langsmith_run_id = str(run_id) if self._langsmith_enabled() else None
-        return iteration, hit_limit, langsmith_run_id
+        self._last_langsmith_run_id = str(run_id) if self._langsmith_enabled() else None
+        return iteration, hit_limit
 
-    # ── SDLC stage methods ────────────────────────────────────────────────
+    # ── SDLC stage override (attaches LangSmith run ID) ────────────────
 
     async def _execute_stage(self, stage_name, prompt_fn, result_cls, context):
-        trace = start_trace()
-        try:
-            if stage_name == "codegen":
-                prior = context.get_prior_result("requirements")
-                prompt = prompt_fn(context.story, prior_requirements=prior)
-            else:
-                prompt = prompt_fn(context.story)
-            system_msg = build_system_message(context.story)
-            tools = create_tools(
-                context.workspace, context.allowed_tools, fmt=self.TOOL_FORMAT,
-                platform_id=context.platform_id, story_id=context.story.id,
-            )
-            iterations, hit_limit, langsmith_run_id = await self._run_graph(
-                prompt, system_msg, tools, trace, context, stage_name,
-            )
-            result = build_stage_result(
-                result_cls, self.platform_info.id, stage_name,
-                trace, success=not hit_limit, iterations=iterations,
-            )
-            result.langsmith_run_id = langsmith_run_id
-            return result
-        except Exception as e:
-            finish_trace(trace, error=str(e))
-            return build_stage_result(
-                result_cls, self.platform_info.id, stage_name,
-                trace, success=False, iterations=0, error_message=str(e),
-            )
-
-    async def generate_requirements(self, context: StageContext) -> RequirementsResult:
-        return await self._execute_stage("requirements", build_requirements_prompt, RequirementsResult, context)
-
-    async def generate_code(self, context: StageContext) -> CodeResult:
-        return await self._execute_stage("codegen", build_codegen_prompt, CodeResult, context)
-
-    async def generate_tests(self, context: StageContext) -> TestResult:
-        return await self._execute_stage("testing", build_testing_prompt, TestResult, context)
-
-    async def build_and_deploy(self, context: StageContext) -> DeployResult:
-        return await self._execute_stage("deploy", build_deploy_prompt, DeployResult, context)
+        result = await super()._execute_stage(stage_name, prompt_fn, result_cls, context)
+        result.langsmith_run_id = self._last_langsmith_run_id
+        return result
 
     # ── Metadata ─────────────────────────────────────────────────────────
 
