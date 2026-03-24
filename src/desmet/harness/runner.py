@@ -15,9 +15,11 @@ itself via ``prepare_stage_context``.
 
 import asyncio
 import json
+import os
 import shutil
+import stat
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +39,16 @@ from .results import CodeResult, StageResult, TestResult
 from .story import DifficultyLevel, StoryResult, StoryStatus, UserStory
 
 logger = get_logger(__name__)
+
+
+def _force_remove_readonly(func, path, _exc_info):
+    """Handle read-only files during shutil.rmtree on Windows.
+
+    Git marks .git/objects/* as read-only; rmtree fails on these unless
+    we clear the flag first.
+    """
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
 
 
 @dataclass
@@ -86,11 +98,13 @@ class EvaluationRunner:
         platforms: dict[str, BasePlatformAdapter],
         stories: list[UserStory],
         baseline_repo: Path,
+        progress_callback: Any | None = None,
     ):
         self.config = config
         self.platforms = platforms
         self.stories = stories
         self.baseline_repo = baseline_repo
+        self.progress_callback = progress_callback
 
         # Setup directories
         self.config.results_dir.mkdir(parents=True, exist_ok=True)
@@ -110,7 +124,7 @@ class EvaluationRunner:
             Summary of evaluation results
         """
         logger.info("Starting DESMET Agentic Platforms Evaluation")
-        start_time = datetime.now()
+        start_time = datetime.now(timezone.utc)
 
         # Filter platforms and stories if configured
         platforms_to_run = self._filter_platforms()
@@ -168,7 +182,7 @@ class EvaluationRunner:
         # Export results
         self._export_results()
 
-        end_time = datetime.now()
+        end_time = datetime.now(timezone.utc)
         duration = (end_time - start_time).total_seconds()
 
         logger.info("evaluation_completed", duration_seconds=round(duration, 1))
@@ -221,12 +235,12 @@ class EvaluationRunner:
         for platform_id, adapter in platforms.items():
             logger.info(f"  Initializing {adapter.platform_info.name}...")
             try:
-                start = datetime.now()
+                start = datetime.now(timezone.utc)
                 await asyncio.wait_for(
                     adapter.initialize(),
                     timeout=self.config.setup_timeout_seconds,
                 )
-                duration = (datetime.now() - start).total_seconds()
+                duration = (datetime.now(timezone.utc) - start).total_seconds()
 
                 # Record setup time
                 setup_metrics = SetupMetrics(
@@ -293,9 +307,9 @@ class EvaluationRunner:
         result = StoryResult(
             story_id=story.id,
             platform_id=platform_id,
-            execution_id=f"{platform_id}_{story.id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            execution_id=f"{platform_id}_{story.id}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}",
             status=StoryStatus.RUNNING,
-            start_time=datetime.now(),
+            start_time=datetime.now(timezone.utc),
         )
 
         structlog.contextvars.bind_contextvars(
@@ -322,7 +336,7 @@ class EvaluationRunner:
                     self.config.results_dir / platform_id / story.id / "workspace"
                 )
                 if workspace.exists():
-                    shutil.rmtree(workspace)
+                    shutil.rmtree(workspace, onerror=_force_remove_readonly)
                 shutil.copytree(self.baseline_repo, workspace)
                 logger.info(
                     "workspace_created",
@@ -336,6 +350,7 @@ class EvaluationRunner:
                     timeout_multiplier=self.config.story_timeout_multiplier,
                     platform_id=platform_id,
                 )
+                stage_ctx.progress_callback = self.progress_callback
 
                 # Accumulator for per-stage results
                 stage_results: dict[str, StageResult] = {}
@@ -348,8 +363,20 @@ class EvaluationRunner:
                 else:
                     stages_to_run = self._STAGES
 
+                # Initialise git remote in workspace for deploy stage
+                self._init_deploy_repo(workspace, platform_id, story.id)
+
                 # Execute selected stages sequentially
                 for stage_key, method_name in stages_to_run:
+                    # Grant access to deploy_remote tool for the deploy stage
+                    if stage_key == "deploy" and "deploy_remote" not in stage_ctx.allowed_tools:
+                        stage_ctx.allowed_tools.append("deploy_remote")
+
+                    if self.progress_callback is not None:
+                        self.progress_callback(
+                            f"  [{stage_key.upper()}] Starting {stage_key} stage..."
+                        )
+
                     stage_method = getattr(adapter, method_name)
                     try:
                         with langfuse_span(
@@ -382,8 +409,23 @@ class EvaluationRunner:
                                 f"stage_{stage_key}_completed",
                                 success=stage_result.success,
                             )
+
+                            if self.progress_callback is not None:
+                                status = "PASSED" if stage_result.success else "FAILED"
+                                total_tokens = stage_result.tokens_input + stage_result.tokens_output
+                                cost_part = f", ${stage_result.cost_usd:.4f}" if stage_result.cost_usd > 0 else ""
+                                error_part = f" — {stage_result.error_message}" if stage_result.error_message else ""
+                                self.progress_callback(
+                                    f"  [{stage_key.upper()}] {status} — "
+                                    f"{stage_result.wall_clock_seconds:.1f}s, "
+                                    f"{stage_result.iterations} iterations, "
+                                    f"{stage_result.tool_calls_count} tool calls, "
+                                    f"{total_tokens:,} tokens{cost_part}{error_part}"
+                                )
                     except Exception as e:
                         logger.error(f"stage_{stage_key}_failed", error=str(e))
+                        if self.progress_callback is not None:
+                            self.progress_callback(f"  [{stage_key.upper()}] ERROR — {e}")
                         # Continue -- do NOT block later stages
 
                 # ----- Aggregate results into StoryResult -----
@@ -403,9 +445,34 @@ class EvaluationRunner:
                 result.tokens_output = sum(
                     sr.tokens_output for sr in stage_results.values()
                 )
+                result.api_cost_usd = sum(
+                    sr.cost_usd for sr in stage_results.values()
+                )
                 result.human_interventions = sum(
                     sr.human_interventions for sr in stage_results.values()
                 )
+
+                # Aggregate framework metrics across stages
+                all_fm = [
+                    sr.framework_metrics
+                    for sr in stage_results.values()
+                    if sr.framework_metrics
+                ]
+                if all_fm:
+                    agg: dict[str, float | None] = {}
+                    for key in ("tokens_per_stage", "iteration_ratio",
+                                "redundant_tool_call_rate", "tool_failure_rate"):
+                        vals = [fm[key] for fm in all_fm if fm.get(key) is not None]
+                        agg[key] = sum(vals) / len(vals) if vals else None
+                    latencies = [fm["first_action_latency_ms"] for fm in all_fm
+                                 if fm.get("first_action_latency_ms") is not None]
+                    agg["first_action_latency_ms"] = (
+                        sum(latencies) / len(latencies) if latencies else None
+                    )
+                    overheads = [fm["framework_overhead_ms"] for fm in all_fm
+                                 if fm.get("framework_overhead_ms") is not None]
+                    agg["framework_overhead_ms"] = sum(overheads) if overheads else None
+                    result.framework_metrics = agg
 
                 # Pull artifact-specific fields from code / test / deploy stages
                 code_result = stage_results.get("codegen")
@@ -435,10 +502,8 @@ class EvaluationRunner:
                 # Record generation observation in Langfuse (aggregate)
                 from desmet.llm_config import get_config as _get_llm_config
                 _llm_cfg = _get_llm_config()
-                # Sum cost from stage traces
-                total_cost = sum(
-                    sr.trace.total_cost_usd for sr in stage_results.values() if sr.trace
-                )
+                # Use already-aggregated cost from result
+                total_cost = result.api_cost_usd
                 record_generation(
                     parent=span,
                     name=f"execute-{story.id}",
@@ -484,46 +549,42 @@ class EvaluationRunner:
         structlog.contextvars.unbind_contextvars("story_id", "execution_id")
         return result
 
-    def _record_story_metrics(
-        self,
-        platform_id: str,
-        story: UserStory,
-        result: StoryResult,
-    ):
-        """Record metrics from a story execution."""
-        metrics = StoryMetrics(
-            story_id=story.id,
-            platform_id=platform_id,
-            execution_id=result.execution_id,
-            success=result.success,
-            completed=result.status == StoryStatus.COMPLETED,
-            wall_clock_seconds=result.wall_clock_seconds,
+    def _record_story_metrics(self, platform_id, story, result):
+        """Record story-level metrics from the completed StoryResult."""
+        metrics = StoryMetrics.from_story_result(
+            result,
             time_budget_seconds=story.time_budget_seconds,
-            iterations=result.iterations,
-            tool_calls=result.tool_calls,
-            tokens_input=result.tokens_input,
-            tokens_output=result.tokens_output,
-            human_interventions=result.human_interventions,
-            pipeline_completeness_score=next(
-                (s.score for s in result.scores if s.dimension == "pipeline_completeness"), 0
-            ),
-            tool_integration_score=next(
-                (s.score for s in result.scores if s.dimension == "tool_integration"), 0
-            ),
-            error_recovery_score=next(
-                (s.score for s in result.scores if s.dimension == "error_recovery"), 0
-            ),
-            trace_quality_score=next(
-                (s.score for s in result.scores if s.dimension == "trace_quality"), 0
-            ),
-            tests_run=result.tests_run,
-            tests_passed=result.tests_passed,
-            coverage_delta=result.coverage_delta,
-            criteria_total=len(story.acceptance_criteria),
-            criteria_passed=sum(1 for v in result.criteria_results.values() if v),
-            langfuse_trace_id=result.langfuse_trace_id,
         )
         self.metrics.record_story_metrics(platform_id, metrics)
+
+    @staticmethod
+    def _init_deploy_repo(workspace: Path, platform_id: str, story_id: str) -> None:
+        """Initialise a git repo in the workspace with the deploy remote.
+
+        This runs before any stage so the workspace is ready for the deploy
+        stage's ``push`` action which commits and pushes to a branch.
+        Uses HTTPS + token for the local push remote (works with any SSH
+        agent setup).  The server-side pull still uses the SSH deploy key.
+        """
+        import subprocess as _sp
+
+        deploy_repo = os.environ.get("DEPLOY_REPO", "")
+        if not deploy_repo:
+            return
+
+        from desmet.adapters._tools import _git_push_url
+        push_url = _git_push_url(deploy_repo)
+        branch = f"{platform_id}/{story_id}"
+
+        cmds = [
+            ["git", "init"],
+            ["git", "checkout", "-b", branch],
+            ["git", "remote", "add", "deploy", push_url],
+            ["git", "add", "-A"],
+            ["git", "commit", "-m", "initial baseline"],
+        ]
+        for cmd in cmds:
+            _sp.run(cmd, cwd=workspace, capture_output=True, timeout=30)
 
     def _save_stage_traces(
         self,
@@ -558,6 +619,8 @@ class EvaluationRunner:
                 "end_time": sr.end_time.isoformat() if sr.end_time else None,
                 "langsmith_run_id": sr.langsmith_run_id,
             }
+            if sr.framework_metrics:
+                stage_entry["framework_metrics"] = sr.framework_metrics
             # Include message trace when available
             if sr.trace and sr.trace.messages:
                 stage_entry["messages"] = [
@@ -571,6 +634,18 @@ class EvaluationRunner:
                         "timestamp": msg.timestamp.isoformat(),
                     }
                     for msg in sr.trace.messages
+                ]
+            # Include per-tool-call details so downstream analysis can
+            # determine *which* tools each platform actually used.
+            if sr.trace and sr.trace.tool_calls:
+                stage_entry["tool_calls"] = [
+                    {
+                        "tool_name": tc.tool_name,
+                        "arguments": tc.arguments,
+                        "success": tc.success,
+                        "duration_ms": tc.duration_ms,
+                    }
+                    for tc in sr.trace.tool_calls
                 ]
             stages_data[stage_key] = stage_entry
 
