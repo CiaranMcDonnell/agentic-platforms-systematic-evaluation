@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { LangfuseTraceDetail, LangfuseObservation } from '../api';
+  import { formatContent } from '../format';
 
   interface Props { traceData: LangfuseTraceDetail; }
   let { traceData }: Props = $props();
@@ -64,12 +65,6 @@
     return type.toUpperCase();
   }
 
-  function formatContent(raw: string | null | undefined): string {
-    if (!raw) return '';
-    const s = raw.trim();
-    try { return JSON.stringify(JSON.parse(s), null, 2); } catch {}
-    return s;
-  }
 </script>
 
 <div class="mt-wrap">

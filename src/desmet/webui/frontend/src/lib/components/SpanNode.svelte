@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { LangfuseObservation } from '../api';
+  import { formatContent } from '../format';
 
   interface Props {
     observation: LangfuseObservation;
@@ -74,13 +75,13 @@
       {#if observation.input}
         <details class="io-block">
           <summary>Input</summary>
-          <pre class="io-pre">{observation.input}</pre>
+          <pre class="io-pre">{formatContent(observation.input)}</pre>
         </details>
       {/if}
       {#if observation.output}
         <details class="io-block">
           <summary>Output</summary>
-          <pre class="io-pre">{observation.output}</pre>
+          <pre class="io-pre">{formatContent(observation.output)}</pre>
         </details>
       {/if}
     </div>

@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { LangfuseTraceDetail, LangfuseObservation } from '../api';
+  import { formatContent } from '../format';
 
   interface Props { traceData: LangfuseTraceDetail; }
   let { traceData }: Props = $props();
@@ -48,12 +49,6 @@
     expanded = next;
   }
 
-  function formatContent(raw: string | null | undefined): string {
-    if (!raw) return '';
-    const s = raw.trim();
-    try { return JSON.stringify(JSON.parse(s), null, 2); } catch {}
-    return s;
-  }
 </script>
 
 <div class="tl-wrap">
