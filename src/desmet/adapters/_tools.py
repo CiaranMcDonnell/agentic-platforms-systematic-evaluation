@@ -21,7 +21,7 @@ class ToolFormat(Enum):
 
     LANGCHAIN = "langchain"  # @tool decorated functions
     CREWAI = "crewai"  # BaseTool subclasses
-    OPENAI_FUNCTION = "openai"  # (schema_dict, callable) tuples
+    OPENAI_AGENTS = "openai_agents"  # OpenAI Agents SDK FunctionTool instances
     CALLABLE = "callable"  # plain Python callables
 
 
@@ -472,6 +472,57 @@ def _build_crewai_tools(workspace: Path, tool_names: list[str], platform_id=None
     return tools
 
 
+def _build_openai_agents_tools(workspace: Path, tool_names: list[str], platform_id=None, story_id=None) -> list:
+    """Return OpenAI Agents SDK ``FunctionTool`` instances."""
+    from agents import function_tool
+
+    tools: list = []
+
+    if "read_file" in tool_names:
+        @function_tool
+        def read_file(path: str) -> str:
+            """Read the contents of a file at the given relative path."""
+            return _read_file(workspace, path)
+        tools.append(read_file)
+
+    if "write_file" in tool_names:
+        @function_tool
+        def write_file(path: str, content: str) -> str:
+            """Write content to a file, creating parent directories as needed."""
+            return _write_file(workspace, path, content)
+        tools.append(write_file)
+
+    if "list_directory" in tool_names:
+        @function_tool
+        def list_directory(path: str = ".") -> str:
+            """List files and directories at the given relative path."""
+            return _list_directory(workspace, path)
+        tools.append(list_directory)
+
+    if "execute_shell" in tool_names:
+        @function_tool
+        def execute_shell(command: str) -> str:
+            """Execute a shell command in the project directory."""
+            return _execute_shell(workspace, command)
+        tools.append(execute_shell)
+
+    if "search_code" in tool_names:
+        @function_tool
+        def search_code(pattern: str, path: str = ".") -> str:
+            """Search code files for lines matching a regex pattern."""
+            return _search_code(workspace, pattern, path)
+        tools.append(search_code)
+
+    if "deploy_remote" in tool_names:
+        @function_tool
+        def deploy_remote(action: str, url: str = "/health") -> str:
+            """Deploy to remote server: push artifacts, restart Docker, or health check."""
+            return _deploy_remote(workspace, platform_id, story_id, action, url)
+        tools.append(deploy_remote)
+
+    return tools
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -520,7 +571,7 @@ def create_tools(
     if fmt is ToolFormat.CREWAI:
         return _build_crewai_tools(workspace, tool_names, **kwargs)
 
-    if fmt is ToolFormat.OPENAI_FUNCTION:
-        raise NotImplementedError("OpenAI function tools not yet implemented")
+    if fmt is ToolFormat.OPENAI_AGENTS:
+        return _build_openai_agents_tools(workspace, tool_names, **kwargs)
 
     raise ValueError(f"Unknown tool format: {fmt}")

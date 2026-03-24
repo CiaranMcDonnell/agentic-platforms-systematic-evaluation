@@ -281,9 +281,45 @@ class TestCreateToolsCrewAI:
 
 
 class TestCreateToolsOpenAI:
-    def test_raises_not_implemented(self, workspace):
-        with pytest.raises(NotImplementedError, match="OpenAI"):
-            create_tools(workspace, ["read_file"], fmt=ToolFormat.OPENAI_FUNCTION)
+    def test_openai_function_enum_removed(self):
+        assert not hasattr(ToolFormat, "OPENAI_FUNCTION")
+        assert hasattr(ToolFormat, "OPENAI_AGENTS")
+
+
+class TestCreateToolsOpenAIAgents:
+    @pytest.fixture(autouse=True)
+    def _require_openai_agents(self):
+        pytest.importorskip("agents", reason="openai-agents not installed")
+
+    @pytest.fixture
+    def oai_tools(self, workspace):
+        return create_tools(
+            workspace,
+            list(AVAILABLE_TOOLS),
+            fmt=ToolFormat.OPENAI_AGENTS,
+        )
+
+    def test_returns_correct_count(self, oai_tools):
+        # deploy_remote filtered out without platform context
+        assert len(oai_tools) == 5
+
+    def test_tools_have_correct_names(self, oai_tools):
+        names = {t.name for t in oai_tools}
+        assert names == set(AVAILABLE_TOOLS) - {"deploy_remote"}
+
+    def test_tools_are_function_tools(self, oai_tools):
+        from agents import FunctionTool
+        for tool in oai_tools:
+            assert isinstance(tool, FunctionTool)
+
+    def test_read_file_invocation(self, oai_tools):
+        """Invoke read_file and verify it reads actual content."""
+        import asyncio
+        read_tool = next(t for t in oai_tools if t.name == "read_file")
+        from agents import RunContextWrapper
+        ctx = RunContextWrapper(context=None)
+        result = asyncio.run(read_tool.on_invoke_tool(ctx, '{"path": "hello.py"}'))
+        assert result == "print('hello')"
 
 
 class TestDeployRemoteTool:
