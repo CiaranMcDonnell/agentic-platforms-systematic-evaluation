@@ -104,6 +104,7 @@ class ConfigStatus:
     model: str
     api_keys_set: list[str] = field(default_factory=list)
     langfuse_status: str = "not configured"
+    deploy_status: str = "not configured"
 
 
 def is_package_importable(package_name: str) -> bool:
@@ -158,6 +159,15 @@ def get_platform_statuses() -> list[PlatformStatus]:
     return statuses
 
 
+def get_docker_platform_statuses() -> dict[str, str]:
+    """Return container status for docker-based platforms only."""
+    result: dict[str, str] = {}
+    for pid, container in PLATFORM_CONTAINERS.items():
+        if container is not None:
+            result[pid] = get_container_status(container)
+    return result
+
+
 def get_infra_statuses() -> list[dict]:
     """Return status of infrastructure services (Langfuse, Postgres+Redis)."""
     results = []
@@ -190,10 +200,22 @@ def get_config_status() -> ConfigStatus:
     else:
         langfuse_status = "not installed"
 
+    # Deploy target status
+    deploy_host = os.getenv("DEPLOY_HOST")
+    deploy_repo = os.getenv("DEPLOY_REPO")
+    deploy_key = os.getenv("DEPLOY_KEY_PATH")
+    if deploy_host and deploy_repo and deploy_key:
+        deploy_status = "configured"
+    elif deploy_host or deploy_repo:
+        deploy_status = "partially configured"
+    else:
+        deploy_status = "not configured"
+
     return ConfigStatus(
         model=model,
         api_keys_set=api_keys_set,
         langfuse_status=langfuse_status,
+        deploy_status=deploy_status,
     )
 
 
