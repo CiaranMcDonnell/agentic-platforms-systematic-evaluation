@@ -30,6 +30,7 @@ export interface AppConfig {
   provider: string;
   api_keys_set: string[];
   langfuse_status: string;
+  deploy_status: string;
   temperature: number;
   available_models: string[];
   allow_custom_model?: boolean;
@@ -226,11 +227,23 @@ export interface StoryPlatformRow {
 
 // ── Request helper ──────────────────────
 
+export class ApiError extends Error {
+  constructor(public status: number, public statusText: string, public body: unknown) {
+    super(`API ${status}: ${statusText}`);
+    this.name = 'ApiError';
+  }
+}
+
 async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
     ...opts,
   });
+  if (!res.ok) {
+    let body: unknown;
+    try { body = await res.json(); } catch { body = await res.text().catch(() => null); }
+    throw new ApiError(res.status, res.statusText, body);
+  }
   return res.json() as Promise<T>;
 }
 
@@ -238,6 +251,9 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
 
 export const fetchPlatforms = () =>
   request<{ platforms: Platform[] }>('/api/platforms');
+
+export const fetchPlatformStatuses = () =>
+  request<{ statuses: Record<string, string> }>('/api/platforms/status');
 
 export const fetchConfig = () =>
   request<AppConfig>('/api/config');
@@ -334,6 +350,6 @@ export function connectRunLogs(runId: string, onMessage: (line: string) => void)
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws/runs/${runId}`);
   ws.onmessage = (e) => onMessage(e.data);
-  ws.onerror = () => {};
+  ws.onerror = (e) => console.warn('[DESMET] WebSocket error for run', runId, e);
   return ws;
 }
