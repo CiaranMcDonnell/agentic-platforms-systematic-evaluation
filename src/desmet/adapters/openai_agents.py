@@ -5,6 +5,8 @@ Uses the Agents SDK's Runner.run() with a validation/retry loop per SDLC stage.
 """
 from __future__ import annotations
 
+import json
+import time
 from typing import Any
 
 from agents import Agent, ModelSettings, Runner
@@ -15,42 +17,53 @@ from agents.items import (
 )
 from openai import AsyncOpenAI
 
-from desmet.adapters._prompts import (
-    build_codegen_prompt,
-    build_deploy_prompt,
-    build_requirements_prompt,
-    build_system_message,
-    build_testing_prompt,
-    get_stage_persona,
-)
-from desmet.adapters._tools import ToolFormat, create_tools
+from agents.tracing import set_trace_processors
+
+from desmet.adapters._base import ToolAgentAdapter
+from desmet.adapters._prompts import get_stage_persona
+from desmet.adapters._tools import ToolFormat
 from desmet.adapters._tracing import (
-    build_stage_result,
     finish_trace,
+    record_llm_duration,
     record_message,
     record_tool_call,
     record_usage,
-    start_trace,
 )
 from desmet.adapters._validation import validate_workspace
 from desmet.adapters.registry import load_platform_info
-from desmet.harness.adapter import BasePlatformAdapter
 from desmet.harness.context import StageContext
 from desmet.harness.models import PlatformInfo
-from desmet.harness.results import (
-    CodeResult,
-    DeployResult,
-    RequirementsResult,
-    TestResult,
-)
 from desmet.harness.trace import AgentTrace
 from desmet.llm_config import Provider
 from desmet.llm_config import get_config as get_llm_config
+from desmet.observability import get_openai_agents_tracing_processor
 
 MAX_RETRIES = 3
 
 
-class OpenAIAgentsAdapter(BasePlatformAdapter):
+def _format_tool_detail(name: str, raw_args: Any) -> str:
+    """Format an OpenAI Agents tool call for human-readable progress logging."""
+    args = raw_args if isinstance(raw_args, dict) else {}
+    if not args and isinstance(raw_args, str):
+        try:
+            args = json.loads(raw_args)
+        except (json.JSONDecodeError, TypeError):
+            pass
+    if name in ("read_file", "write_file") and "path" in args:
+        return f"{name} → {args['path']}"
+    if name == "execute_shell" and "command" in args:
+        cmd = args["command"]
+        return f"{name} → {cmd[:60]}{'…' if len(cmd) > 60 else ''}"
+    if name == "search_code" and "pattern" in args:
+        return f"{name} → /{args['pattern']}/"
+    if name == "list_directory":
+        return f"{name} → {args.get('path', '.')}"
+    if name == "deploy_remote" and "action" in args:
+        return f"{name} → {args['action']}"
+    return name
+
+
+class OpenAIAgentsAdapter(ToolAgentAdapter):
     """OpenAI Agents SDK adapter using Runner.run() with a retry/validation loop."""
 
     TOOL_FORMAT = ToolFormat.OPENAI_AGENTS
@@ -58,6 +71,7 @@ class OpenAIAgentsAdapter(BasePlatformAdapter):
     def __init__(self, config: dict[str, Any] | None = None):
         super().__init__(config)
         self._model = None
+        self._model_name: str | None = None
 
     @property
     def platform_info(self) -> PlatformInfo:
@@ -76,6 +90,16 @@ class OpenAIAgentsAdapter(BasePlatformAdapter):
         try:
             cfg = get_llm_config(model=self.config.get("model"))
             self._model = self._create_model(cfg)
+            self._model_name = cfg.model
+
+            # Replace the default OpenAI trace exporter with our Langfuse
+            # processor.  The default BackendSpanExporter posts to
+            # api.openai.com/v1/traces/ingest which rejects non-OpenAI
+            # providers and unknown usage keys.
+            lf_processor = get_openai_agents_tracing_processor()
+            if lf_processor is not None:
+                set_trace_processors([lf_processor])
+
             self._initialized = True
         except ImportError as e:
             raise RuntimeError(f"Failed to import OpenAI Agents SDK: {e}")
@@ -145,8 +169,11 @@ class OpenAIAgentsAdapter(BasePlatformAdapter):
 
         max_turns = context.max_iterations // MAX_RETRIES
         total_iterations = 0
+        tool_call_count = 0
         hit_limit = False
         result = None
+        t0 = time.monotonic()
+        cb = context.progress_callback
 
         record_message(trace, "user", prompt)
 
@@ -154,6 +181,11 @@ class OpenAIAgentsAdapter(BasePlatformAdapter):
             if result is None:
                 input_msg = prompt
             else:
+                if cb is not None:
+                    from desmet.adapters._tools import _check_completion
+                    _, hint = _check_completion(context.workspace, stage_name)
+                    elapsed = time.monotonic() - t0
+                    cb(f"    validator: FAILED (attempt {attempt}/{MAX_RETRIES}) — {hint}  ({elapsed:.0f}s)")
                 input_msg = result.to_input_list() + [
                     {
                         "role": "user",
@@ -164,17 +196,30 @@ class OpenAIAgentsAdapter(BasePlatformAdapter):
                     }
                 ]
 
+            tool_time_before = sum(tc.duration_ms for tc in trace.tool_calls)
+            run_t0 = time.monotonic()
             result = await Runner.run(agent, input=input_msg, max_turns=max_turns)
+            run_duration_ms = (time.monotonic() - run_t0) * 1000
 
             # Extract trace data from this run
-            iterations = self._extract_trace(trace, result)
+            iterations, tool_call_count = self._extract_trace(
+                trace, result, cb=cb, t0=t0, tool_call_count=tool_call_count,
+                model=self._model_name,
+            )
             total_iterations += iterations
+
+            tool_time_after = sum(tc.duration_ms for tc in trace.tool_calls)
+            tool_time_in_run = tool_time_after - tool_time_before
+            llm_time_estimate = max(0.0, run_duration_ms - tool_time_in_run)
+            record_llm_duration(trace, llm_time_estimate)
 
             if total_iterations >= context.max_iterations:
                 hit_limit = True
                 break
 
             if validate_workspace(stage_name, str(context.workspace)):
+                if cb is not None:
+                    cb("    validator: PASSED")
                 break
 
         trace.total_iterations = total_iterations
@@ -182,24 +227,36 @@ class OpenAIAgentsAdapter(BasePlatformAdapter):
         return total_iterations, hit_limit
 
     @staticmethod
-    def _extract_trace(trace: AgentTrace, result) -> int:
+    def _extract_trace(
+        trace: AgentTrace,
+        result,
+        *,
+        cb=None,
+        t0: float = 0.0,
+        tool_call_count: int = 0,
+        model: str | None = None,
+    ) -> tuple[int, int]:
         """Extract messages, tool calls, and usage from a RunResult.
 
-        Returns the number of new_items processed (used as iteration count).
+        Returns ``(new_items_count, updated_tool_call_count)``.
         """
-        # Messages and tool calls from new_items
         for item in result.new_items:
             if isinstance(item, MessageOutputItem):
                 text = item.raw_item.content[0].text if item.raw_item.content else ""
                 record_message(trace, "assistant", text)
             elif isinstance(item, ToolCallItem):
+                tool_call_count += 1
                 call = item.raw_item
-                record_tool_call(
-                    trace,
-                    name=call.name,
-                    args=call.arguments if isinstance(call.arguments, dict) else {"raw": call.arguments},
-                    result="",
-                )
+                args = call.arguments if isinstance(call.arguments, dict) else {"raw": call.arguments}
+                record_tool_call(trace, name=call.name, args=args, result="")
+                if cb is not None:
+                    elapsed = time.monotonic() - t0
+                    detail = _format_tool_detail(call.name, call.arguments)
+                    tokens = trace.total_tokens_input + trace.total_tokens_output
+                    cb(
+                        f"    tool {tool_call_count} — {detail}"
+                        f"  ({elapsed:.0f}s, {tokens:,} tokens)"
+                    )
             elif isinstance(item, ToolCallOutputItem):
                 record_message(
                     trace, "tool", str(item.output),
@@ -214,54 +271,16 @@ class OpenAIAgentsAdapter(BasePlatformAdapter):
                     trace,
                     input_tokens=getattr(usage, "input_tokens", 0) or getattr(usage, "prompt_tokens", 0) or 0,
                     output_tokens=getattr(usage, "output_tokens", 0) or getattr(usage, "completion_tokens", 0) or 0,
+                    model=model,
                 )
 
         # Record final output
         if result.final_output:
             record_message(trace, "assistant", result.final_output, metadata={"event": "final_output"})
 
-        return len(result.new_items)
+        return len(result.new_items), tool_call_count
 
-    # ── SDLC stage methods ────────────────────────────────────────────────
-
-    async def _execute_stage(self, stage_name, prompt_fn, result_cls, context):
-        trace = start_trace()
-        try:
-            if stage_name == "codegen":
-                prior = context.get_prior_result("requirements")
-                prompt = prompt_fn(context.story, prior_requirements=prior)
-            else:
-                prompt = prompt_fn(context.story)
-            system_msg = build_system_message(context.story)
-            tools = create_tools(
-                context.workspace, context.allowed_tools, fmt=self.TOOL_FORMAT,
-                platform_id=context.platform_id, story_id=context.story.id,
-            )
-            iterations, hit_limit = await self._run_agent(
-                stage_name, prompt, system_msg, tools, trace, context,
-            )
-            return build_stage_result(
-                result_cls, self.platform_info.id, stage_name,
-                trace, success=not hit_limit, iterations=iterations,
-            )
-        except Exception as e:
-            finish_trace(trace, error=str(e))
-            return build_stage_result(
-                result_cls, self.platform_info.id, stage_name,
-                trace, success=False, iterations=0, error_message=str(e),
-            )
-
-    async def generate_requirements(self, context: StageContext) -> RequirementsResult:
-        return await self._execute_stage("requirements", build_requirements_prompt, RequirementsResult, context)
-
-    async def generate_code(self, context: StageContext) -> CodeResult:
-        return await self._execute_stage("codegen", build_codegen_prompt, CodeResult, context)
-
-    async def generate_tests(self, context: StageContext) -> TestResult:
-        return await self._execute_stage("testing", build_testing_prompt, TestResult, context)
-
-    async def build_and_deploy(self, context: StageContext) -> DeployResult:
-        return await self._execute_stage("deploy", build_deploy_prompt, DeployResult, context)
+    # Stage methods inherited from ToolAgentAdapter
 
     # ── Metadata ─────────────────────────────────────────────────────────
 
