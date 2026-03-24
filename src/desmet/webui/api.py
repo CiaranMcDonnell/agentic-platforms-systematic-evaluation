@@ -75,14 +75,20 @@ from desmet.infra import (
     get_platform_statuses,
     is_package_importable,
 )
-from desmet.llm_config import DEFAULT_MODEL, detect_provider
+from desmet.llm_config import get_config as get_llm_config
 from desmet.webui.langfuse_client import (
     check_status as langfuse_check_status,
+)
+from desmet.webui.langfuse_client import (
     fetch_trace as langfuse_fetch_trace,
+)
+from desmet.webui.langfuse_client import (
     fetch_traces as langfuse_fetch_traces,
 )
 from desmet.webui.langsmith_client import (
     check_status as langsmith_check_status,
+)
+from desmet.webui.langsmith_client import (
     fetch_run_tree as langsmith_fetch_run_tree,
 )
 
@@ -109,8 +115,7 @@ async def lifespan(app: FastAPI):
             )
         else:
             logger.info(
-                "Docker is available. Start infrastructure from the "
-                "Management Console when needed."
+                "Docker is available. Start infrastructure from the Management Console when needed."
             )
     else:
         logger.warning(
@@ -149,8 +154,10 @@ app.add_middleware(
 
 # ── In-memory state for active runs ─────────────────────────────────────
 
+
 class RunState:
     """Tracks a single benchmark run."""
+
     def __init__(self, run_id: str, config: dict):
         self.run_id = run_id
         self.config = config
@@ -161,12 +168,14 @@ class RunState:
         self.summary: dict[str, Any] | None = None
         self.error: str | None = None
 
+
 _runs: dict[str, RunState] = {}
 _ws_clients: dict[str, list[WebSocket]] = {}  # run_id -> connected clients
 _running_tasks: dict[str, asyncio.Task] = {}  # run_id -> background task (for cancellation)
 
 
 # ── Pydantic models ─────────────────────────────────────────────────────
+
 
 class RunRequest(BaseModel):
     platforms: list[str]
@@ -199,6 +208,7 @@ class ScoreSubmission(BaseModel):
 
 # ── Platform endpoints ──────────────────────────────────────────────────
 
+
 @app.get("/api/platforms")
 async def get_platforms():
     """Return all platforms with registry data (no docker calls)."""
@@ -216,14 +226,16 @@ async def get_platforms():
             status = "unknown"
             infra_type = "Docker"
 
-        platforms.append({
-            "id": pid,
-            "name": name,
-            "infra_type": infra_type,
-            "status": status,
-            "implemented": pid in implemented,
-            "category": _get_platform_category(pid),
-        })
+        platforms.append(
+            {
+                "id": pid,
+                "name": name,
+                "infra_type": infra_type,
+                "status": status,
+                "implemented": pid in implemented,
+                "category": _get_platform_category(pid),
+            }
+        )
 
     return {"platforms": platforms}
 
@@ -238,19 +250,19 @@ async def get_platform_statuses_endpoint():
 async def get_config():
     """Return current configuration (model, API keys, Langfuse)."""
     cfg = get_config_status()
-    model = os.getenv("DESMET_MODEL") or os.getenv("DEFAULT_MODEL") or DEFAULT_MODEL
-    provider = detect_provider(model)
+    llm = get_llm_config()
 
     return {
         "model": cfg.model,
-        "provider": provider.value,
+        "provider": llm.provider.value,
         "api_keys_set": cfg.api_keys_set,
         "langfuse_status": cfg.langfuse_status,
         "deploy_status": cfg.deploy_status,
-        "temperature": float(os.getenv("DESMET_TEMPERATURE", "0.0")),
+        "temperature": llm.temperature,
         "available_models": [
             "gpt-5.4-2026-03-05",
-            "claude-opus-4-6", "claude-sonnet-4-6",
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
         ],
         "allow_custom_model": True,
         "valid_stages": ["requirements", "codegen", "testing", "deploy", "all"],
@@ -260,6 +272,7 @@ async def get_config():
 
 
 # ── Docker control ──────────────────────────────────────────────────────
+
 
 @app.post("/api/docker/up")
 async def docker_up(action: DockerAction):
@@ -289,6 +302,7 @@ async def docker_down(action: DockerAction):
 
 # ── Infrastructure status ───────────────────────────────────────────────
 
+
 @app.get("/api/infrastructure")
 async def get_infrastructure():
     """Return status of infrastructure services (Langfuse, Postgres+Redis)."""
@@ -296,6 +310,7 @@ async def get_infrastructure():
 
 
 # ── Story endpoints ─────────────────────────────────────────────────────
+
 
 @app.get("/api/stories")
 async def get_stories(difficulty: str | None = None):
@@ -324,6 +339,7 @@ async def get_stories(difficulty: str | None = None):
 
 # ── Run management ──────────────────────────────────────────────────────
 
+
 @app.get("/api/runs")
 async def list_runs():
     return {
@@ -346,9 +362,7 @@ async def list_runs():
 @app.post("/api/runs/start")
 async def start_run(req: RunRequest):
     # Reject if a run is already active — prevents concurrent API quota exhaustion
-    active = next(
-        (r for r in _runs.values() if r.status in ("pending", "running")), None
-    )
+    active = next((r for r in _runs.values() if r.status in ("pending", "running")), None)
     if active:
         return {
             "error": f"Run {active.run_id} is already in progress. Cancel it first.",
@@ -400,6 +414,7 @@ async def cancel_run(run_id: str):
 
 # ── WebSocket for live logs ─────────────────────────────────────────────
 
+
 @app.websocket("/ws/runs/{run_id}")
 async def ws_run_logs(websocket: WebSocket, run_id: str):
     await websocket.accept()
@@ -433,12 +448,14 @@ async def _broadcast_log(run_id: str, message: str):
 
 # ── Run execution ───────────────────────────────────────────────────────
 
+
 async def _execute_run(run: RunState, req: RunRequest):
     run.status = "running"
     run.started_at = datetime.now(timezone.utc)
 
     # Initialize Langfuse tracing for this run
     from desmet.observability import init_langfuse, start_session
+
     init_langfuse()
     start_session(label=run.run_id)
 
@@ -510,12 +527,16 @@ async def _execute_run(run: RunState, req: RunRequest):
 
         def _progress(msg: str) -> None:
             asyncio.run_coroutine_threadsafe(
-                _broadcast_log(run.run_id, msg), _loop,
+                _broadcast_log(run.run_id, msg),
+                _loop,
             )
 
         runner = EvaluationRunner(
-            config=config, platforms=adapters, stories=stories,
-            baseline_repo=baseline, progress_callback=_progress,
+            config=config,
+            platforms=adapters,
+            stories=stories,
+            baseline_repo=baseline,
+            progress_callback=_progress,
         )
 
         await _broadcast_log(run.run_id, "[RUN] Executing evaluation pipeline...")
@@ -616,19 +637,21 @@ async def dashboard_overview():
     for _, row in summary_df.iterrows():
         pid = row["platform_id"]
         scored, total = progress.get(pid, (0, 0))
-        summary_rows.append({
-            "platform_id": pid,
-            "platform_name": row["platform_name"],
-            "category": row["category"],
-            "overall_score": round(row["overall_score"], 2),
-            "stories_total": int(row["stories_total"]),
-            "stories_completed": int(row["stories_completed"]),
-            "completion_rate": round(row["completion_rate"], 3),
-            "scored": scored,
-            "total_to_score": total,
-            "colour": colours.get(pid, "#666"),
-            "dim_scores": dim_avgs.get(pid, {}),
-        })
+        summary_rows.append(
+            {
+                "platform_id": pid,
+                "platform_name": row["platform_name"],
+                "category": row["category"],
+                "overall_score": round(row["overall_score"], 2),
+                "stories_total": int(row["stories_total"]),
+                "stories_completed": int(row["stories_completed"]),
+                "completion_rate": round(row["completion_rate"], 3),
+                "scored": scored,
+                "total_to_score": total,
+                "colour": colours.get(pid, "#666"),
+                "dim_scores": dim_avgs.get(pid, {}),
+            }
+        )
 
     # Sort by score desc
     summary_rows.sort(key=lambda r: r["overall_score"], reverse=True)
@@ -718,7 +741,37 @@ async def chart_dimension(dimension: str):
     return {"chart": bar_dimension_comparison(dim_df, dimension)}
 
 
+@app.get("/api/dashboard/framework-metrics")
+async def dashboard_framework_metrics():
+    """Return aggregated framework metrics per platform."""
+    data = load_results_raw()
+    platforms_out = []
+    for pid, pdata in data.get("platforms", {}).items():
+        pname = pdata.get("platform_name", pid)
+        all_fm: list[dict] = []
+        for sm in pdata.get("story_metrics", []):
+            fm = sm.get("framework_metrics")
+            if fm:
+                all_fm.append(fm)
+        if not all_fm:
+            continue
+        avg_metrics: dict[str, float | None] = {}
+        for key in ("tokens_per_stage", "iteration_ratio",
+                     "redundant_tool_call_rate", "tool_failure_rate",
+                     "first_action_latency_ms", "framework_overhead_ms"):
+            vals = [fm[key] for fm in all_fm if fm.get(key) is not None]
+            avg_metrics[key] = round(sum(vals) / len(vals), 2) if vals else None
+        platforms_out.append({
+            "platform_id": pid,
+            "platform_name": pname,
+            "story_count": len(all_fm),
+            "metrics": avg_metrics,
+        })
+    return {"platforms": platforms_out}
+
+
 # ── Scoring endpoints ───────────────────────────────────────────────────
+
 
 @app.get("/api/dashboard/scoring/rubric")
 async def get_rubric():
@@ -770,11 +823,18 @@ async def get_story_score(platform_id: str, story_id: str):
         langfuse_tid = story_metric.get("langfuse_trace_id")
 
     # Extract langsmith_run_id from stage data (LangGraph only)
-    langsmith_run_id = next(
-        (s.get("langsmith_run_id") for s in (raw_trace.get("stages") or {}).values()
-         if s.get("langsmith_run_id")),
-        None,
-    ) if trace_files else None
+    langsmith_run_id = (
+        next(
+            (
+                s.get("langsmith_run_id")
+                for s in (raw_trace.get("stages") or {}).values()
+                if s.get("langsmith_run_id")
+            ),
+            None,
+        )
+        if trace_files
+        else None
+    )
 
     return {
         "found": True,
@@ -811,11 +871,7 @@ async def scoring_progress():
     """Return per-platform scoring progress."""
     data = load_results_raw()
     progress = get_scoring_progress(data)
-    return {
-        "progress": {
-            pid: {"scored": s, "total": t} for pid, (s, t) in progress.items()
-        }
-    }
+    return {"progress": {pid: {"scored": s, "total": t} for pid, (s, t) in progress.items()}}
 
 
 @app.get("/api/dashboard/scoring/matrix")
@@ -838,13 +894,15 @@ async def scoring_matrix():
     for pid in pids:
         pdata = data["platforms"][pid]
         scored_count, _ = progress.get(pid, (0, 0))
-        rows.append({
-            "platform_id": pid,
-            "platform_name": pdata.get("platform_name", pid),
-            "colour": colours.get(pid, "#666"),
-            "scores": avgs.get(pid, {}),
-            "scored_count": scored_count,
-        })
+        rows.append(
+            {
+                "platform_id": pid,
+                "platform_name": pdata.get("platform_name", pid),
+                "colour": colours.get(pid, "#666"),
+                "scores": avgs.get(pid, {}),
+                "scored_count": scored_count,
+            }
+        )
 
     # Sort highest total first (None counts as 0)
     rows.sort(
@@ -855,6 +913,7 @@ async def scoring_matrix():
 
 
 # ── Story detail endpoint ───────────────────────────────────────────────
+
 
 @app.get("/api/dashboard/story/{story_id}")
 async def story_detail(story_id: str):
@@ -903,7 +962,10 @@ async def comparison_data(platforms: str = ""):
         pids = [p for p in pids if p in selected]
 
     if len(pids) < 2:
-        return {"error": "Select at least 2 platforms", "platforms_available": get_platform_ids(data)}
+        return {
+            "error": "Select at least 2 platforms",
+            "platforms_available": get_platform_ids(data),
+        }
 
     summary_df = get_platform_summary_df(data)
     metrics_df = get_story_metrics_df(data)
@@ -911,7 +973,9 @@ async def comparison_data(platforms: str = ""):
 
     # Filter to selected
     summary_df = summary_df[summary_df["platform_id"].isin(pids)]
-    metrics_df = metrics_df[metrics_df["platform_id"].isin(pids)] if not metrics_df.empty else metrics_df
+    metrics_df = (
+        metrics_df[metrics_df["platform_id"].isin(pids)] if not metrics_df.empty else metrics_df
+    )
     dim_df = dim_df[dim_df["platform_id"].isin(pids)] if not dim_df.empty else dim_df
 
     # Efficiency averages
@@ -920,9 +984,15 @@ async def comparison_data(platforms: str = ""):
         for pid in pids:
             pdf = metrics_df[metrics_df["platform_id"] == pid]
             efficiency[pid] = {
-                "avg_time": round(pdf["wall_clock_seconds"].mean(), 1) if "wall_clock_seconds" in pdf.columns else 0,
-                "avg_iterations": round(pdf["iterations"].mean(), 1) if "iterations" in pdf.columns else 0,
-                "avg_tool_calls": round(pdf["tool_calls"].mean(), 1) if "tool_calls" in pdf.columns else 0,
+                "avg_time": round(pdf["wall_clock_seconds"].mean(), 1)
+                if "wall_clock_seconds" in pdf.columns
+                else 0,
+                "avg_iterations": round(pdf["iterations"].mean(), 1)
+                if "iterations" in pdf.columns
+                else 0,
+                "avg_tool_calls": round(pdf["tool_calls"].mean(), 1)
+                if "tool_calls" in pdf.columns
+                else 0,
             }
 
     # Category averages
@@ -948,19 +1018,21 @@ async def comparison_data(platforms: str = ""):
 
 # ── Helpers ─────────────────────────────────────────────────────────────
 
+_CATEGORY_DISPLAY: dict[str, str] = {
+    "multi_agent_framework": "Multi-Agent Framework",
+    "agent_sdk_runtime": "Agent SDK Runtime",
+    "visual_workflow_platform": "Visual Workflow",
+}
+
+
 def _get_platform_category(platform_id: str) -> str:
-    categories = {
-        "langgraph": "Multi-Agent Framework",
-        "crewai": "Multi-Agent Framework",
-        "microsoft_agent_framework": "Multi-Agent Framework",
-        "openai_agents_sdk": "Agent SDK Runtime",
-        "google_adk": "Agent SDK Runtime",
-        "flowise": "Visual Workflow",
-        "langflow": "Visual Workflow",
-        "dify": "Visual Workflow",
-        "n8n": "Visual Workflow",
-    }
-    return categories.get(platform_id, "Unknown")
+    from desmet.adapters.registry import load_platform_info
+
+    try:
+        info = load_platform_info(platform_id)
+        return _CATEGORY_DISPLAY.get(info.category.value, info.category.value)
+    except KeyError:
+        return "Unknown"
 
 
 def _sanitize_trace(trace: dict[str, Any]) -> dict[str, Any]:
@@ -1009,7 +1081,10 @@ async def langfuse_traces(
 ):
     tags = [tag] if tag else None
     traces = await langfuse_fetch_traces(session_id=session_id, tags=tags, limit=limit)
-    return {"traces": traces, "langfuse_available": len(traces) > 0 or (await langfuse_check_status())["available"]}
+    return {
+        "traces": traces,
+        "langfuse_available": len(traces) > 0 or (await langfuse_check_status())["available"],
+    }
 
 
 @app.get("/api/langfuse/traces/{trace_id}")
