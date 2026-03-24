@@ -1,11 +1,11 @@
 <script lang="ts">
   import EChart from '../components/EChart.svelte';
   import ScoreMatrix from '../components/ScoreMatrix.svelte';
-  import { fetchStories, fetchScoringMatrix } from '../api';
-  import type { Story, ScoringMatrixData } from '../api';
+  import { fetchScoringMatrix } from '../api';
+  import type { ScoringMatrixData } from '../api';
+  import { store } from '../data.svelte';
   import { onMount } from 'svelte';
 
-  let stories = $state<Story[]>([]);
   let loading = $state(true);
   let selectedDimension = $state('pipeline_completeness');
   let matrixData = $state<ScoringMatrixData | null>(null);
@@ -20,12 +20,7 @@
   ];
 
   onMount(async () => {
-    const [storiesRes, matrix] = await Promise.all([
-      fetchStories(),
-      fetchScoringMatrix(),
-    ]);
-    stories = (storiesRes as any).stories || [];
-    matrixData = matrix;
+    matrixData = await fetchScoringMatrix();
     loading = false;
   });
 
@@ -88,7 +83,7 @@
   </div>
 
   <!-- Story-level comparison -->
-  {#if stories.length > 0}
+  {#if store.stories.length > 0}
     <div>
       <h2 style="font-size: 14px; font-weight: 600; margin-bottom: 12px;">Story Comparison</h2>
       <EChart endpoint="/api/dashboard/charts/story-comparison" height={400} />
