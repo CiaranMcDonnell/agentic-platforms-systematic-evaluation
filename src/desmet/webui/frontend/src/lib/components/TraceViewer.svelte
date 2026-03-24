@@ -41,6 +41,9 @@
 
   // Filtered observations for Spans tab
   let filteredObs = $derived(traceData ? filterObs(traceData.observations, spanFilter) : []);
+  let filteredCount = $derived(countObs(filteredObs));
+  // Reset expandAll when leaving Spans tab so the button label stays consistent.
+  $effect(() => { if (activeTab !== 'spans') expandAll = false; });
 
   onMount(async () => {
     if (!langfuseTraceId) return;
@@ -174,7 +177,7 @@
               </button>
             {/each}
           </div>
-          <span class="spans-count">{countObs(filteredObs)} spans</span>
+          <span class="spans-count">{filteredCount} spans</span>
         </div>
         <div class="trace-tree">
           {#each filteredObs as obs (obs.id)}
