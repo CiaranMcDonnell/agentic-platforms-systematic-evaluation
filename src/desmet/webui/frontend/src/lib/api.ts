@@ -317,6 +317,16 @@ export const submitScore = (data: { platform_id: string; story_id: string; score
 export const fetchStoryDetail = (sid: string) =>
   request<StoryDetailData>(`/api/dashboard/story/${sid}`);
 
+export interface FrameworkMetricsPlatform {
+  platform_id: string;
+  platform_name: string;
+  story_count: number;
+  metrics: Record<string, number | null>;
+}
+
+export const fetchFrameworkMetrics = () =>
+  request<{ platforms: FrameworkMetricsPlatform[] }>('/api/dashboard/framework-metrics');
+
 // ── Langfuse ────────────────────────────
 
 export const fetchLangfuseStatus = () =>
