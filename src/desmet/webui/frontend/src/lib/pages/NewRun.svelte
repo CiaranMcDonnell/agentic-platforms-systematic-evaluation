@@ -1,13 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { fetchPlatforms, fetchStories, fetchConfig, fetchRuns, startRun } from '../api';
-  import type { Platform, Story, AppConfig, Run } from '../api';
+  import { fetchRuns, startRun } from '../api';
+  import type { Run } from '../api';
+  import { store } from '../data.svelte';
   import { currentPage, selectedRunId } from '../stores';
   import StatusBadge from '../components/StatusBadge.svelte';
 
-  let platforms = $state<Platform[]>([]);
-  let stories = $state<Story[]>([]);
-  let config = $state<AppConfig | null>(null);
   let recentRuns = $state<Run[]>([]);
 
   let selectedPlatforms = $state<string[]>([]);
@@ -20,14 +18,14 @@
   let submitting = $state(false);
   let startError = $state<string | null>(null);
 
-  let impl = $derived(platforms.filter(p => p.implemented));
-  let notImpl = $derived(platforms.filter(p => !p.implemented));
+  let impl = $derived(store.platforms.filter(p => p.implemented));
+  let notImpl = $derived(store.platforms.filter(p => !p.implemented));
 
   // Filter visible stories based on selected difficulties
   let filteredStories = $derived(
     selectedDifficulties.length
-      ? stories.filter(s => selectedDifficulties.includes(s.difficulty))
-      : stories
+      ? store.stories.filter(s => selectedDifficulties.includes(s.difficulty))
+      : store.stories
   );
 
   // Difficulty colour map
@@ -38,15 +36,7 @@
   };
 
   onMount(async () => {
-    const [pRes, sRes, cfg, runsRes] = await Promise.all([
-      fetchPlatforms(),
-      fetchStories(),
-      fetchConfig(),
-      fetchRuns(),
-    ]);
-    platforms = (pRes as any).platforms || [];
-    stories = (sRes as any).stories || [];
-    config = cfg;
+    const runsRes = await fetchRuns();
     const allRuns = (runsRes as any).runs || [];
     recentRuns = allRuns.slice(-5).reverse();
   });
@@ -116,7 +106,7 @@
     <div class="filter-group">
       <span class="filter-label">Difficulty</span>
       <div class="filter-pills">
-        {#each config?.difficulty_levels || [] as d}
+        {#each store.config?.difficulty_levels || [] as d}
           <button
             class="toggle-pill {selectedDifficulties.includes(d) ? 'toggle-active' : ''}"
             onclick={() => selectedDifficulties = toggleItem(selectedDifficulties, d)}
@@ -133,7 +123,7 @@
     <div class="filter-group">
       <span class="filter-label">Stages</span>
       <div class="filter-pills">
-        {#each (config?.valid_stages || []).filter(s => s !== 'all') as s}
+        {#each (store.config?.valid_stages || []).filter(s => s !== 'all') as s}
           <button
             class="toggle-pill {selectedStages.includes(s) ? 'toggle-active' : ''}"
             onclick={() => selectedStages = toggleItem(selectedStages, s)}
@@ -149,8 +139,8 @@
     <div class="filter-group" style="flex: 1; min-width: 200px;">
       <span class="filter-label">Model</span>
       <select class="input" style="max-width: 320px;" bind:value={model}>
-        <option value="">Default ({config?.model})</option>
-        {#each config?.available_models || [] as m}<option value={m}>{m}</option>{/each}
+        <option value="">Default ({store.config?.model})</option>
+        {#each store.config?.available_models || [] as m}<option value={m}>{m}</option>{/each}
         <option value="__custom__">Custom model</option>
       </select>
     </div>
@@ -282,17 +272,22 @@
         <div style="display: flex; flex-direction: column; gap: 8px;">
           {#each ['openrouter', 'openai', 'anthropic', 'google'] as provider}
             <div class="status-row">
-              <span class="status-dot {config?.api_keys_set?.includes(provider) ? 'dot-green' : 'dot-dim'}"></span>
-              <span style="font-size: 13px; text-transform: capitalize;{config?.api_keys_set?.includes(provider) ? '' : ' color: var(--text-2);'}">{provider}</span>
+              <span class="status-dot {store.config?.api_keys_set?.includes(provider) ? 'dot-green' : 'dot-dim'}"></span>
+              <span style="font-size: 13px; text-transform: capitalize;{store.config?.api_keys_set?.includes(provider) ? '' : ' color: var(--text-2);'}">{provider}</span>
               <span style="font-size: 11px; color: var(--text-2); margin-left: auto;">
-                {config?.api_keys_set?.includes(provider) ? 'configured' : 'no key'}
+                {store.config?.api_keys_set?.includes(provider) ? 'configured' : 'no key'}
               </span>
             </div>
           {/each}
           <div class="status-row" style="margin-top: 2px; padding-top: 8px; border-top: 1px solid var(--border);">
-            <span class="status-dot {config?.langfuse_status === 'configured' ? 'dot-green' : 'dot-dim'}"></span>
-            <span style="font-size: 13px;{config?.langfuse_status === 'configured' ? '' : ' color: var(--text-2);'}">Langfuse</span>
-            <span style="font-size: 11px; color: var(--text-2); margin-left: auto;">{config?.langfuse_status || 'not set'}</span>
+            <span class="status-dot {store.config?.langfuse_status === 'configured' ? 'dot-green' : 'dot-dim'}"></span>
+            <span style="font-size: 13px;{store.config?.langfuse_status === 'configured' ? '' : ' color: var(--text-2);'}">Langfuse</span>
+            <span style="font-size: 11px; color: var(--text-2); margin-left: auto;">{store.config?.langfuse_status || 'not set'}</span>
+          </div>
+          <div class="status-row">
+            <span class="status-dot {store.config?.deploy_status === 'configured' ? 'dot-green' : store.config?.deploy_status === 'partially configured' ? 'dot-yellow' : 'dot-dim'}"></span>
+            <span style="font-size: 13px;{store.config?.deploy_status === 'configured' ? '' : ' color: var(--text-2);'}">Deploy Target</span>
+            <span style="font-size: 11px; color: var(--text-2); margin-left: auto;">{store.config?.deploy_status || 'not set'}</span>
           </div>
         </div>
       </div>
@@ -520,6 +515,7 @@
     flex-shrink: 0;
   }
   .dot-green { background: var(--green); }
+  .dot-yellow { background: var(--yellow, #f59e0b); }
   .dot-dim { background: var(--text-2); opacity: 0.4; }
 
   /* ── Recent run rows ────────────────── */
