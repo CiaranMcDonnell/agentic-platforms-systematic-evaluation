@@ -6,44 +6,45 @@ Implements the evaluation interface for CrewAI.
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
+import time
 from typing import Any
 
-from desmet.adapters._prompts import (
-    STAGE_EXPECTED_OUTPUTS,
-    build_codegen_prompt,
-    build_deploy_prompt,
-    build_requirements_prompt,
-    build_system_message,
-    build_testing_prompt,
-    get_stage_persona,
-)
-from desmet.adapters._tools import ToolFormat, create_tools
+from desmet.adapters._base import ToolAgentAdapter
+from desmet.adapters._prompts import STAGE_EXPECTED_OUTPUTS, get_stage_persona
+from desmet.adapters._tools import ToolFormat
 from desmet.adapters._tracing import (
-    build_stage_result,
     finish_trace,
     record_message,
     record_tool_call,
     record_usage,
-    start_trace,
 )
 from desmet.adapters.registry import load_platform_info
-from desmet.harness.adapter import BasePlatformAdapter
 from desmet.harness.context import StageContext
 from desmet.harness.models import PlatformInfo
-from desmet.harness.results import (
-    CodeResult,
-    DeployResult,
-    RequirementsResult,
-    TestResult,
-)
 from desmet.harness.trace import AgentTrace
 from desmet.llm_config import Provider
 from desmet.llm_config import get_config as get_llm_config
 
 _log = logging.getLogger(__name__)
+
+
+def _format_crewai_tool_detail(name: str, tool_input: Any) -> str:
+    """Format a CrewAI tool call for human-readable progress logging."""
+    args = tool_input if isinstance(tool_input, dict) else {}
+    if name in ("read_file", "write_file") and "path" in args:
+        return f"{name} → {args['path']}"
+    if name == "execute_shell" and "command" in args:
+        cmd = args["command"]
+        return f"{name} → {cmd[:60]}{'…' if len(cmd) > 60 else ''}"
+    if name == "search_code" and "pattern" in args:
+        return f"{name} → /{args['pattern']}/"
+    if name == "list_directory":
+        return f"{name} → {args.get('path', '.')}"
+    if name == "deploy_remote" and "action" in args:
+        return f"{name} → {args['action']}"
+    return name
 
 
 def _summarise_step(step_output: Any) -> str:
@@ -71,68 +72,7 @@ def _summarise_step(step_output: Any) -> str:
     return raw
 
 
-# ---------------------------------------------------------------------------
-# HTTP interceptor for cost extraction
-# ---------------------------------------------------------------------------
-
-class _CostInterceptor:
-    """Extracts ``usage.cost`` from raw HTTP responses (e.g. OpenRouter).
-
-    Plugs into CrewAI's ``BaseInterceptor`` transport hook so we can read
-    cost data from the response JSON before the provider SDK parses it.
-
-    Falls back to a plain object (no interception) when CrewAI's hook
-    infrastructure is not available.
-    """
-
-    def __init__(self) -> None:
-        self.total_cost: float = 0.0
-        self._cost_lock = threading.Lock()
-        self._interceptor: Any = None
-        self._init_interceptor()
-
-    def _init_interceptor(self) -> None:
-        """Try to create a real BaseInterceptor subclass."""
-        try:
-            import httpx
-            from crewai.llms.hooks.base import BaseInterceptor
-
-            outer = self
-
-            class _Inner(BaseInterceptor[httpx.Request, httpx.Response]):
-                def on_outbound(self, request: httpx.Request) -> httpx.Request:
-                    return request
-
-                def on_inbound(self, response: httpx.Response) -> httpx.Response:
-                    try:
-                        # Ensure body is loaded at the transport layer;
-                        # .content caches after .read() so downstream
-                        # consumers (OpenAI SDK) can re-read safely.
-                        response.read()
-                        body = json.loads(response.content)
-                        cost = body.get("usage", {}).get("cost", 0)
-                        if cost:
-                            with outer._cost_lock:
-                                outer.total_cost += float(cost)
-                    except (json.JSONDecodeError, AttributeError, TypeError):
-                        pass
-                    return response
-
-            self._interceptor = _Inner()
-        except ImportError:
-            _log.debug("crewai.llms.hooks not available — cost interception disabled")
-
-    @property
-    def interceptor(self) -> Any:
-        """Return the underlying ``BaseInterceptor`` instance (or ``None``)."""
-        return self._interceptor
-
-    def reset(self) -> None:
-        with self._cost_lock:
-            self.total_cost = 0.0
-
-
-class CrewAIAdapter(BasePlatformAdapter):
+class CrewAIAdapter(ToolAgentAdapter):
     """
     Adapter for evaluating CrewAI.
 
@@ -144,7 +84,11 @@ class CrewAIAdapter(BasePlatformAdapter):
     def __init__(self, config: dict[str, Any] | None = None):
         super().__init__(config)
         self._crew = None
-        self._cost_interceptor = _CostInterceptor()
+        # Per-LLM-call collection from CrewAI's event bus
+        self._llm_calls: list[dict[str, Any]] = []
+        self._llm_calls_lock = threading.Lock()
+        self._collecting_llm = False
+        self._last_llm_start: float = 0.0
 
     @property
     def platform_info(self) -> PlatformInfo:
@@ -172,6 +116,11 @@ class CrewAIAdapter(BasePlatformAdapter):
             except ImportError:
                 pass  # optional — tracing degrades gracefully
 
+            # Per-LLM-call tracing via CrewAI's native event bus.
+            # The handler fires for every chat completion inside the ReAct
+            # loop, giving us per-call token counts and Langfuse generations.
+            self._register_llm_event_handler()
+
             self._initialized = True
         except ImportError as e:
             raise RuntimeError(f"Failed to import CrewAI: {e}")
@@ -183,20 +132,78 @@ class CrewAIAdapter(BasePlatformAdapter):
     async def health_check(self) -> bool:
         return self._initialized
 
+    # ── Per-LLM-call event collection ─────────────────────────────────────
+
+    def _register_llm_event_handler(self) -> None:
+        """Subscribe to CrewAI's event bus for individual LLM completion events."""
+        try:
+            from crewai.events.event_bus import crewai_event_bus
+            from crewai.events.types.llm_events import LLMCallCompletedEvent
+
+            from crewai.events.types.llm_events import LLMCallStartedEvent
+
+            @crewai_event_bus.on(LLMCallStartedEvent)
+            def _on_llm_started(event) -> None:
+                if not self._collecting_llm:
+                    return
+                self._last_llm_start = time.monotonic()
+
+            @crewai_event_bus.on(LLMCallCompletedEvent)
+            def _on_llm_completed(event: LLMCallCompletedEvent) -> None:
+                if not self._collecting_llm:
+                    return
+                call_data: dict[str, Any] = {
+                    "model": event.model,
+                    "call_type": event.call_type.value if event.call_type else "unknown",
+                    "agent_role": getattr(event, "agent_role", None),
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                }
+                resp = event.response
+                usage = getattr(resp, "usage", None)
+                if usage is not None:
+                    call_data["input_tokens"] = (
+                        getattr(usage, "prompt_tokens", 0)
+                        or getattr(usage, "input_tokens", 0)
+                        or 0
+                    )
+                    call_data["output_tokens"] = (
+                        getattr(usage, "completion_tokens", 0)
+                        or getattr(usage, "output_tokens", 0)
+                        or 0
+                    )
+                if self._last_llm_start > 0:
+                    call_data["duration_ms"] = (time.monotonic() - self._last_llm_start) * 1000
+                    self._last_llm_start = 0.0
+                with self._llm_calls_lock:
+                    self._llm_calls.append(call_data)
+        except ImportError:
+            _log.debug("crewai.events not available — per-call tracing disabled")
+
+    def _start_llm_collection(self) -> None:
+        with self._llm_calls_lock:
+            self._llm_calls.clear()
+            self._collecting_llm = True
+
+    def _stop_llm_collection(self) -> list[dict[str, Any]]:
+        self._collecting_llm = False
+        with self._llm_calls_lock:
+            calls = list(self._llm_calls)
+            self._llm_calls.clear()
+        return calls
+
     def _create_llm(self, context: StageContext):
         """Build a CrewAI LLM from centralised config + stage context overrides.
 
         CrewAI v1.6+ removed litellm and routes through native provider SDKs.
         We instantiate the appropriate native provider directly (bypassing the
-        ``LLM`` factory which has no OpenRouter entry) and attach our HTTP
-        cost interceptor for providers that return ``usage.cost`` (OpenRouter).
+        ``LLM`` factory which has no OpenRouter entry).  Cost estimation is
+        handled by ``record_usage()`` via the ``cost_calculator`` module.
         """
         cfg = get_llm_config(
             model=context.model or self.config.get("model"),
             temperature=context.temperature,
         )
-
-        interceptor = self._cost_interceptor.interceptor
 
         if cfg.provider in (Provider.OPENAI, Provider.OPENROUTER):
             from crewai.llms.providers.openai.completion import OpenAICompletion
@@ -205,7 +212,6 @@ class CrewAIAdapter(BasePlatformAdapter):
                 temperature=cfg.temperature,
                 api_key=cfg.api_key,
                 base_url=cfg.base_url,
-                interceptor=interceptor,
             )
 
         if cfg.provider == Provider.ANTHROPIC:
@@ -214,7 +220,6 @@ class CrewAIAdapter(BasePlatformAdapter):
                 model=cfg.model,
                 temperature=cfg.temperature,
                 api_key=cfg.api_key,
-                interceptor=interceptor,
             )
 
         if cfg.provider == Provider.GOOGLE:
@@ -223,7 +228,6 @@ class CrewAIAdapter(BasePlatformAdapter):
                 model=cfg.model,
                 temperature=cfg.temperature,
                 api_key=cfg.api_key,
-                interceptor=interceptor,
             )
 
         # Fallback: treat as OpenAI-compatible with custom base_url
@@ -233,7 +237,6 @@ class CrewAIAdapter(BasePlatformAdapter):
             temperature=cfg.temperature,
             api_key=cfg.api_key,
             base_url=cfg.base_url,
-            interceptor=interceptor,
         )
 
     # =========================================================================
@@ -256,6 +259,11 @@ class CrewAIAdapter(BasePlatformAdapter):
 
         persona = get_stage_persona(stage_name)
         llm = self._create_llm(context)
+        cfg = get_llm_config(
+            model=context.model or self.config.get("model"),
+            temperature=context.temperature,
+        )
+        model_name = cfg.model
 
         # In CrewAI the system message is injected via backstory since
         # there is no separate system-message slot.
@@ -281,7 +289,10 @@ class CrewAIAdapter(BasePlatformAdapter):
             agent=agent,
         )
 
-        step_cb, task_cb, counter = self._create_trace_callbacks(trace)
+        step_cb, task_cb, counter = self._create_trace_callbacks(
+            trace, progress_callback=context.progress_callback,
+            max_iterations=context.max_iterations,
+        )
 
         crew = Crew(
             agents=[agent],
@@ -295,33 +306,66 @@ class CrewAIAdapter(BasePlatformAdapter):
 
         record_message(trace, "user", prompt)
 
-        # Reset cost interceptor before kickoff so we capture only this run
-        self._cost_interceptor.reset()
+        self._start_llm_collection()
 
         result = await asyncio.to_thread(crew.kickoff)
         record_message(trace, "assistant", str(result))
 
-        # Extract token usage from CrewOutput.  CrewAI v1.6+ populates
-        # ``token_usage`` (a UsageMetrics object) natively via BaseLLM.
-        # Cost comes from our HTTP interceptor reading OpenRouter responses.
-        usage = getattr(result, "token_usage", None)
-        if usage is not None:
-            prompt_tokens = (
-                getattr(usage, "prompt_tokens", 0)
-                or getattr(usage, "input_tokens", 0)
-                or 0
-            )
-            completion_tokens = (
-                getattr(usage, "completion_tokens", 0)
-                or getattr(usage, "output_tokens", 0)
-                or 0
-            )
-            record_usage(
-                trace,
-                input_tokens=prompt_tokens,
-                output_tokens=completion_tokens,
-                cost_usd=self._cost_interceptor.total_cost,
-            )
+        # Collect per-LLM-call data from the event bus
+        llm_calls = self._stop_llm_collection()
+
+        from desmet.adapters._tracing import record_llm_duration
+        for call in llm_calls:
+            if call.get("duration_ms", 0) > 0:
+                record_llm_duration(trace, call["duration_ms"])
+
+        if llm_calls:
+            # Per-call token usage + cost estimation via cost_calculator
+            for call in llm_calls:
+                record_usage(
+                    trace,
+                    input_tokens=call.get("input_tokens", 0),
+                    output_tokens=call.get("output_tokens", 0),
+                    model=call.get("model") or model_name,
+                )
+
+            # Create per-call Langfuse generation spans
+            from desmet.observability import get_langfuse
+            lf = get_langfuse()
+            if lf is not None:
+                for i, call in enumerate(llm_calls):
+                    with lf.start_as_current_observation(
+                        name=f"llm-{call.get('call_type', 'call')}-{i + 1}",
+                        as_type="generation",
+                        model=call.get("model"),
+                        usage_details={
+                            "input": call.get("input_tokens", 0),
+                            "output": call.get("output_tokens", 0),
+                        },
+                        metadata={"agent_role": call.get("agent_role")},
+                    ):
+                        pass
+        else:
+            # Fallback: aggregate usage from CrewOutput when event bus
+            # collection is unavailable.
+            usage = getattr(result, "token_usage", None)
+            if usage is not None:
+                prompt_tokens = (
+                    getattr(usage, "prompt_tokens", 0)
+                    or getattr(usage, "input_tokens", 0)
+                    or 0
+                )
+                completion_tokens = (
+                    getattr(usage, "completion_tokens", 0)
+                    or getattr(usage, "output_tokens", 0)
+                    or 0
+                )
+                record_usage(
+                    trace,
+                    input_tokens=prompt_tokens,
+                    output_tokens=completion_tokens,
+                    model=model_name,
+                )
 
         iterations = counter[0]
         hit_limit = iterations >= context.max_iterations
@@ -329,47 +373,7 @@ class CrewAIAdapter(BasePlatformAdapter):
         finish_trace(trace)
         return iterations, hit_limit
 
-    # =========================================================================
-    # SDLC Stage Methods
-    # =========================================================================
-
-    async def _execute_stage(self, stage_name, prompt_fn, result_cls, context):
-        """Template method for all SDLC stages."""
-        trace = start_trace()
-        try:
-            if stage_name == "codegen":
-                prior = context.get_prior_result("requirements")
-                prompt = prompt_fn(context.story, prior_requirements=prior)
-            else:
-                prompt = prompt_fn(context.story)
-            system_msg = build_system_message(context.story)
-            tools = create_tools(
-                context.workspace, context.allowed_tools, fmt=self.TOOL_FORMAT,
-                platform_id=context.platform_id, story_id=context.story.id,
-            )
-            iterations, hit_limit = await self._run_agent(stage_name, prompt, system_msg, tools, trace, context)
-            return build_stage_result(
-                result_cls, self.platform_info.id, stage_name,
-                trace, success=not hit_limit, iterations=iterations,
-            )
-        except Exception as e:
-            finish_trace(trace, error=str(e))
-            return build_stage_result(
-                result_cls, self.platform_info.id, stage_name,
-                trace, success=False, iterations=0, error_message=str(e),
-            )
-
-    async def generate_requirements(self, context: StageContext) -> RequirementsResult:
-        return await self._execute_stage("requirements", build_requirements_prompt, RequirementsResult, context)
-
-    async def generate_code(self, context: StageContext) -> CodeResult:
-        return await self._execute_stage("codegen", build_codegen_prompt, CodeResult, context)
-
-    async def generate_tests(self, context: StageContext) -> TestResult:
-        return await self._execute_stage("testing", build_testing_prompt, TestResult, context)
-
-    async def build_and_deploy(self, context: StageContext) -> DeployResult:
-        return await self._execute_stage("deploy", build_deploy_prompt, DeployResult, context)
+    # Stage methods inherited from ToolAgentAdapter
 
     # =========================================================================
     # Trace Callbacks
@@ -378,6 +382,9 @@ class CrewAIAdapter(BasePlatformAdapter):
     @staticmethod
     def _create_trace_callbacks(
         trace: AgentTrace,
+        *,
+        progress_callback: Any | None = None,
+        max_iterations: int = 50,
     ) -> tuple[Any, Any, list[int]]:
         """Create ``step_callback`` and ``task_callback`` closures for a Crew.
 
@@ -387,6 +394,8 @@ class CrewAIAdapter(BasePlatformAdapter):
         iteration count after ``crew.kickoff()`` returns.
         """
         counter: list[int] = [0]
+        tool_counter: list[int] = [0]
+        t0 = time.monotonic()
 
         def step_callback(step_output: Any) -> None:
             """Called after every agent reasoning step."""
@@ -396,10 +405,27 @@ class CrewAIAdapter(BasePlatformAdapter):
             # to extract tool-call information when present.
             tool_name = getattr(step_output, "tool", None)
             if tool_name:
+                tool_counter[0] += 1
                 tool_input = getattr(step_output, "tool_input", "")
                 tool_result = getattr(step_output, "result", "")
                 args = tool_input if isinstance(tool_input, dict) else {"input": str(tool_input)}
                 record_tool_call(trace, str(tool_name), args, str(tool_result))
+
+            # Emit progress for tool calls and periodic heartbeats
+            if progress_callback is not None:
+                elapsed = time.monotonic() - t0
+                tokens = trace.total_tokens_input + trace.total_tokens_output
+                if tool_name:
+                    detail = _format_crewai_tool_detail(str(tool_name), tool_input)
+                    progress_callback(
+                        f"    tool {tool_counter[0]} — {detail}"
+                        f"  ({elapsed:.0f}s, {tokens:,} tokens)"
+                    )
+                elif counter[0] % 10 == 0:
+                    progress_callback(
+                        f"    step {counter[0]}/{max_iterations} — reasoning"
+                        f"  ({elapsed:.0f}s, {tokens:,} tokens)"
+                    )
 
             # Always record the step as a message so the full reasoning
             # chain is visible in the trace.
