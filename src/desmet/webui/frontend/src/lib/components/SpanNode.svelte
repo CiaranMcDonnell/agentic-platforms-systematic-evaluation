@@ -5,11 +5,13 @@
     observation: LangfuseObservation;
     rootLatency: number;
     depth?: number;
+    expandAll?: boolean;
   }
 
-  let { observation, rootLatency, depth = 0 }: Props = $props();
-  let expanded = $state(false);
-  $effect(() => { expanded = depth < 2; });
+  let { observation, rootLatency, depth = 0, expandAll = false }: Props = $props();
+  let expanded = $state(depth < 2);
+  // When expandAll toggles true → open; false → reset to depth-based default.
+  $effect(() => { if (expandAll) expanded = true; else expanded = depth < 2; });
 
   let barWidth = $derived(rootLatency > 0 ? Math.max(2, (observation.latency_ms / rootLatency) * 100) : 0);
   let isError = $derived(observation.level === 'ERROR');
@@ -85,7 +87,7 @@
 
     {#if observation.children.length > 0}
       {#each observation.children as child (child.id)}
-        <svelte:self observation={child} {rootLatency} depth={depth + 1} />
+        <svelte:self observation={child} {rootLatency} depth={depth + 1} {expandAll} />
       {/each}
     {/if}
   {/if}
