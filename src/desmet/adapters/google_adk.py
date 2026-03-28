@@ -95,6 +95,7 @@ class GoogleADKAdapter(ToolAgentAdapter):
 
     async def shutdown(self) -> None:
         self._model_id = None
+        self._model_name = None
         self._initialized = False
 
     async def health_check(self) -> bool:
@@ -406,8 +407,9 @@ class GoogleADKAdapter(ToolAgentAdapter):
             ):
                 author = getattr(event, "author", "") or ""
 
-                # Record text content
-                if event.content and event.content.parts:
+                # Record text content (skip final response — recorded separately)
+                is_final = event.is_final_response()
+                if not is_final and event.content and event.content.parts:
                     text = "".join(
                         p.text for p in event.content.parts
                         if hasattr(p, "text") and p.text
@@ -422,8 +424,8 @@ class GoogleADKAdapter(ToolAgentAdapter):
                 if author and author != "user":
                     total_iterations += 1
 
-                # Report agent activity
-                if event.is_final_response():
+                # Record final response once
+                if is_final:
                     collector.record_message(
                         "assistant",
                         "".join(

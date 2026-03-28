@@ -182,12 +182,14 @@ def normalize_usage(raw: Any) -> tuple[int, int]:
             raw.get("prompt_tokens")
             or raw.get("input_tokens")
             or raw.get("input_token_count")
+            or raw.get("prompt_token_count")  # Gemini / ADK
             or 0
         )
         out = (
             raw.get("completion_tokens")
             or raw.get("output_tokens")
             or raw.get("output_token_count")
+            or raw.get("candidates_token_count")  # Gemini / ADK
             or 0
         )
         return (int(inp), int(out))
@@ -197,12 +199,14 @@ def normalize_usage(raw: Any) -> tuple[int, int]:
         getattr(raw, "prompt_tokens", 0)
         or getattr(raw, "input_tokens", 0)
         or getattr(raw, "input_token_count", 0)
+        or getattr(raw, "prompt_token_count", 0)  # Gemini / ADK
         or 0
     )
     out = (
         getattr(raw, "completion_tokens", 0)
         or getattr(raw, "output_tokens", 0)
         or getattr(raw, "output_token_count", 0)
+        or getattr(raw, "candidates_token_count", 0)  # Gemini / ADK
         or 0
     )
     return (int(inp), int(out))
