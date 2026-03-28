@@ -8,6 +8,7 @@
 
   let container: HTMLDivElement | undefined = $state();
   let chart: echarts.ECharts | null = null;
+  let resizeObserver: ResizeObserver | null = null;
   let graphData: CommunicationGraph | null = $state(null);
   let selectedNode: GraphNode | null = $state(null);
   let loading = $state(true);
@@ -112,13 +113,13 @@
   onMount(() => {
     if (container) {
       chart = echarts.init(container, 'dark', { renderer: 'canvas' });
-      const ro = new ResizeObserver(() => chart?.resize());
-      ro.observe(container);
+      resizeObserver = new ResizeObserver(() => chart?.resize());
+      resizeObserver.observe(container);
     }
-    loadGraph();
   });
 
   onDestroy(() => {
+    resizeObserver?.disconnect();
     chart?.dispose();
   });
 
