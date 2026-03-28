@@ -245,6 +245,9 @@
         },
         { root: listContainer, threshold: 0.5 }
       );
+      for (const el of cardElements.values()) {
+        observer.observe(el);
+      }
     }
   });
 
