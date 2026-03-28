@@ -10,6 +10,7 @@ from desmet.infra import (
     cleanup_all_docker,
     get_config_status,
     get_container_status,
+    get_docker_platform_statuses,
     get_platform_statuses,
     is_package_importable,
 )
@@ -88,28 +89,43 @@ class TestGetContainerStatus:
 
 
 class TestGetPlatformStatuses:
+    @patch("desmet.harness.container_runner.has_image", return_value=False)
     @patch("desmet.infra.get_container_status")
     @patch("desmet.infra.is_package_importable")
-    def test_python_platform_installed(self, mock_import, mock_container):
+    def test_sdk_platform_with_local_install(self, mock_import, mock_container, mock_has_image):
         mock_import.return_value = True
         mock_container.return_value = "not started"
         statuses = get_platform_statuses()
         lg = next(s for s in statuses if s.platform_id == "langgraph")
-        assert lg.infra_type == "none needed"
+        assert lg.infra_type == "Python SDK"
         assert lg.status == "ready"
 
+    @patch("desmet.harness.container_runner.has_image", return_value=False)
     @patch("desmet.infra.get_container_status")
     @patch("desmet.infra.is_package_importable")
-    def test_python_platform_not_installed(self, mock_import, mock_container):
+    def test_sdk_platform_not_built(self, mock_import, mock_container, mock_has_image):
         mock_import.return_value = False
         mock_container.return_value = "not started"
         statuses = get_platform_statuses()
         lg = next(s for s in statuses if s.platform_id == "langgraph")
-        assert lg.status == "not installed"
+        assert lg.status == "not built"
+        assert lg.infra_type == "Docker (isolated)"
 
+    @patch("desmet.harness.container_runner.has_image", return_value=True)
     @patch("desmet.infra.get_container_status")
     @patch("desmet.infra.is_package_importable")
-    def test_docker_platform_running(self, mock_import, mock_container):
+    def test_sdk_platform_with_docker_image(self, mock_import, mock_container, mock_has_image):
+        mock_import.return_value = False
+        mock_container.return_value = "not started"
+        statuses = get_platform_statuses()
+        lg = next(s for s in statuses if s.platform_id == "langgraph")
+        assert lg.status == "ready"
+        assert lg.infra_type == "Docker (isolated)"
+
+    @patch("desmet.harness.container_runner.has_image", return_value=False)
+    @patch("desmet.infra.get_container_status")
+    @patch("desmet.infra.is_package_importable")
+    def test_docker_platform_running(self, mock_import, mock_container, mock_has_image):
         mock_import.return_value = False
         mock_container.return_value = "running"
         statuses = get_platform_statuses()
@@ -117,14 +133,42 @@ class TestGetPlatformStatuses:
         assert fw.infra_type == "Docker"
         assert fw.status == "running"
 
+    @patch("desmet.harness.container_runner.has_image", return_value=False)
     @patch("desmet.infra.get_container_status")
     @patch("desmet.infra.is_package_importable")
-    def test_docker_platform_not_started(self, mock_import, mock_container):
+    def test_docker_platform_not_started(self, mock_import, mock_container, mock_has_image):
         mock_import.return_value = False
         mock_container.return_value = "not started"
         statuses = get_platform_statuses()
         fw = next(s for s in statuses if s.platform_id == "flowise")
         assert fw.status == "not started"
+
+
+class TestGetDockerPlatformStatuses:
+    @patch("desmet.harness.container_runner.has_image")
+    @patch("desmet.infra.get_container_status")
+    def test_includes_visual_platforms(self, mock_container, mock_has_image):
+        mock_container.return_value = "running"
+        mock_has_image.return_value = False
+        result = get_docker_platform_statuses()
+        assert result["flowise"] == "running"
+        assert result["n8n"] == "running"
+
+    @patch("desmet.harness.container_runner.has_image")
+    @patch("desmet.infra.get_container_status")
+    def test_includes_sdk_image_status(self, mock_container, mock_has_image):
+        mock_container.return_value = "not started"
+        mock_has_image.return_value = True
+        result = get_docker_platform_statuses()
+        assert result["langgraph"] == "ready"
+
+    @patch("desmet.harness.container_runner.has_image")
+    @patch("desmet.infra.get_container_status")
+    def test_sdk_not_built(self, mock_container, mock_has_image):
+        mock_container.return_value = "not started"
+        mock_has_image.return_value = False
+        result = get_docker_platform_statuses()
+        assert result["langgraph"] == "not built"
 
 
 class TestGetConfigStatus:
