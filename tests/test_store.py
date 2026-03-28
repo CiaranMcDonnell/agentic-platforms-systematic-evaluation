@@ -124,3 +124,71 @@ class TestExecutions:
 
         assert len(store.get_executions(r1)) == 1
         assert len(store.get_executions(r2)) == 0
+
+
+class TestListRuns:
+    def test_list_runs_order(self, store: ResultStore):
+        r1 = store.create_run(model="gpt-4o")
+        r2 = store.create_run(model="claude-sonnet")
+        df = store.list_runs()
+        assert len(df) == 2
+        # newest first
+        assert df.iloc[0]["run_id"] == r2
+        assert df.iloc[1]["run_id"] == r1
+
+    def test_get_run(self, store: ResultStore):
+        run_id = store.create_run(model="gpt-4o")
+        df = store.get_run(run_id)
+        assert len(df) == 1
+        assert df.iloc[0]["model"] == "gpt-4o"
+
+
+class TestUpdateScores:
+    def test_update_rubric_scores(self, store: ResultStore):
+        run_id = store.create_run()
+        from desmet.harness.story import StoryResult, StoryStatus
+        result = StoryResult(
+            story_id="US-001",
+            platform_id="langgraph",
+            execution_id="lg_us001_test",
+            status=StoryStatus.COMPLETED,
+        )
+        from desmet.harness.metrics import StoryMetrics
+        metrics = StoryMetrics.from_story_result(result)
+        store.save_execution(run_id, result, metrics)
+
+        store.update_scores("lg_us001_test", {
+            "rubric_pipeline_completeness": 2.0,
+            "rubric_tool_integration": 3.0,
+            "score_orchestration": 4.5,
+        })
+
+        df = store.get_executions(run_id)
+        row = df.iloc[0]
+        assert row["rubric_pipeline_completeness"] == 2.0
+        assert row["rubric_tool_integration"] == 3.0
+        assert row["score_orchestration"] == 4.5
+
+
+class TestPlatformHistory:
+    def test_history_across_runs(self, store: ResultStore):
+        from desmet.harness.story import StoryResult, StoryStatus
+        from desmet.harness.metrics import StoryMetrics
+
+        for i in range(3):
+            run_id = store.create_run()
+            result = StoryResult(
+                story_id="US-001",
+                platform_id="langgraph",
+                execution_id=f"lg_us001_{i}",
+                status=StoryStatus.COMPLETED,
+                wall_clock_seconds=100.0 + i * 10,
+            )
+            metrics = StoryMetrics.from_story_result(result)
+            store.save_execution(run_id, result, metrics)
+
+        df = store.get_platform_history("langgraph")
+        assert len(df) == 3
+        # oldest first
+        assert df.iloc[0]["execution_id"] == "lg_us001_0"
+        assert df.iloc[2]["execution_id"] == "lg_us001_2"

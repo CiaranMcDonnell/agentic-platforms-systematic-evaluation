@@ -191,6 +191,54 @@ class ResultStore:
             [run_id],
         ).df()
 
+    def list_runs(self) -> pd.DataFrame:
+        """All runs, newest first."""
+        return self._conn.execute(
+            "SELECT * FROM runs ORDER BY started_at DESC"
+        ).df()
+
+    def get_run(self, run_id: str) -> pd.DataFrame:
+        """Single run row as a DataFrame."""
+        return self._conn.execute(
+            "SELECT * FROM runs WHERE run_id = ?", [run_id]
+        ).df()
+
+    def get_platform_history(self, platform_id: str) -> pd.DataFrame:
+        """All executions for a platform across all runs, oldest first.
+
+        Includes the run's started_at for time-series use.
+        """
+        return self._conn.execute(
+            "SELECT e.*, r.started_at AS run_started_at "
+            "FROM executions e JOIN runs r ON e.run_id = r.run_id "
+            "WHERE e.platform_id = ? "
+            "ORDER BY r.started_at ASC",
+            [platform_id],
+        ).df()
+
+    def update_scores(self, execution_id: str, scores: dict[str, float]) -> None:
+        """Update score columns on an execution row.
+
+        Keys must match column names (e.g., 'rubric_pipeline_completeness',
+        'score_orchestration').
+        """
+        valid_columns = {
+            "score_pipeline_completeness", "score_efficiency",
+            "score_orchestration", "score_autonomy", "overall_score",
+            "rubric_pipeline_completeness", "rubric_tool_integration",
+            "rubric_error_recovery", "rubric_trace_quality",
+            "rubric_time_efficiency", "rubric_autonomy",
+        }
+        updates = {k: v for k, v in scores.items() if k in valid_columns}
+        if not updates:
+            return
+        set_clause = ", ".join(f"{col} = ?" for col in updates)
+        values = list(updates.values()) + [execution_id]
+        self._conn.execute(
+            f"UPDATE executions SET {set_clause} WHERE execution_id = ?",
+            values,
+        )
+
     def close(self) -> None:
         """Close the DuckDB connection."""
         self._conn.close()
