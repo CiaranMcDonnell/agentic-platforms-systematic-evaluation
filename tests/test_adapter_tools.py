@@ -405,3 +405,45 @@ class TestAgentFrameworkToolFormat:
         )
         for t in tools:
             assert t.__doc__ is not None and len(t.__doc__) > 5
+
+
+# ---------------------------------------------------------------------------
+# split_tools tests
+# ---------------------------------------------------------------------------
+
+from desmet.adapters._tools import split_tools
+
+
+class _MockNamedTool:
+    def __init__(self, name: str):
+        self.name = name
+
+
+def _make_callable(name: str):
+    def fn(): pass
+    fn.__name__ = name
+    return fn
+
+
+class TestSplitTools:
+    def test_executor_excludes_check_completion(self) -> None:
+        tools = [_MockNamedTool(n) for n in ["read_file", "write_file", "check_completion"]]
+        executor, _ = split_tools(tools, ToolFormat.LANGCHAIN)
+        assert all(t.name != "check_completion" for t in executor)
+
+    def test_reviewer_gets_inspection_tools(self) -> None:
+        tools = [_MockNamedTool(n) for n in [
+            "read_file", "write_file", "execute_shell",
+            "list_directory", "search_code", "check_completion",
+        ]]
+        _, reviewer = split_tools(tools, ToolFormat.CREWAI)
+        assert {t.name for t in reviewer} == {"read_file", "list_directory", "search_code", "check_completion"}
+
+    def test_callable_tools_uses_dunder_name(self) -> None:
+        tools = [_make_callable(n) for n in ["read_file", "write_file", "check_completion"]]
+        executor, _ = split_tools(tools, ToolFormat.AGENT_FRAMEWORK)
+        assert all(t.__name__ != "check_completion" for t in executor)
+
+    def test_empty_tools(self) -> None:
+        executor, reviewer = split_tools([], ToolFormat.LANGCHAIN)
+        assert executor == [] and reviewer == []

@@ -939,3 +939,29 @@ def create_tools(
         return _build_agent_framework_tools(workspace, tool_names, **kwargs)
 
     raise ValueError(f"Unknown tool format: {fmt}")
+
+
+# ---------------------------------------------------------------------------
+# Tool splitting (executor / reviewer)
+# ---------------------------------------------------------------------------
+
+_REVIEWER_TOOL_NAMES = frozenset({"read_file", "list_directory", "search_code", "check_completion"})
+
+
+def split_tools(tools: list, fmt: ToolFormat) -> tuple[list, list]:
+    """Split *tools* into ``(executor_tools, reviewer_tools)``.
+
+    Executor: all except ``check_completion``.
+    Reviewer: ``read_file``, ``list_directory``, ``search_code``, ``check_completion``.
+
+    For AGENT_FRAMEWORK format (plain callables), tool names are read from ``__name__``.
+    For all other formats, ``.name`` is used.
+    """
+    def _name(tool) -> str:
+        if fmt is ToolFormat.AGENT_FRAMEWORK:
+            return getattr(tool, "__name__", "")
+        return getattr(tool, "name", "")
+
+    executor_tools = [t for t in tools if _name(t) != "check_completion"]
+    reviewer_tools = [t for t in tools if _name(t) in _REVIEWER_TOOL_NAMES]
+    return executor_tools, reviewer_tools
