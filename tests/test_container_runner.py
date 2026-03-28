@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import pytest
+from unittest.mock import MagicMock, patch
 
 from desmet.harness.container_runner import (
     image_name,
     dockerfile_path,
     PLATFORM_EXTRA_MAP,
+    delete_image,
+    get_image_details,
 )
 
 
@@ -52,3 +55,51 @@ class TestPlatformExtraMap:
         assert PLATFORM_EXTRA_MAP["openai_agents_sdk"] == "openai-agents"
         assert PLATFORM_EXTRA_MAP["microsoft_agent_framework"] == "agent-framework"
         assert PLATFORM_EXTRA_MAP["google_adk"] == "google-adk"
+
+
+class TestDeleteImage:
+    @patch("desmet.harness.container_runner.subprocess.run")
+    def test_delete_existing_image(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+        assert delete_image("langgraph") is True
+        mock_run.assert_called_once()
+        args = mock_run.call_args.args[0]
+        assert "rmi" in args
+        assert "desmet-eval-langgraph:1.0" in args
+
+    @patch("desmet.harness.container_runner.subprocess.run")
+    def test_delete_missing_image(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stderr="No such image")
+        assert delete_image("langgraph") is False
+
+    @patch("desmet.harness.container_runner.subprocess.run")
+    def test_delete_docker_not_found(self, mock_run):
+        mock_run.side_effect = FileNotFoundError()
+        assert delete_image("langgraph") is False
+
+
+class TestGetImageDetails:
+    @patch("desmet.harness.container_runner.subprocess.run")
+    def test_returns_details_for_existing_image(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='[{"Size": 3500000000, "Created": "2026-03-28T12:00:00Z"}]',
+        )
+        details = get_image_details("langgraph")
+        assert details is not None
+        assert details["size_bytes"] == 3500000000
+        assert details["created_at"] == "2026-03-28T12:00:00Z"
+        assert details["tag"] == "desmet-eval-langgraph:1.0"
+        assert details["exists"] is True
+
+    @patch("desmet.harness.container_runner.subprocess.run")
+    def test_returns_none_for_missing_image(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        details = get_image_details("langgraph")
+        assert details is None
+
+    @patch("desmet.harness.container_runner.subprocess.run")
+    def test_returns_none_on_docker_error(self, mock_run):
+        mock_run.side_effect = FileNotFoundError()
+        details = get_image_details("langgraph")
+        assert details is None

@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import Any
 
@@ -133,6 +133,110 @@ def build_image(
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         _log.error("Image build error: %s", e)
         return False
+
+
+def delete_image(platform_id: str) -> bool:
+    """Remove the Docker image for a platform. Returns True on success."""
+    tag = image_name(platform_id)
+    try:
+        result = subprocess.run(
+            ["docker", "rmi", tag],
+            capture_output=True, text=True, timeout=30,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def get_image_details(platform_id: str) -> dict[str, Any] | None:
+    """Return image metadata (size, creation date) or None if not found."""
+    tag = image_name(platform_id)
+    try:
+        result = subprocess.run(
+            ["docker", "image", "inspect", tag],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        data = json.loads(result.stdout)
+        if not data:
+            return None
+        return {
+            "exists": True,
+            "tag": tag,
+            "size_bytes": data[0].get("Size", 0),
+            "created_at": data[0].get("Created", ""),
+        }
+    except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return None
+
+
+def build_image_streaming(
+    platform_id: str,
+) -> Generator[dict[str, str], None, bool]:
+    """Build a platform image, yielding progress dicts line-by-line.
+
+    Yields dicts like:
+        {"platform": "langgraph", "phase": "base", "line": "Step 3/8 ..."}
+        {"platform": "langgraph", "status": "built"}
+
+    Returns True on success (accessible via generator .value after StopIteration).
+    """
+    project_root = Path(__file__).resolve().parents[3]
+
+    # Check base image
+    try:
+        probe = subprocess.run(
+            ["docker", "image", "inspect", _BASE_IMAGE],
+            capture_output=True, timeout=10,
+        )
+        need_base = probe.returncode != 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        yield {"platform": platform_id, "status": "failed", "error": "Docker not available"}
+        return False
+
+    if need_base:
+        yield {"platform": platform_id, "phase": "base", "line": f"Building {_BASE_IMAGE}..."}
+        proc = subprocess.Popen(
+            [
+                "docker", "build",
+                "-f", str(_INFRA_DIR / "Dockerfile.base"),
+                "-t", _BASE_IMAGE,
+                str(project_root),
+            ],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        for line in proc.stdout:
+            yield {"platform": platform_id, "phase": "base", "line": line.rstrip()}
+        proc.wait()
+        if proc.returncode != 0:
+            yield {"platform": platform_id, "status": "failed", "error": "Base image build failed"}
+            return False
+
+    # Build platform image
+    tag = image_name(platform_id)
+    df = dockerfile_path(platform_id)
+    yield {"platform": platform_id, "phase": "platform", "line": f"Building {tag}..."}
+
+    proc = subprocess.Popen(
+        [
+            "docker", "build",
+            "-f", str(df),
+            "-t", tag,
+            str(project_root),
+        ],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+    for line in proc.stdout:
+        yield {"platform": platform_id, "phase": "platform", "line": line.rstrip()}
+    proc.wait()
+
+    if proc.returncode != 0:
+        yield {"platform": platform_id, "status": "failed", "error": f"Build failed for {tag}"}
+        return False
+
+    yield {"platform": platform_id, "status": "built"}
+    return True
 
 
 def _container_name(platform_id: str, story_id: str) -> str:
