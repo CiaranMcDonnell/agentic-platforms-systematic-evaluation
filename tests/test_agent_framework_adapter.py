@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from desmet.adapters.agent_framework import AgentFrameworkAdapter
+from desmet.adapters._observation import ObservationCollector
 from desmet.harness.trace import AgentTrace
 
 
@@ -83,7 +84,7 @@ class TestAgentFrameworkAdapterInterface:
         params = list(sig.parameters.keys())
         assert "stage_name" in params
         assert "prompt" in params
-        assert "trace" in params
+        assert "collector" in params
         assert "context" in params
 
 
@@ -170,19 +171,20 @@ class TestUsageTrackingMiddleware:
         from desmet.adapters.agent_framework import UsageTrackingMiddleware
         assert UsageTrackingMiddleware is not None
 
-    def test_middleware_initializes_with_trace(self):
+    def test_middleware_initializes_with_collector(self):
         from desmet.adapters.agent_framework import UsageTrackingMiddleware
         trace = AgentTrace()
-        mw = UsageTrackingMiddleware(trace, model_name="gpt-5.2")
-        assert mw._trace is trace
-        assert mw._model_name == "gpt-5.2"
+        collector = ObservationCollector(trace)
+        mw = UsageTrackingMiddleware(collector)
+        assert mw._collector is collector
 
     def test_middleware_is_thread_safe(self):
-        """Middleware uses a lock for concurrent agent access."""
+        """ObservationCollector provides thread-safety via its own lock."""
         from desmet.adapters.agent_framework import UsageTrackingMiddleware
         trace = AgentTrace()
-        mw = UsageTrackingMiddleware(trace, model_name="gpt-5.2")
-        assert hasattr(mw, "_lock")
+        collector = ObservationCollector(trace)
+        mw = UsageTrackingMiddleware(collector)
+        assert hasattr(mw._collector, "_lock")
 
 
 class TestRegistryIntegration:
