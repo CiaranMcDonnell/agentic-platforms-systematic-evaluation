@@ -392,22 +392,41 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
         # -- Step 4: Stream events from the workflow --------------------------
         run_t0 = time.monotonic()
 
+        # Aggregate streaming token chunks into full messages per agent turn
+        current_message_id: str | None = None
+        current_message_chunks: list[str] = []
+        current_agent_id: str = ""
+
+        def _flush_message() -> None:
+            """Flush accumulated token chunks into a single trace message."""
+            nonlocal current_message_id
+            if current_message_chunks:
+                full_text = "".join(current_message_chunks)
+                if full_text.strip():
+                    record_message(
+                        trace, "assistant", full_text,
+                        metadata={"agent": current_agent_id},
+                    )
+                current_message_chunks.clear()
+                current_message_id = None
+
         try:
             async for event in workflow.run(prompt, stream=True):
-                total_iterations += 1
 
                 if event.type == "output" and isinstance(event.data, AgentResponseUpdate):
-                    # Streaming token from an agent
-                    text = str(event.data)
-                    agent_id = getattr(event, "executor_id", "") or ""
-                    if text.strip():
-                        record_message(
-                            trace, "assistant", text,
-                            metadata={"agent": agent_id},
-                        )
+                    # Streaming token chunk — aggregate, don't count as iteration
+                    message_id = getattr(event.data, "message_id", None)
+                    if message_id != current_message_id:
+                        # New message from agent — flush previous
+                        _flush_message()
+                        current_message_id = message_id
+                        current_agent_id = getattr(event, "executor_id", "") or ""
+                    current_message_chunks.append(str(event.data))
 
                 elif event.type == "magentic_orchestrator":
-                    # Manager plan/progress event
+                    # Manager plan/progress event — counts as an iteration
+                    _flush_message()
+                    total_iterations += 1
                     content = getattr(event.data, "content", None)
                     event_name = getattr(getattr(event.data, "event_type", None), "name", "unknown")
                     if isinstance(content, Message):
@@ -419,7 +438,9 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                         cb(f"    [manager] {event_name}")
 
                 elif event.type == "output":
-                    # Final output — list[Message]
+                    # Final output — list[Message]; counts as an iteration
+                    _flush_message()
+                    total_iterations += 1
                     if isinstance(event.data, list):
                         for msg in event.data:
                             text = getattr(msg, "text", "") or ""
@@ -433,6 +454,9 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                 if total_iterations >= context.max_iterations:
                     hit_limit = True
                     break
+
+            # Flush any remaining chunks
+            _flush_message()
         except Exception as e:
             _log.warning("MagenticOne orchestration error: %s", e)
             trace.errors.append(str(e))
