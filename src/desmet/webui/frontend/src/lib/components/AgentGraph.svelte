@@ -143,7 +143,7 @@
       <span class="topology-stats">
         {graphData.nodes.length} agents &middot;
         {graphData.nodes.reduce((s, n) => s + n.tokens_in + n.tokens_out, 0).toLocaleString()} tokens &middot;
-        {graphData.edges.reduce((s, e) => s + e.message_count, 0)} messages
+        {graphData.edges.reduce((s, e) => s + e.message_count, 0)} transitions
       </span>
     </div>
   {/if}

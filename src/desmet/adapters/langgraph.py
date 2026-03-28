@@ -515,14 +515,12 @@ class LangGraphAdapter(ToolAgentAdapter):
 
             last_msg = result["messages"][-1] if result.get("messages") else None
             if last_msg and trace is not None:
-                content = getattr(last_msg, "content", "")
-                if content:
-                    record_message(
-                        trace,
-                        "assistant",
-                        str(content),
-                        metadata={"node": "reviewer"},
-                    )
+                content = getattr(last_msg, "content", None)
+                # Content may be empty when the LLM returns tool calls only;
+                # still record the message so the reviewer appears in the graph.
+                text = str(content) if content else "(reviewer tool call)"
+                record_message(trace, "assistant", text, metadata={"node": "reviewer"})
+                record_node_event(trace, "reviewer", validator_passed=state.get("validator_passed", False))
 
             if cb is not None:
                 elapsed = time.monotonic() - t0_ref[0]
