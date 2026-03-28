@@ -241,6 +241,7 @@
         { root: listContainer, threshold: 0.5 }
       );
     }
+    return () => { observer?.disconnect(); };
   });
 
   function handleListKeydown(e: KeyboardEvent) {
