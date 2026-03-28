@@ -188,3 +188,22 @@ class TestLifecycle:
         await adapter.shutdown()
         assert adapter._model_id is None
         assert adapter._initialized is False
+
+
+class TestRegistryIntegration:
+    def test_google_adk_in_implemented_platforms(self):
+        from desmet.adapters.registry import list_available_platforms
+        platforms = list_available_platforms()
+        assert "google_adk" in platforms
+
+    def test_registry_returns_correct_adapter(self):
+        from desmet.adapters.registry import get_adapter
+        from desmet.adapters.google_adk import GoogleADKAdapter
+        adapter = get_adapter("google_adk")
+        assert isinstance(adapter, GoogleADKAdapter)
+
+    def test_registry_adapter_has_correct_tool_format(self):
+        from desmet.adapters.registry import get_adapter
+        from desmet.adapters._tools import ToolFormat
+        adapter = get_adapter("google_adk")
+        assert adapter.TOOL_FORMAT == ToolFormat.CALLABLE
