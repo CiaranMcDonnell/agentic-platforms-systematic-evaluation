@@ -1,6 +1,9 @@
 """Tests for the DuckDB result store."""
 
+import json as json_mod
+
 import duckdb
+import pandas as pd
 import pytest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -192,3 +195,43 @@ class TestPlatformHistory:
         # oldest first
         assert df.iloc[0]["execution_id"] == "lg_us001_0"
         assert df.iloc[2]["execution_id"] == "lg_us001_2"
+
+
+class TestExport:
+    def _seed_run(self, store: ResultStore):
+        from desmet.harness.story import StoryResult, StoryStatus
+        from desmet.harness.metrics import StoryMetrics
+
+        run_id = store.create_run(model="gpt-4o")
+        result = StoryResult(
+            story_id="US-001",
+            platform_id="langgraph",
+            execution_id="lg_us001_export",
+            status=StoryStatus.COMPLETED,
+            wall_clock_seconds=180.0,
+            iterations=3,
+            tool_calls=25,
+            tokens_input=100000,
+            tokens_output=5000,
+            api_cost_usd=0.025,
+        )
+        metrics = StoryMetrics.from_story_result(result, time_budget_seconds=300.0)
+        store.save_execution(run_id, result, metrics)
+        store.finish_run(run_id)
+        return run_id
+
+    def test_export_json(self, store: ResultStore, tmp_path: Path):
+        run_id = self._seed_run(store)
+        out = store.export_run_json(run_id, tmp_path / "out.json")
+        assert out.exists()
+        data = json_mod.loads(out.read_text())
+        assert "platforms" in data
+        assert "langgraph" in data["platforms"]
+
+    def test_export_csv(self, store: ResultStore, tmp_path: Path):
+        run_id = self._seed_run(store)
+        out = store.export_run_csv(run_id, tmp_path / "out.csv")
+        assert out.exists()
+        df = pd.read_csv(out)
+        assert len(df) == 1
+        assert df.iloc[0]["platform_id"] == "langgraph"

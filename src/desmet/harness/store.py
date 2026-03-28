@@ -239,6 +239,71 @@ class ResultStore:
             values,
         )
 
+    # ------------------------------------------------------------------
+    # Export
+    # ------------------------------------------------------------------
+
+    def export_run_json(self, run_id: str, path: Path) -> Path:
+        """Export a single run to JSON in the legacy evaluation_results format."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        run_df = self.get_run(run_id)
+        exec_df = self.get_executions(run_id)
+
+        platforms: dict[str, Any] = {}
+        for pid, group in exec_df.groupby("platform_id"):
+            story_metrics = []
+            for _, row in group.iterrows():
+                sm: dict[str, Any] = {
+                    "story_id": row["story_id"],
+                    "success": row["status"] == "completed",
+                    "wall_clock_seconds": row["wall_clock_seconds"],
+                    "iterations": int(row["iterations"] or 0),
+                    "tool_calls": int(row["tool_calls"] or 0),
+                    "tokens_input": int(row["tokens_input"] or 0),
+                    "tokens_output": int(row["tokens_output"] or 0),
+                    "api_cost_usd": row["cost_usd"],
+                    "pipeline_completeness_score": row["rubric_pipeline_completeness"],
+                    "tool_integration_score": row["rubric_tool_integration"],
+                    "error_recovery_score": row["rubric_error_recovery"],
+                    "trace_quality_score": row["rubric_trace_quality"],
+                    "time_efficiency_score": row["rubric_time_efficiency"],
+                    "autonomy_score": row["rubric_autonomy"],
+                }
+                fm_raw = row["framework_metrics"]
+                if fm_raw is not None and isinstance(fm_raw, str):
+                    sm["framework_metrics"] = json.loads(fm_raw)
+                story_metrics.append(sm)
+
+            platforms[str(pid)] = {
+                "platform_id": str(pid),
+                "platform_name": str(pid),
+                "stories_total": len(group),
+                "stories_completed": int((group["status"] == "completed").sum()),
+                "stories_failed": int((group["status"] != "completed").sum()),
+                "story_metrics": story_metrics,
+            }
+
+        started = run_df.iloc[0]["started_at"] if len(run_df) else None
+        data = {
+            "evaluation_date": str(started) if started else None,
+            "run_id": run_id,
+            "platforms": platforms,
+        }
+
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, default=str)
+        return path
+
+    def export_run_csv(self, run_id: str, path: Path) -> Path:
+        """Export a single run's executions to CSV."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        df = self.get_executions(run_id)
+        df.to_csv(path, index=False)
+        return path
+
     def close(self) -> None:
         """Close the DuckDB connection."""
         self._conn.close()
