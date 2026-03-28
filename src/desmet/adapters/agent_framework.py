@@ -11,6 +11,7 @@ even when the package is not installed.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 import time
@@ -34,6 +35,8 @@ from desmet.harness.context import StageContext
 from desmet.harness.models import PlatformInfo
 from desmet.harness.trace import AgentTrace
 from desmet.llm_config import get_config as get_llm_config
+
+_log = logging.getLogger(__name__)
 
 MAX_STALL_COUNT = 3
 
@@ -71,6 +74,8 @@ class UsageTrackingMiddleware:
         duration_ms = (time.monotonic() - t0) * 1000
 
         # Extract usage from the response (OpenAI-compatible structure)
+        input_tokens = 0
+        output_tokens = 0
         usage = getattr(response, "usage", None)
         if usage is not None:
             input_tokens = (
@@ -83,14 +88,16 @@ class UsageTrackingMiddleware:
                 or getattr(usage, "output_tokens", 0)
                 or 0
             )
-            with self._lock:
+
+        with self._lock:
+            if input_tokens or output_tokens:
                 record_usage(
                     self._trace,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     model=self._model_name,
                 )
-                record_llm_duration(self._trace, duration_ms)
+            record_llm_duration(self._trace, duration_ms)
 
         return response
 
@@ -206,7 +213,6 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                 system_message="Respond with 'ok'.",
                 model_client=self._client,
             )
-            # Simple completion check
             response = await agent.on_messages(
                 [{"role": "user", "content": "Say 'ok'"}]
             )
@@ -246,6 +252,11 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
 
         # Register usage tracking middleware on the client
         middleware = UsageTrackingMiddleware(trace, model_name=self._model_name)
+        try:
+            client = self._client.with_middleware([middleware])
+        except (AttributeError, TypeError):
+            _log.debug("ChatMiddleware not supported — using client without token tracking")
+            client = self._client
 
         # -- Step 1: Planner agent (structured output) ------------------------
         plan: ImplementationPlan | None = None
@@ -253,7 +264,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
             planner = AssistantAgent(
                 name=f"desmet_{stage_name}_planner",
                 system_message=planner_persona.backstory,
-                model_client=self._client,
+                model_client=client,
             )
 
             # Try structured output via response_format
@@ -281,7 +292,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                         "Produce a numbered implementation plan listing steps, "
                         "files to create, and files to modify."
                     ),
-                    model_client=self._client,
+                    model_client=client,
                 )
                 planner_response = await planner.on_messages(
                     [{"role": "user", "content": prompt}],
@@ -341,7 +352,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
         executor_agent = AssistantAgent(
             name=f"desmet_{stage_name}_executor",
             system_message=executor_instructions,
-            model_client=self._client,
+            model_client=client,
             tools=executor_tools,
         )
 
@@ -353,7 +364,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                 "After the executor finishes, inspect the workspace and call "
                 "check_completion to verify all artifacts are present."
             ),
-            model_client=self._client,
+            model_client=client,
             tools=reviewer_tools,
         )
 
@@ -365,62 +376,66 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
 
         team = MagenticOneGroupChat(
             participants=[executor_agent, reviewer_agent],
-            model_client=self._client,
+            model_client=client,
             max_turns=max_rounds,
             max_stall_count=MAX_STALL_COUNT,
         )
 
-        # -- Step 6: Stream events from the team execution --------------------
+        # -- Step 5: Stream events from the team execution --------------------
         run_t0 = time.monotonic()
 
-        async for event in team.run_stream(task=prompt):
-            total_iterations += 1
+        try:
+            async for event in team.run_stream(task=prompt):
+                total_iterations += 1
 
-            # Record agent messages
-            agent_name = getattr(event, "source", "") or getattr(event, "agent", "")
-            content = getattr(event, "content", "") or ""
+                # Record agent messages
+                agent_name = getattr(event, "source", "") or getattr(event, "agent", "")
+                content = getattr(event, "content", "") or ""
 
-            if content:
-                record_message(
-                    trace, "assistant", str(content),
-                    metadata={"agent": str(agent_name)},
-                )
-
-            # Record tool calls from the event
-            for tc in getattr(event, "tool_calls", []) or []:
-                tool_call_count += 1
-                tc_name = getattr(tc, "name", "") or getattr(tc, "function", {}).get("name", "unknown")
-                tc_args = getattr(tc, "arguments", {})
-                if isinstance(tc_args, str):
-                    try:
-                        tc_args = json.loads(tc_args)
-                    except (json.JSONDecodeError, TypeError):
-                        tc_args = {"raw": tc_args}
-                record_tool_call(trace, name=tc_name, args=tc_args, result="")
-
-                if cb is not None:
-                    elapsed = time.monotonic() - t0
-                    detail = _format_tool_detail(tc_name, tc_args)
-                    tokens = trace.total_tokens_input + trace.total_tokens_output
-                    cb(
-                        f"    tool {tool_call_count} \u2014 {detail}"
-                        f"  ({elapsed:.0f}s, {tokens:,} tokens)"
+                if content:
+                    record_message(
+                        trace, "assistant", str(content),
+                        metadata={"agent": str(agent_name)},
                     )
 
-            # Track stall events
-            if getattr(event, "type", "") == "stall":
-                record_message(
-                    trace, "system", "Stall detected by MagenticOne manager",
-                    metadata={"event": "stall"},
-                )
-                if cb:
-                    elapsed = time.monotonic() - t0
-                    cb(f"    [manager] stall detected  ({elapsed:.0f}s)")
+                # Record tool calls from the event
+                for tc in getattr(event, "tool_calls", []) or []:
+                    tool_call_count += 1
+                    tc_name = getattr(tc, "name", "") or getattr(tc, "function", {}).get("name", "unknown")
+                    tc_args = getattr(tc, "arguments", {})
+                    if isinstance(tc_args, str):
+                        try:
+                            tc_args = json.loads(tc_args)
+                        except (json.JSONDecodeError, TypeError):
+                            tc_args = {"raw": tc_args}
+                    record_tool_call(trace, name=tc_name, args=tc_args, result="")
 
-            # Check iteration limit
-            if total_iterations >= context.max_iterations:
-                hit_limit = True
-                break
+                    if cb is not None:
+                        elapsed = time.monotonic() - t0
+                        detail = _format_tool_detail(tc_name, tc_args)
+                        tokens = trace.total_tokens_input + trace.total_tokens_output
+                        cb(
+                            f"    tool {tool_call_count} \u2014 {detail}"
+                            f"  ({elapsed:.0f}s, {tokens:,} tokens)"
+                        )
+
+                # Track stall events
+                if getattr(event, "type", "") == "stall":
+                    record_message(
+                        trace, "system", "Stall detected by MagenticOne manager",
+                        metadata={"event": "stall"},
+                    )
+                    if cb:
+                        elapsed = time.monotonic() - t0
+                        cb(f"    [manager] stall detected  ({elapsed:.0f}s)")
+
+                # Check iteration limit
+                if total_iterations >= context.max_iterations:
+                    hit_limit = True
+                    break
+        except Exception as e:
+            _log.warning("MagenticOne orchestration error: %s", e)
+            trace.errors.append(str(e))
 
         run_duration_ms = (time.monotonic() - run_t0) * 1000
 
@@ -429,7 +444,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
         llm_time_estimate = max(0.0, run_duration_ms - tool_time)
         record_llm_duration(trace, llm_time_estimate)
 
-        # -- Step 7: Final validation ------------------------------------------
+        # -- Step 6: Final validation ------------------------------------------
         passed = validate_workspace(stage_name, str(context.workspace))
         if cb:
             if passed:
