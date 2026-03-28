@@ -153,7 +153,11 @@ class GoogleADKAdapter(ToolAgentAdapter):
 
         planner_persona = get_sub_persona("planner")
 
-        # Try structured output first
+        # Try structured output first.
+        # The planner runs in its own Runner/Session because output_schema
+        # disables tool use in ADK — so it cannot share a SequentialAgent
+        # with tool-using agents.  The plan is extracted from session state
+        # and injected into the executor via build_executor_instructions().
         plan: ImplementationPlan | None = None
         try:
             planner = Agent(
@@ -161,7 +165,7 @@ class GoogleADKAdapter(ToolAgentAdapter):
                 model=self._model_id,
                 instruction=planner_persona.backstory,
                 output_schema=ImplementationPlan,
-                output_key="plan",
+                output_key="plan",  # ADK stores validated output in session.state["plan"]
                 generate_content_config=types.GenerateContentConfig(
                     temperature=temperature,
                 ),
@@ -362,6 +366,9 @@ class GoogleADKAdapter(ToolAgentAdapter):
                 "If validation fails, describe what is missing so the executor "
                 "can fix it on the next iteration."
             ),
+            # exit_loop sets tool_context.actions.escalate = True, which
+            # tells LoopAgent to stop iterating — the ADK-native way to
+            # signal "validation passed, no more executor→reviewer cycles."
             tools=reviewer_tools + [exit_loop],
             generate_content_config=gen_config,
             after_model_callback=_after_model_callback,
@@ -369,6 +376,8 @@ class GoogleADKAdapter(ToolAgentAdapter):
         )
 
         # ── Step 3: Build LoopAgent + SequentialAgent ────────────────────
+        # Budget: planner consumed 1 iteration in its own Runner above.
+        # Remaining budget goes to the executor⇄reviewer loop.
         loop_budget = max(3, context.max_iterations - 1)
 
         execute_loop = LoopAgent(
@@ -393,6 +402,8 @@ class GoogleADKAdapter(ToolAgentAdapter):
             app_name=f"desmet_{stage_name}", user_id="eval",
         )
 
+        # Hard ceiling on total LLM calls — RunConfig is ADK's built-in
+        # iteration budget, independent of LoopAgent.max_iterations.
         run_config = types.RunConfig(max_llm_calls=context.max_iterations)
 
         run_t0 = time.monotonic()
