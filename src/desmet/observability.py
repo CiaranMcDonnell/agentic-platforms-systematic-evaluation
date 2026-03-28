@@ -257,6 +257,109 @@ def get_langchain_callback(*, session_id: str | None = None) -> Any | None:
         return None
 
 
+def get_openai_agents_tracing_processor() -> Any | None:
+    """Return an Agents SDK ``TracingProcessor`` that forwards spans to Langfuse.
+
+    Each generation (LLM call), function (tool call), and agent span produced
+    by ``Runner.run()`` is recorded as a nested observation under the current
+    Langfuse trace.  Returns ``None`` when Langfuse is not available.
+    """
+    client = get_langfuse()
+    if client is None:
+        return None
+
+    try:
+        from agents.tracing import TracingProcessor as _TP
+        from agents.tracing import (
+            AgentSpanData,
+            FunctionSpanData,
+            GenerationSpanData,
+        )
+    except ImportError:
+        return None
+
+    class LangfuseTracingProcessor(_TP):
+        """Bridge OpenAI Agents SDK spans → Langfuse observations."""
+
+        def __init__(self, lf_client):
+            self._client = lf_client
+            # span_id → (span_type, context_manager, observation)
+            self._spans: dict[str, tuple[str, Any, Any]] = {}
+
+        def on_trace_start(self, trace) -> None:
+            pass  # outer Langfuse trace is managed by the runner
+
+        def on_trace_end(self, trace) -> None:
+            pass
+
+        def _enter_observation(self, span_id, span_type, ctx_mgr):
+            """Enter a context manager and store the yielded observation."""
+            observation = ctx_mgr.__enter__()
+            self._spans[span_id] = (span_type, ctx_mgr, observation)
+
+        def on_span_start(self, span) -> None:
+            data = span.span_data
+
+            if isinstance(data, GenerationSpanData):
+                cm = self._client.start_as_current_observation(
+                    name=f"llm-{data.model or 'unknown'}",
+                    as_type="generation",
+                    model=data.model,
+                    input=data.input,
+                    metadata={"model_config": dict(data.model_config) if data.model_config else {}},
+                )
+                self._enter_observation(span.span_id, "generation", cm)
+
+            elif isinstance(data, FunctionSpanData):
+                cm = self._client.start_as_current_observation(
+                    name=f"tool-{data.name}",
+                    input=data.input,
+                    metadata={"tool_name": data.name},
+                )
+                self._enter_observation(span.span_id, "function", cm)
+
+            elif isinstance(data, AgentSpanData):
+                cm = self._client.start_as_current_observation(
+                    name=f"agent-{data.name}",
+                    metadata={"agent_name": data.name},
+                )
+                self._enter_observation(span.span_id, "agent", cm)
+
+        def on_span_end(self, span) -> None:
+            entry = self._spans.pop(span.span_id, None)
+            if entry is None:
+                return
+            span_type, ctx_mgr, observation = entry
+            data = span.span_data
+
+            try:
+                if span_type == "generation" and isinstance(data, GenerationSpanData):
+                    # Filter usage to only standard keys Langfuse accepts
+                    usage = {}
+                    if data.usage:
+                        for k in ("input_tokens", "output_tokens", "total_tokens"):
+                            if k in data.usage:
+                                usage[k] = data.usage[k]
+                    observation.update(
+                        output=data.output,
+                        usage_details=usage,
+                    )
+                elif span_type == "function" and isinstance(data, FunctionSpanData):
+                    observation.update(output=str(data.output) if data.output else None)
+            finally:
+                ctx_mgr.__exit__(None, None, None)
+
+        def shutdown(self) -> None:
+            for _, (_, ctx_mgr, _) in list(self._spans.items()):
+                ctx_mgr.__exit__(None, None, None)
+            self._spans.clear()
+
+        def force_flush(self) -> None:
+            self._client.flush()
+
+    return LangfuseTracingProcessor(client)
+
+
 def record_generation(
     parent: Any | None,
     name: str,

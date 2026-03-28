@@ -209,7 +209,7 @@
     border-radius: 8px;
     padding: 16px;
     max-height: 800px;
-    overflow-y: auto;
+    overflow: hidden auto;
   }
 
   /* ── Summary pills ─────────────── */

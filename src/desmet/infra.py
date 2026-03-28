@@ -12,7 +12,6 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from desmet.llm_config import DEFAULT_MODEL
 
 COMPOSE_FILE = (
     Path(__file__).resolve().parent.parent.parent
@@ -183,11 +182,8 @@ def get_infra_statuses() -> list[dict]:
 
 
 def get_config_status() -> ConfigStatus:
-    model = (
-        os.getenv("DESMET_MODEL")
-        or os.getenv("DEFAULT_MODEL")
-        or DEFAULT_MODEL
-    )
+    from desmet.llm_config import get_config
+    model = get_config().model
 
     api_keys_set = [provider for var, provider in _API_KEY_VARS.items() if os.getenv(var)]
 

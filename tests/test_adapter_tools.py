@@ -15,14 +15,15 @@ def workspace(tmp_path):
 
 
 class TestAvailableTools:
-    def test_all_six_tools_present(self):
-        assert len(AVAILABLE_TOOLS) == 6
+    def test_all_seven_tools_present(self):
+        assert len(AVAILABLE_TOOLS) == 7
         assert "read_file" in AVAILABLE_TOOLS
         assert "write_file" in AVAILABLE_TOOLS
         assert "list_directory" in AVAILABLE_TOOLS
         assert "execute_shell" in AVAILABLE_TOOLS
         assert "search_code" in AVAILABLE_TOOLS
         assert "deploy_remote" in AVAILABLE_TOOLS
+        assert "check_completion" in AVAILABLE_TOOLS
 
     def test_is_tuple(self):
         assert isinstance(AVAILABLE_TOOLS, tuple)
@@ -74,8 +75,8 @@ class TestCreateToolsCallable:
     def test_tools_have_meaningful_names(self, workspace):
         tools = create_tools(workspace, list(AVAILABLE_TOOLS))
         names = {t.__name__ for t in tools}
-        # deploy_remote is excluded without platform context
-        assert names == set(AVAILABLE_TOOLS) - {"deploy_remote"}
+        # deploy_remote excluded without platform context; check_completion excluded without stage_name
+        assert names == set(AVAILABLE_TOOLS) - {"deploy_remote", "check_completion"}
 
     def test_read_file_reads_content(self, workspace):
         tools = create_tools(workspace, ["read_file"])
@@ -197,12 +198,12 @@ class TestCreateToolsLangchain:
         )
 
     def test_returns_correct_count(self, lc_tools):
-        # deploy_remote filtered out without platform context
+        # deploy_remote + check_completion filtered out without platform/stage context
         assert len(lc_tools) == 5
 
     def test_tools_have_correct_names(self, lc_tools):
         names = {t.name for t in lc_tools}
-        assert names == set(AVAILABLE_TOOLS) - {"deploy_remote"}
+        assert names == set(AVAILABLE_TOOLS) - {"deploy_remote", "check_completion"}
 
     def test_read_file_tool_works(self, lc_tools):
         read_tool = next(t for t in lc_tools if t.name == "read_file")
@@ -230,12 +231,12 @@ class TestCreateToolsCrewAI:
         )
 
     def test_returns_correct_count(self, crewai_tools):
-        # deploy_remote filtered out without platform context
+        # deploy_remote + check_completion filtered out without platform/stage context
         assert len(crewai_tools) == 5
 
     def test_tools_have_correct_names(self, crewai_tools):
         names = {t.name for t in crewai_tools}
-        assert names == set(AVAILABLE_TOOLS) - {"deploy_remote"}
+        assert names == set(AVAILABLE_TOOLS) - {"deploy_remote", "check_completion"}
 
     def test_read_file_tool_works(self, crewai_tools):
         read_tool = next(t for t in crewai_tools if t.name == "read_file")
@@ -300,12 +301,12 @@ class TestCreateToolsOpenAIAgents:
         )
 
     def test_returns_correct_count(self, oai_tools):
-        # deploy_remote filtered out without platform context
+        # deploy_remote + check_completion filtered out without platform/stage context
         assert len(oai_tools) == 5
 
     def test_tools_have_correct_names(self, oai_tools):
         names = {t.name for t in oai_tools}
-        assert names == set(AVAILABLE_TOOLS) - {"deploy_remote"}
+        assert names == set(AVAILABLE_TOOLS) - {"deploy_remote", "check_completion"}
 
     def test_tools_are_function_tools(self, oai_tools):
         from agents import FunctionTool

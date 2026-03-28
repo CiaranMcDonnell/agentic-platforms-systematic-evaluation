@@ -92,57 +92,10 @@ def get_platform_colours(platform_ids: list[str]) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Scoring constants — framework-centric (NOT LLM output quality).
-# Duplicated from story.py to avoid import coupling with the harness.
+# Scoring constants — imported from the canonical source in harness.story.
 # ---------------------------------------------------------------------------
 
-SCORING_DIMENSIONS: list[str] = [
-    "pipeline_completeness",
-    "tool_integration",
-    "error_recovery",
-    "time_efficiency",
-    "autonomy",
-    "trace_quality",
-]
-
-SCORING_RUBRIC: dict[str, dict[int, str]] = {
-    "pipeline_completeness": {
-        0: "Cannot run any stage",
-        1: "Runs 1-2 stages",
-        2: "Runs 3 stages",
-        3: "Runs all 4 stages end-to-end",
-    },
-    "tool_integration": {
-        0: "No tool use",
-        1: "Tools defined but frequently fail",
-        2: "Tools work with workarounds",
-        3: "Clean, reliable tool execution",
-    },
-    "error_recovery": {
-        0: "Crashes on first error",
-        1: "Errors halt pipeline",
-        2: "Logs errors, continues partially",
-        3: "Self-corrects and retries",
-    },
-    "time_efficiency": {
-        0: "Exceeded budget by 2x+",
-        1: "Exceeded budget",
-        2: "Met budget",
-        3: "Under budget",
-    },
-    "autonomy": {
-        0: "Required constant intervention",
-        1: "Frequent intervention",
-        2: "Occasional intervention",
-        3: "Fully autonomous",
-    },
-    "trace_quality": {
-        0: "No execution trace",
-        1: "Partial trace data",
-        2: "Messages + tool calls traced",
-        3: "Full trace with tokens, timing, state",
-    },
-}
+from desmet.harness.story import SCORING_DIMENSIONS, SCORING_RUBRIC  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Config loading (cached)

@@ -52,7 +52,9 @@
   let origin = $derived(findOrigin(traceData.observations) || parseMs(traceData.trace.timestamp));
   let totalMs = $derived(Math.max(traceData.trace.latency_ms, 1));
   let spans = $derived(
-    flatten(traceData.observations, origin).sort((a, b) => a.start_rel_ms - b.start_rel_ms)
+    flatten(traceData.observations, origin)
+      .filter(s => s.duration_ms >= 10)  // hide sub-10ms wrapper noise
+      .sort((a, b) => a.start_rel_ms - b.start_rel_ms)
   );
 
   function barColor(type: string, level: string): string {
@@ -78,30 +80,31 @@
     <span>{(totalMs / 1000).toFixed(1)}s</span>
   </div>
 
-  <!-- Gridlines overlay -->
-  <div class="tl-grid">
-    <div class="grid-line" style="left:0%"></div>
-    <div class="grid-line" style="left:25%"></div>
-    <div class="grid-line" style="left:50%"></div>
-    <div class="grid-line" style="left:75%"></div>
-    <div class="grid-line" style="left:100%"></div>
-  </div>
+  <!-- Timeline body (grid + rows) -->
+  <div class="tl-body">
+    <div class="tl-grid">
+      <div class="grid-line" style="left:0%"></div>
+      <div class="grid-line" style="left:25%"></div>
+      <div class="grid-line" style="left:50%"></div>
+      <div class="grid-line" style="left:75%"></div>
+      <div class="grid-line" style="left:100%"></div>
+    </div>
 
-  <!-- Span rows -->
-  <div class="tl-rows">
-    {#each spans as s (s.id)}
-      <div class="tl-row">
-        <div class="tl-label" title={s.name}>{s.name}</div>
-        <div class="tl-track">
-          <div
-            class="tl-bar"
-            style="left:{leftPct(s.start_rel_ms)};width:{widthPct(s.duration_ms)};background:{barColor(s.type, s.level)}"
-            title="{s.name} | {(s.duration_ms/1000).toFixed(3)}s{s.tokens_total ? ' | ' + s.tokens_total + ' tok' : ''}{s.model ? ' | ' + s.model : ''}"
-          ></div>
+    <div class="tl-rows">
+      {#each spans as s (s.id)}
+        <div class="tl-row">
+          <div class="tl-label" title={s.name}>{s.name}</div>
+          <div class="tl-track">
+            <div
+              class="tl-bar"
+              style="left:{leftPct(s.start_rel_ms)};width:{widthPct(s.duration_ms)};background:{barColor(s.type, s.level)}"
+              title="{s.name} | {(s.duration_ms/1000).toFixed(3)}s{s.tokens_total ? ' | ' + s.tokens_total + ' tok' : ''}{s.model ? ' | ' + s.model : ''}"
+            ></div>
+          </div>
+          <div class="tl-dur">{(s.duration_ms/1000).toFixed(2)}s</div>
         </div>
-        <div class="tl-dur">{(s.duration_ms/1000).toFixed(2)}s</div>
-      </div>
-    {/each}
+      {/each}
+    </div>
   </div>
 
   <!-- Legend -->
@@ -115,6 +118,7 @@
 
 <style>
   .tl-wrap { font-size: 12px; font-family: var(--sans); }
+  .tl-body { position: relative; }
 
   .tl-axis {
     display: flex;
@@ -127,16 +131,18 @@
   }
 
   .tl-grid {
-    position: relative;
-    height: 0;
+    position: absolute;
+    top: 0;
+    left: 140px;
+    right: 100px;
+    bottom: 0;
     pointer-events: none;
-    margin: 0 100px 0 140px;
   }
 
   .grid-line {
     position: absolute;
     top: 0;
-    height: 9999px;
+    bottom: 0;
     width: 1px;
     background: var(--border);
     opacity: 0.4;

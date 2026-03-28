@@ -42,5 +42,28 @@ class TestValidateWorkspace:
     def test_deploy_fails_no_compose(self, tmp_path):
         assert validate_workspace("deploy", str(tmp_path)) is False
 
+    def test_requirements_passes_in_subdirectory(self, tmp_path):
+        docs = tmp_path / "docs" / "design"
+        docs.mkdir(parents=True)
+        (docs / "requirements.md").write_text(
+            "## Functional requirements\n"
+            "## Non-functional requirements\n"
+            "## Acceptance criteria\n"
+            "## Constraint: must be fast\n"
+        )
+        assert validate_workspace("requirements", str(tmp_path)) is True
+
+    def test_codegen_passes_in_subdirectory(self, tmp_path):
+        pkg = tmp_path / "app"
+        pkg.mkdir()
+        (pkg / "main.py").write_text("def hello(): return 'hi'\n")
+        assert validate_workspace("codegen", str(tmp_path)) is True
+
+    def test_testing_passes_in_subdirectory(self, tmp_path):
+        tests = tmp_path / "tests"
+        tests.mkdir()
+        (tests / "test_app.py").write_text("def test_hello(): assert True\n")
+        assert validate_workspace("testing", str(tmp_path)) is True
+
     def test_unknown_stage_returns_false(self, tmp_path):
         assert validate_workspace("unknown_stage", str(tmp_path)) is False

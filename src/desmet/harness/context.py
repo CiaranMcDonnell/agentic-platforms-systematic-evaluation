@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -44,6 +45,7 @@ class StageContext:
             "list_directory",
             "execute_shell",
             "search_code",
+            "check_completion",
         ]
     )
 
@@ -53,6 +55,9 @@ class StageContext:
 
     # Accumulated stage results
     artifacts: dict[str, StageResult] = field(default_factory=dict)
+
+    # Progress reporting (sync callable, safe from any thread)
+    progress_callback: Callable[[str], None] | None = None
 
     # Metadata
     metadata: dict[str, Any] = field(default_factory=dict)

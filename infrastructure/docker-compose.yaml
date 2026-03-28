@@ -49,7 +49,40 @@ services:
       - langflow
 
   # ============================================================================
-  # PYTHON-BASED PLATFORMS (Development Environment)
+  # AGENT EVALUATION ENVIRONMENT
+  # ============================================================================
+  # Consistent Linux sandbox for agent tool execution (execute_shell).
+  # The harness runs on the host; shell commands route through docker exec.
+  #
+  # Start:  docker compose --profile eval-env up -d
+  # Exec:   docker exec desmet-eval-env bash -c "uv run pytest --rootdir=."
+  # ============================================================================
+
+  eval-env:
+    build:
+      context: .
+      dockerfile: Dockerfile.eval
+    container_name: desmet-eval-env
+    volumes:
+      - ../../results:/results
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - DEPLOY_HOST=${DEPLOY_HOST:-}
+      - DEPLOY_USER=${DEPLOY_USER:-}
+      - CREWAI_TELEMETRY_OPT_OUT=1
+    working_dir: /workspace
+    command: sleep infinity
+    restart: unless-stopped
+    profiles:
+      - eval-env
+
+  # ============================================================================
+  # PYTHON-BASED PLATFORMS (Development Environment — legacy)
   # ============================================================================
 
   python-dev:
@@ -112,30 +145,65 @@ services:
       - langflow
       - visual-platforms
 
+  # Dify - Init Permissions (one-shot setup)
+  dify-init:
+    image: busybox:latest
+    container_name: desmet-dify-init
+    command: >
+      sh -c "if [ ! -f /app/storage/.init_done ]; then
+        chmod -R 777 /app/storage && touch /app/storage/.init_done;
+      fi"
+    volumes:
+      - dify_storage:/app/storage
+    restart: "no"
+    profiles:
+      - dify
+      - visual-platforms
+
   # Dify - API Service
   dify-api:
     image: langgenius/dify-api:latest
     container_name: desmet-dify-api
-    environment:
-      - MODE=api
-      - LOG_LEVEL=INFO
-      - SECRET_KEY=${DIFY_SECRET_KEY:-sk-change-me}
-      - DB_USERNAME=${POSTGRES_USER:-desmet}
-      - DB_PASSWORD=${POSTGRES_PASSWORD:-desmet_pass}
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_DATABASE=dify
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - STORAGE_TYPE=local
-      - STORAGE_LOCAL_PATH=/app/storage
+    ports:
+      - "5001:5001"
+    environment: &dify-shared-env
+      # Core
+      MODE: api
+      LOG_LEVEL: INFO
+      SECRET_KEY: ${DIFY_SECRET_KEY:-sk-change-me}
+      # Database
+      DB_USERNAME: ${POSTGRES_USER:-desmet}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-desmet_pass}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: dify
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # Storage
+      STORAGE_TYPE: local
+      STORAGE_LOCAL_PATH: /app/storage
+      # Sandbox (code execution)
+      CODE_EXECUTION_ENDPOINT: ${CODE_EXECUTION_ENDPOINT:-http://dify-sandbox:8194}
+      CODE_EXECUTION_API_KEY: ${SANDBOX_API_KEY:-dify-sandbox}
+      # SSRF proxy
+      SSRF_PROXY_HTTP_URL: ${SSRF_PROXY_HTTP_URL:-http://dify-ssrf-proxy:3128}
+      SSRF_PROXY_HTTPS_URL: ${SSRF_PROXY_HTTPS_URL:-http://dify-ssrf-proxy:3128}
+      # Plugin daemon
+      PLUGIN_DAEMON_URL: ${PLUGIN_DAEMON_URL:-http://dify-plugin-daemon:5002}
+      PLUGIN_DAEMON_KEY: ${PLUGIN_DAEMON_KEY:-plugin-daemon-change-me}
     volumes:
       - dify_storage:/app/storage
     depends_on:
+      dify-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - default
+      - dify_ssrf_network
     restart: unless-stopped
     profiles:
       - dify
@@ -145,11 +213,11 @@ services:
   dify-web:
     image: langgenius/dify-web:latest
     container_name: desmet-dify-web
-    environment:
-      - CONSOLE_API_URL=http://dify-api:5001
-      - APP_API_URL=http://dify-api:5001
     ports:
       - "3001:3000"
+    environment:
+      CONSOLE_API_URL: ${DIFY_CONSOLE_API_URL:-http://localhost:5001}
+      APP_API_URL: ${DIFY_APP_API_URL:-http://localhost:5001}
     depends_on:
       - dify-api
     restart: unless-stopped
@@ -157,29 +225,111 @@ services:
       - dify
       - visual-platforms
 
-  # Dify - Worker
+  # Dify - Worker (Celery task worker)
   dify-worker:
     image: langgenius/dify-api:latest
     container_name: desmet-dify-worker
     environment:
-      - MODE=worker
-      - LOG_LEVEL=INFO
-      - SECRET_KEY=${DIFY_SECRET_KEY:-sk-change-me}
-      - DB_USERNAME=${POSTGRES_USER:-desmet}
-      - DB_PASSWORD=${POSTGRES_PASSWORD:-desmet_pass}
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_DATABASE=dify
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - STORAGE_TYPE=local
-      - STORAGE_LOCAL_PATH=/app/storage
+      <<: *dify-shared-env
+      MODE: worker
     volumes:
       - dify_storage:/app/storage
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+    networks:
+      - default
+      - dify_ssrf_network
+    restart: unless-stopped
+    profiles:
+      - dify
+      - visual-platforms
+
+  # Dify - Worker Beat (Celery scheduler)
+  dify-worker-beat:
+    image: langgenius/dify-api:latest
+    container_name: desmet-dify-worker-beat
+    environment:
+      <<: *dify-shared-env
+      MODE: beat
+    volumes:
+      - dify_storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - default
+      - dify_ssrf_network
+    restart: unless-stopped
+    profiles:
+      - dify
+      - visual-platforms
+
+  # Dify - Sandbox (isolated code execution)
+  dify-sandbox:
+    image: langgenius/dify-sandbox:0.2.12
+    container_name: desmet-dify-sandbox
+    environment:
+      API_KEY: ${SANDBOX_API_KEY:-dify-sandbox}
+      GIN_MODE: ${SANDBOX_GIN_MODE:-release}
+      WORKER_TIMEOUT: ${SANDBOX_WORKER_TIMEOUT:-15}
+      ENABLE_NETWORK: ${SANDBOX_ENABLE_NETWORK:-true}
+      HTTP_PROXY: ${SANDBOX_HTTP_PROXY:-http://dify-ssrf-proxy:3128}
+      HTTPS_PROXY: ${SANDBOX_HTTPS_PROXY:-http://dify-ssrf-proxy:3128}
+      SANDBOX_PORT: ${SANDBOX_PORT:-8194}
+    volumes:
+      - dify_sandbox_deps:/dependencies
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8194/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - dify_ssrf_network
+    restart: unless-stopped
+    profiles:
+      - dify
+      - visual-platforms
+
+  # Dify - SSRF Proxy (security proxy for outbound requests)
+  dify-ssrf-proxy:
+    image: ubuntu/squid:latest
+    container_name: desmet-dify-ssrf-proxy
+    environment:
+      HTTP_PORT: ${SSRF_HTTP_PORT:-3128}
+      REVERSE_PROXY_PORT: ${SSRF_REVERSE_PROXY_PORT:-8194}
+      SANDBOX_HOST: ${SSRF_SANDBOX_HOST:-dify-sandbox}
+    networks:
+      - default
+      - dify_ssrf_network
+    restart: unless-stopped
+    profiles:
+      - dify
+      - visual-platforms
+
+  # Dify - Plugin Daemon
+  dify-plugin-daemon:
+    image: langgenius/dify-plugin-daemon:0.5.4-local
+    container_name: desmet-dify-plugin-daemon
+    environment:
+      SERVER_PORT: ${PLUGIN_DAEMON_PORT:-5002}
+      SERVER_KEY: ${PLUGIN_DAEMON_KEY:-plugin-daemon-change-me}
+      DIFY_INNER_API_URL: ${PLUGIN_DIFY_INNER_API_URL:-http://dify-api:5001}
+      DIFY_INNER_API_KEY: ${PLUGIN_DIFY_INNER_API_KEY:-inner-api-change-me}
+      PLUGIN_WORKING_PATH: ${PLUGIN_WORKING_PATH:-/app/storage/cwd}
+      DB_USERNAME: ${POSTGRES_USER:-desmet}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-desmet_pass}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: dify
+    volumes:
+      - dify_plugin_data:/app/storage
+    depends_on:
+      postgres:
         condition: service_healthy
     restart: unless-stopped
     profiles:
@@ -387,6 +537,8 @@ volumes:
   flowise_data:
   langflow_data:
   dify_storage:
+  dify_sandbox_deps:
+  dify_plugin_data:
   n8n_data:
   langfuse_postgres_data:
   langfuse_clickhouse_data:
@@ -396,3 +548,6 @@ volumes:
 networks:
   default:
     name: desmet-network
+  dify_ssrf_network:
+    name: desmet-dify-ssrf
+    internal: true

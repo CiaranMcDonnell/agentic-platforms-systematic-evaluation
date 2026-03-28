@@ -32,6 +32,7 @@ AVAILABLE_TOOLS: tuple[str, ...] = (
     "execute_shell",
     "search_code",
     "deploy_remote",
+    "check_completion",
 )
 
 
@@ -207,6 +208,39 @@ def _deploy_port(platform_id: str, story_id: str) -> int:
     return 9000 + (h % 1000)
 
 
+def _git_push_url(repo: str) -> str:
+    """Convert a deploy repo URL to an HTTPS push URL with token auth.
+
+    Local pushes use HTTPS + token (works with any SSH agent setup).
+    The token is read from GITHUB_TOKEN or ``gh auth token``.
+    """
+    # Already HTTPS
+    if repo.startswith("https://"):
+        return repo
+
+    # Convert git@github.com:user/repo.git → https://github.com/user/repo.git
+    if repo.startswith("git@github.com:"):
+        https_url = "https://github.com/" + repo.split(":", 1)[1]
+    else:
+        return repo  # non-GitHub remote, return as-is
+
+    token = os.environ.get("GITHUB_TOKEN", "")
+    if not token:
+        try:
+            result = subprocess.run(
+                ["gh", "auth", "token"], capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                token = result.stdout.strip()
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+    if token:
+        # https://TOKEN@github.com/user/repo.git
+        return https_url.replace("https://", f"https://{token}@")
+    return https_url
+
+
 def _deploy_remote(
     workspace: Path,
     platform_id: str,
@@ -214,32 +248,67 @@ def _deploy_remote(
     action: str,
     url: str = "/health",
 ) -> str:
-    """Execute a remote deploy operation via SSH."""
+    """Execute a remote deploy operation via SSH + git."""
     host = os.environ.get("DEPLOY_HOST")
+    ssh_port = os.environ.get("DEPLOY_PORT", "22")
     user = os.environ.get("DEPLOY_USER")
     key = os.environ.get("DEPLOY_KEY_PATH")
     base = os.environ.get("DEPLOY_BASE_PATH", "/opt/desmet")
+    deploy_repo = os.environ.get("DEPLOY_REPO", "")
 
-    if not all([host, user, key]):
-        return "Error: DEPLOY_HOST, DEPLOY_USER, and DEPLOY_KEY_PATH must be set"
+    if not all([host, user, key, deploy_repo]):
+        return "Error: DEPLOY_HOST, DEPLOY_USER, DEPLOY_KEY_PATH, and DEPLOY_REPO must be set"
 
+    branch = f"{platform_id}/{story_id}"
     remote_path = f"{base}/{platform_id}/{story_id}"
     port = _deploy_port(platform_id, story_id)
-    ssh_opts = f"ssh -i {key} -o StrictHostKeyChecking=accept-new"
+    ssh_opts = f"ssh -i {key} -p {ssh_port} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
 
     timeouts = {"push": 120, "restart": 180, "health_check": 30}
 
     if action == "push":
-        cmd = (
-            f'rsync -azP -e "{ssh_opts}" '
-            f"--include='dist/***' --include='docker-compose.yaml' --include='docs/***' "
-            f"--exclude='*' "
-            f"{workspace}/ {user}@{host}:{remote_path}/"
-        )
-    elif action == "restart":
+        # Stage, commit, and push workspace to the deploy repo branch.
+        # Uses direct subprocess calls (not shell chaining) for cross-platform
+        # compatibility.  The harness initialises the git remote before this.
+        try:
+            subprocess.run(
+                ["git", "add", "-A"],
+                cwd=workspace, capture_output=True, timeout=30,
+            )
+            # Only commit if there are staged changes
+            diff = subprocess.run(
+                ["git", "diff", "--cached", "--quiet"],
+                cwd=workspace, capture_output=True, timeout=10,
+            )
+            if diff.returncode != 0:
+                subprocess.run(
+                    ["git", "commit", "-m", "deploy from DESMET evaluation"],
+                    cwd=workspace, capture_output=True, timeout=30,
+                )
+            result = subprocess.run(
+                ["git", "push", "deploy", f"HEAD:{branch}", "--force"],
+                cwd=workspace, capture_output=True, text=True, timeout=120,
+            )
+            output = result.stdout + result.stderr
+            if result.returncode != 0:
+                return f"Error: push failed: {output}"
+            return output if output else "Pushed successfully"
+        except subprocess.TimeoutExpired:
+            return "Error: push timed out"
+        except Exception as exc:
+            return f"Error: {exc}"
+
+    timeouts = {"restart": 180, "health_check": 30}
+
+    if action == "restart":
+        # SSH to server: clone/pull the branch, then docker compose up
         cmd = (
             f'{ssh_opts} {user}@{host} '
-            f'"cd {remote_path} && COMPOSE_PROJECT_NAME={platform_id}-{story_id} '
+            f'"mkdir -p {remote_path} && cd {remote_path} '
+            f"&& (git -C . rev-parse 2>/dev/null "
+            f"&& git fetch origin {branch} && git checkout FETCH_HEAD "
+            f"|| git clone -b {branch} {deploy_repo} .) "
+            f"&& COMPOSE_PROJECT_NAME={platform_id}-{story_id} "
             f'PORT={port} docker compose up -d --build"'
         )
     elif action == "health_check":
@@ -263,11 +332,45 @@ def _deploy_remote(
         return f"Error: {exc}"
 
 
+def _check_completion(workspace: Path, stage: str) -> tuple[bool, str]:
+    """Check whether the workspace passes validation for the current stage.
+
+    Returns ``(passed, message)`` so callers can decide what to do with the
+    result.  CrewAI uses ``result_as_answer=True`` to short-circuit its
+    ReAct loop when validation passes.
+    """
+    from desmet.adapters._validation import validate_workspace
+
+    passed = validate_workspace(stage, str(workspace))
+    if passed:
+        return True, (
+            "VALIDATION PASSED: All required artifacts for this stage are present. "
+            "Task complete."
+        )
+
+    hints = {
+        "requirements": (
+            "Ensure docs/design/ contains .md or .txt files covering "
+            "functional, non-functional, and acceptance criteria."
+        ),
+        "codegen": (
+            "Ensure at least one .py file exists and compiles without "
+            "syntax errors."
+        ),
+        "testing": (
+            "Ensure test_*.py or *_test.py files exist containing "
+            "def test_ functions."
+        ),
+        "deploy": "Ensure docker-compose.yaml exists in the workspace root.",
+    }
+    return False, f"VALIDATION FAILED: {hints.get(stage, 'Required artifacts not found.')}"
+
+
 # ---------------------------------------------------------------------------
 # Format builders
 # ---------------------------------------------------------------------------
 
-def _build_callable_tools(workspace: Path, tool_names: list[str], platform_id=None, story_id=None) -> list:
+def _build_callable_tools(workspace: Path, tool_names: list[str], platform_id=None, story_id=None, stage_name=None) -> list:
     """Return plain callables with meaningful ``__name__`` attributes."""
     tools: list = []
 
@@ -308,10 +411,17 @@ def _build_callable_tools(workspace: Path, tool_names: list[str], platform_id=No
                 return _deploy_remote(workspace, platform_id, story_id, action, url)
             tools.append(deploy_remote_fn)
 
+        elif name == "check_completion":
+            def check_completion() -> str:
+                """Check if all required artifacts are present in the workspace."""
+                _, msg = _check_completion(workspace, stage_name)
+                return msg
+            tools.append(check_completion)
+
     return tools
 
 
-def _build_langchain_tools(workspace: Path, tool_names: list[str], platform_id=None, story_id=None) -> list:
+def _build_langchain_tools(workspace: Path, tool_names: list[str], platform_id=None, story_id=None, stage_name=None) -> list:
     """Return LangChain ``@tool`` decorated functions."""
     from langchain.tools import tool as lc_tool
 
@@ -360,10 +470,18 @@ def _build_langchain_tools(workspace: Path, tool_names: list[str], platform_id=N
                 return _deploy_remote(workspace, platform_id, story_id, action, url)
             tools.append(deploy_remote)
 
+        elif name == "check_completion":
+            @lc_tool
+            def check_completion() -> str:
+                """Check if all required artifacts are present in the workspace."""
+                _, msg = _check_completion(workspace, stage_name)
+                return msg
+            tools.append(check_completion)
+
     return tools
 
 
-def _build_crewai_tools(workspace: Path, tool_names: list[str], platform_id=None, story_id=None) -> list:
+def _build_crewai_tools(workspace: Path, tool_names: list[str], platform_id=None, story_id=None, stage_name=None) -> list:
     """Return CrewAI ``BaseTool`` subclasses.
 
     Each tool is a class with a Pydantic ``args_schema`` so that CrewAI
@@ -469,10 +587,28 @@ def _build_crewai_tools(workspace: Path, tool_names: list[str], platform_id=None
 
         tools.append(DeployRemoteTool())
 
+    if "check_completion" in tool_names:
+
+        class CheckCompletionTool(CrewAIBaseTool):
+            name: str = "check_completion"
+            description: str = (
+                "Check if all required artifacts are present in the workspace. "
+                "Call this when you believe the stage task is complete."
+            )
+            result_as_answer: bool = False
+
+            def _run(self) -> str:
+                passed, message = _check_completion(workspace, stage_name)
+                if passed:
+                    self.result_as_answer = True
+                return message
+
+        tools.append(CheckCompletionTool())
+
     return tools
 
 
-def _build_openai_agents_tools(workspace: Path, tool_names: list[str], platform_id=None, story_id=None) -> list:
+def _build_openai_agents_tools(workspace: Path, tool_names: list[str], platform_id=None, story_id=None, stage_name=None) -> list:
     """Return OpenAI Agents SDK ``FunctionTool`` instances."""
     from agents import function_tool
 
@@ -520,6 +656,14 @@ def _build_openai_agents_tools(workspace: Path, tool_names: list[str], platform_
             return _deploy_remote(workspace, platform_id, story_id, action, url)
         tools.append(deploy_remote)
 
+    if "check_completion" in tool_names:
+        @function_tool
+        def check_completion() -> str:
+            """Check if all required artifacts are present in the workspace."""
+            _, msg = _check_completion(workspace, stage_name)
+            return msg
+        tools.append(check_completion)
+
     return tools
 
 
@@ -534,6 +678,7 @@ def create_tools(
     *,
     platform_id: str | None = None,
     story_id: str | None = None,
+    stage_name: str | None = None,
 ) -> list:
     """Create sandboxed tools for the given workspace.
 
@@ -549,6 +694,8 @@ def create_tools(
         Platform identifier, required for ``deploy_remote``.
     story_id:
         Story identifier, required for ``deploy_remote``.
+    stage_name:
+        Current SDLC stage, required for ``check_completion``.
 
     Returns
     -------
@@ -559,8 +706,11 @@ def create_tools(
     # deploy_remote requires platform context
     if platform_id is None or story_id is None:
         tool_names = [t for t in tool_names if t != "deploy_remote"]
+    # check_completion requires stage context
+    if stage_name is None:
+        tool_names = [t for t in tool_names if t != "check_completion"]
 
-    kwargs = dict(platform_id=platform_id, story_id=story_id)
+    kwargs = dict(platform_id=platform_id, story_id=story_id, stage_name=stage_name)
 
     if fmt is ToolFormat.CALLABLE:
         return _build_callable_tools(workspace, tool_names, **kwargs)

@@ -19,7 +19,7 @@ def validate_workspace(stage: str, workspace: str) -> bool:
     ws = Path(workspace)
 
     if stage == "requirements":
-        for ext in ("*.md", "*.txt"):
+        for ext in ("**/*.md", "**/*.txt"):
             for f in ws.glob(ext):
                 content = f.read_text(errors="ignore").lower()
                 hits = sum(1 for kw in _REQUIREMENTS_KEYWORDS if kw in content)
@@ -28,7 +28,7 @@ def validate_workspace(stage: str, workspace: str) -> bool:
         return False
 
     if stage == "codegen":
-        for py_file in ws.glob("*.py"):
+        for py_file in ws.rglob("*.py"):
             try:
                 py_compile.compile(str(py_file), doraise=True)
                 return True
@@ -37,7 +37,7 @@ def validate_workspace(stage: str, workspace: str) -> bool:
         return False
 
     if stage == "testing":
-        for pattern in ("test_*.py", "*_test.py"):
+        for pattern in ("**/test_*.py", "**/*_test.py"):
             for f in ws.glob(pattern):
                 if "def test_" in f.read_text(errors="ignore"):
                     return True

@@ -84,10 +84,10 @@ class AgentPersona:
 # =========================================================================
 
 STAGE_EXPECTED_OUTPUTS: dict[str, str] = {
-    "requirements": "All requirements documents written, UML diagrams in Mermaid format, and each diagram rendered to SVG via execute_shell",
-    "codegen": "All required files written to disk using the write_file tool",
-    "testing": "Test files written, test suite executed, and results reported",
-    "deploy": "Build completed, deployment readiness verified, and any issues reported",
+    "requirements": "All requirements documents written, UML diagrams in Mermaid format, and each diagram rendered to SVG via execute_shell. Call check_completion to verify.",
+    "codegen": "All required files written to disk using the write_file tool. Call check_completion to verify.",
+    "testing": "Test files written, test suite executed, and results reported. Call check_completion to verify.",
+    "deploy": "Build completed, deployment readiness verified, and any issues reported. Call check_completion to verify.",
 }
 
 # =========================================================================
@@ -214,6 +214,8 @@ def build_requirements_prompt(story: UserStory) -> str:
         "using execute_shell. For every .mermaid file, run:\n"
         "   execute_shell: bunx @mermaid-js/mermaid-cli mmdc -i <file>.mermaid -o <file>.svg\n"
         "   Do not skip this step. Each .mermaid file must have a corresponding .svg.\n"
+        "7. When all documents and diagrams are written, call `check_completion` to "
+        "verify the workspace has all required artifacts.\n"
     )
 
     return prompt
@@ -253,6 +255,10 @@ def build_codegen_prompt(
                 prompt += f"\nAPI endpoints: {prior_requirements.api_endpoints}"
 
     prompt += f"\n\n{env}\n"
+    prompt += (
+        "\nWhen all files are written, call `check_completion` to verify "
+        "the workspace.\n"
+    )
     return prompt
 
 
@@ -273,6 +279,7 @@ def build_testing_prompt(story: UserStory) -> str:
         f"3. Run the test suite.\n"
         f"4. Report the number of tests run, passed, and failed.\n"
         f"5. If tests fail, attempt to fix the code and re-run.\n"
+        f"6. When done, call `check_completion` to verify the workspace.\n"
     )
 
 
@@ -293,6 +300,7 @@ def build_deploy_prompt(story: UserStory) -> str:
         f'5. Start/restart the service: deploy_remote(action="restart")\n'
         f'6. Verify the deployment: deploy_remote(action="health_check")\n'
         f"7. Report success or failure with any issues encountered.\n"
+        f"8. Call `check_completion` to verify deployment artifacts.\n"
     )
 
 

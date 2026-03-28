@@ -19,6 +19,7 @@ def prepare_stage_context(
     timeout_multiplier: float = 1.0,
     model: str | None = None,
     platform_id: str = "",
+    allowed_tools: list[str] | None = None,
 ) -> StageContext:
     """
     Prepare a StageContext from a UserStory for pipeline execution.
@@ -30,6 +31,7 @@ def prepare_stage_context(
         max_iterations: Override story max iterations (None = use story's)
         timeout_multiplier: Multiply the time budget by this factor
         model: LLM model to use
+        allowed_tools: Override the default tool list (None = use defaults)
 
     Returns:
         StageContext ready for pipeline stages 2-5
@@ -41,7 +43,7 @@ def prepare_stage_context(
 
     resolved_model = model or _get_llm_config().model
 
-    return StageContext(
+    ctx = StageContext(
         story=story,
         workspace=workspace,
         platform_id=platform_id,
@@ -49,3 +51,6 @@ def prepare_stage_context(
         max_iterations=iterations,
         model=resolved_model,
     )
+    if allowed_tools is not None:
+        ctx.allowed_tools = allowed_tools
+    return ctx

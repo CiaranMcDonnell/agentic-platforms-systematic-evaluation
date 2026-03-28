@@ -146,6 +146,6 @@ class TestGetConfigStatus:
     @patch("desmet.infra.is_package_importable", return_value=False)
     def test_defaults_when_no_env(self, _mock_import):
         status = get_config_status()
-        assert status.model == "gpt-4o"
+        assert status.model == "gpt-5.4-2026-03-05"
         assert status.api_keys_set == []
         assert status.langfuse_status == "not installed"

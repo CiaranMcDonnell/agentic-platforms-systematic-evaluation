@@ -12,11 +12,9 @@
 
   const dimensions = [
     { id: 'pipeline_completeness', label: 'Pipeline Completeness' },
-    { id: 'tool_integration', label: 'Tool Integration' },
-    { id: 'error_recovery', label: 'Error Recovery' },
-    { id: 'time_efficiency', label: 'Time Efficiency' },
+    { id: 'efficiency', label: 'Efficiency' },
+    { id: 'orchestration', label: 'Orchestration' },
     { id: 'autonomy', label: 'Autonomy' },
-    { id: 'trace_quality', label: 'Trace Quality' },
   ];
 
   onMount(async () => {

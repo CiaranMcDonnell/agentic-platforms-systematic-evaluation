@@ -17,6 +17,7 @@
     if (line.startsWith('[DONE]') || line.startsWith('[RESULTS]')) return 'done';
     if (line.startsWith('[ERROR]')) return 'error';
     if (line.startsWith('[CANCELLED]')) return 'warn';
+    if (line.match(/^\s{4,}step \d/)) return 'progress';
     return 'info';
   }
 </script>
@@ -57,4 +58,5 @@
   .log-line.error { color: var(--red); }
   .log-line.warn  { color: var(--yellow); }
   .log-line.info  { color: var(--text-2); }
+  .log-line.progress { color: var(--text-3, #555); font-size: 11px; }
 </style>

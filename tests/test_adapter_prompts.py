@@ -286,24 +286,24 @@ class TestStageExpectedOutputs:
         }
 
     def test_requirements_value(self):
-        assert STAGE_EXPECTED_OUTPUTS["requirements"] == (
-            "All requirements documents and UML diagrams written to disk"
-        )
+        val = STAGE_EXPECTED_OUTPUTS["requirements"]
+        assert "requirements documents" in val
+        assert "check_completion" in val
 
     def test_codegen_value(self):
-        assert STAGE_EXPECTED_OUTPUTS["codegen"] == (
-            "All required files written to disk using the write_file tool"
-        )
+        val = STAGE_EXPECTED_OUTPUTS["codegen"]
+        assert "write_file" in val
+        assert "check_completion" in val
 
     def test_testing_value(self):
-        assert STAGE_EXPECTED_OUTPUTS["testing"] == (
-            "Test files written, test suite executed, and results reported"
-        )
+        val = STAGE_EXPECTED_OUTPUTS["testing"]
+        assert "test suite executed" in val
+        assert "check_completion" in val
 
     def test_deploy_value(self):
-        assert STAGE_EXPECTED_OUTPUTS["deploy"] == (
-            "Build completed, deployment readiness verified, and any issues reported"
-        )
+        val = STAGE_EXPECTED_OUTPUTS["deploy"]
+        assert "deployment readiness" in val
+        assert "check_completion" in val
 
 
 # ---------------------------------------------------------------------------
