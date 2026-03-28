@@ -126,6 +126,53 @@ class ResultStore:
             "UPDATE runs SET finished_at = ? WHERE run_id = ?", [now, run_id]
         )
 
+    def save_execution(
+        self,
+        run_id: str,
+        result: Any,  # StoryResult
+        metrics: Any,  # StoryMetrics
+    ) -> None:
+        """Insert one platform×story execution row."""
+        fm_json = json.dumps(result.framework_metrics) if result.framework_metrics else None
+        self._conn.execute(
+            "INSERT INTO executions ("
+            "  execution_id, run_id, platform_id, story_id, status,"
+            "  started_at, finished_at, wall_clock_seconds, iterations,"
+            "  tool_calls, tokens_input, tokens_output, cost_usd,"
+            "  human_interventions,"
+            "  rubric_pipeline_completeness, rubric_tool_integration,"
+            "  rubric_error_recovery, rubric_trace_quality,"
+            "  rubric_time_efficiency, rubric_autonomy,"
+            "  framework_metrics, trace_path, langfuse_trace_id, langsmith_run_id"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                result.execution_id,
+                run_id,
+                result.platform_id,
+                result.story_id,
+                result.status.value,
+                result.start_time,
+                result.end_time,
+                result.wall_clock_seconds,
+                result.iterations,
+                result.tool_calls,
+                result.tokens_input,
+                result.tokens_output,
+                result.api_cost_usd,
+                result.human_interventions,
+                metrics.pipeline_completeness_score,
+                metrics.tool_integration_score,
+                metrics.error_recovery_score,
+                metrics.trace_quality_score,
+                metrics.time_efficiency_score,
+                metrics.autonomy_score,
+                fm_json,
+                result.trace_file,
+                result.langfuse_trace_id,
+                getattr(result, "langsmith_run_id", None),
+            ],
+        )
+
     # ------------------------------------------------------------------
     # Read path
     # ------------------------------------------------------------------
@@ -136,6 +183,13 @@ class ResultStore:
             "SELECT run_id FROM runs ORDER BY started_at DESC LIMIT 1"
         ).fetchone()
         return row[0] if row else None
+
+    def get_executions(self, run_id: str) -> pd.DataFrame:
+        """All executions for a run as a DataFrame."""
+        return self._conn.execute(
+            "SELECT * FROM executions WHERE run_id = ? ORDER BY platform_id, story_id",
+            [run_id],
+        ).df()
 
     def close(self) -> None:
         """Close the DuckDB connection."""

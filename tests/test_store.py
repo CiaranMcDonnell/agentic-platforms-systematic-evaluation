@@ -2,6 +2,7 @@
 
 import duckdb
 import pytest
+from datetime import datetime, timezone
 from pathlib import Path
 from desmet.harness.store import ResultStore
 
@@ -64,3 +65,62 @@ class TestRunLifecycle:
         r1 = store.create_run()
         r2 = store.create_run()
         assert store.latest_run_id() == r2
+
+
+class TestExecutions:
+    def _make_story_result(self):
+        """Build a minimal StoryResult for testing."""
+        from desmet.harness.story import StoryResult, StoryStatus
+        return StoryResult(
+            story_id="US-001",
+            platform_id="langgraph",
+            execution_id="langgraph_US-001_20260328_092300",
+            status=StoryStatus.COMPLETED,
+            start_time=datetime(2026, 3, 28, 9, 19, 0, tzinfo=timezone.utc),
+            end_time=datetime(2026, 3, 28, 9, 22, 0, tzinfo=timezone.utc),
+            wall_clock_seconds=180.0,
+            iterations=3,
+            tool_calls=25,
+            tokens_input=105000,
+            tokens_output=5000,
+            api_cost_usd=0.025,
+            human_interventions=0,
+            framework_metrics={"tokens_per_stage": 110000.0},
+        )
+
+    def _make_story_metrics(self, result):
+        from desmet.harness.metrics import StoryMetrics
+        return StoryMetrics.from_story_result(result, time_budget_seconds=300.0)
+
+    def test_save_and_retrieve(self, store: ResultStore):
+        run_id = store.create_run()
+        result = self._make_story_result()
+        metrics = self._make_story_metrics(result)
+
+        store.save_execution(run_id, result, metrics)
+
+        df = store.get_executions(run_id)
+        assert len(df) == 1
+        row = df.iloc[0]
+        assert row["platform_id"] == "langgraph"
+        assert row["story_id"] == "US-001"
+        assert row["status"] == "completed"
+        assert row["wall_clock_seconds"] == 180.0
+        assert row["tokens_input"] == 105000
+        assert row["cost_usd"] == 0.025
+
+    def test_get_executions_empty(self, store: ResultStore):
+        run_id = store.create_run()
+        df = store.get_executions(run_id)
+        assert len(df) == 0
+
+    def test_multiple_runs_isolated(self, store: ResultStore):
+        r1 = store.create_run()
+        r2 = store.create_run()
+        result = self._make_story_result()
+        metrics = self._make_story_metrics(result)
+
+        store.save_execution(r1, result, metrics)
+
+        assert len(store.get_executions(r1)) == 1
+        assert len(store.get_executions(r2)) == 0
