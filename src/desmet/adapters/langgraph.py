@@ -9,7 +9,6 @@ Architecture:
 from __future__ import annotations
 
 import os
-import re
 import time
 import uuid
 from typing import Annotated, Any
@@ -22,13 +21,13 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from typing_extensions import TypedDict
 
-from pydantic import BaseModel
-
 from desmet.adapters._base import ToolAgentAdapter
+from desmet.adapters._planning import ImplementationPlan, build_executor_instructions, format_plan_text, parse_plan_text
 from desmet.adapters._prompts import get_stage_persona, get_sub_persona
-from desmet.adapters._tools import ToolFormat
+from desmet.adapters._tools import ToolFormat, split_tools
 from desmet.adapters._tracing import (
     finish_trace,
+    format_tool_detail,
     record_message,
     record_node_event,
     record_tool_call,
@@ -43,17 +42,6 @@ from desmet.llm_config import get_config as get_llm_config
 from desmet.observability import get_langchain_callback
 
 MAX_RETRIES = 3
-
-
-# ── Structured output model ───────────────────────────────────────────────
-
-
-class ImplementationPlan(BaseModel):
-    """Structured output from the planner agent."""
-
-    steps: list[str]
-    files_to_create: list[str]
-    files_to_modify: list[str]
 
 
 # ── State schemas ──────────────────────────────────────────────────────────
@@ -86,44 +74,12 @@ def parse_plan(plan_text: str) -> list[dict]:
     """Split a numbered or dashed plan into step dicts.
 
     Each step is ``{"text": str, "parallel": bool}``.
-
-    Supports:
-    - Numbered steps: ``1. Step text``
-    - Dashed steps: ``- Step text``
-    - ``[PARALLEL]`` marker anywhere in the step line
+    Delegates to shared ``parse_plan_text`` for the actual parsing.
     """
     if not plan_text or not plan_text.strip():
         return []
-
-    steps = []
-    # Match numbered (1. ...) or dashed (- ...) list items
-    pattern = re.compile(r"^(?:\d+\.\s+|-\s+)(.*)", re.MULTILINE)
-    for match in pattern.finditer(plan_text):
-        raw = match.group(1).strip()
-        parallel = "[PARALLEL]" in raw
-        text = raw.replace("[PARALLEL]", "").strip()
-        steps.append({"text": text, "parallel": parallel})
-
-    return steps
-
-
-# ── Formatting helper ──────────────────────────────────────────────────────
-
-
-def _format_tool_detail(name: str, args: dict) -> str:
-    """Format a tool call for human-readable progress logging."""
-    if name in ("read_file", "write_file") and "path" in args:
-        return f"{name} → {args['path']}"
-    if name == "execute_shell" and "command" in args:
-        cmd = args["command"]
-        return f"{name} → {cmd[:60]}{'…' if len(cmd) > 60 else ''}"
-    if name == "search_code" and "pattern" in args:
-        return f"{name} → /{args['pattern']}/"
-    if name == "list_directory":
-        return f"{name} → {args.get('path', '.')}"
-    if name == "deploy_remote" and "action" in args:
-        return f"{name} → {args['action']}"
-    return name
+    plan, flags = parse_plan_text(plan_text, include_parallel=True)
+    return [{"text": s, "parallel": p} for s, p in zip(plan.steps, flags)]
 
 
 # ── Adapter ────────────────────────────────────────────────────────────────
@@ -231,13 +187,11 @@ class LangGraphAdapter(ToolAgentAdapter):
                 pass  # fall back to text parsing
 
             if plan is not None:
-                # Build text representation from the structured plan
-                plan_text = "\n".join(
-                    f"{i + 1}. {s}" for i, s in enumerate(plan.steps)
-                )
+                plan_text_str, _ = format_plan_text(plan)
                 all_files = plan.files_to_create + plan.files_to_modify
                 if all_files:
-                    plan_text += "\n\nFiles: " + ", ".join(all_files)
+                    plan_text_str += "\n\nFiles: " + ", ".join(all_files)
+                plan_text = plan_text_str
                 # Synthesize an AIMessage carrying the text + plan object
                 response = AIMessage(
                     content=plan_text,
@@ -312,11 +266,7 @@ class LangGraphAdapter(ToolAgentAdapter):
         t0_ref: list[float] = [time.monotonic()]  # mutable ref for closures
         tool_count_ref: list[int] = [0]
 
-        # Asymmetric tool distribution: executor gets all except
-        # check_completion, reviewer gets only inspection tools.
-        executor_tools = [t for t in tools if t.name != "check_completion"]
-        reviewer_tool_names = {"read_file", "list_directory", "search_code", "check_completion"}
-        reviewer_tools = [t for t in tools if t.name in reviewer_tool_names]
+        executor_tools, reviewer_tools = split_tools(tools, self.TOOL_FORMAT)
 
         planner_sg = self._build_planner_subgraph(llm)
         executor_sg = self._build_executor_subgraph(llm, executor_tools)
@@ -395,26 +345,15 @@ class LangGraphAdapter(ToolAgentAdapter):
 
             # Build enriched executor instructions matching OpenAI/AF adapters
             if plan_obj is not None:
-                plan_text = "\n".join(
-                    f"{i + 1}. {s}" for i, s in enumerate(plan_obj.steps)
+                sys_content = build_executor_instructions(
+                    executor_persona, plan_obj, system_msg,
+                    stage=stage, workspace=workspace,
                 )
-                all_files = plan_obj.files_to_create + plan_obj.files_to_modify
-                files_text = ", ".join(all_files) if all_files else "(none specified)"
             else:
-                plan_text = plan
-                files_text = "(none specified)"
-
-            sys_content = (
-                f"{executor_persona.backstory}\n\n"
-                f"## Implementation Plan\n{plan_text}\n\n"
-                f"## Files\n{files_text}\n"
-            )
-            if system_msg:
-                sys_content += f"\n## Additional Context\n{system_msg}\n"
-            sys_content += (
-                f"\nStage: {stage}\n"
-                f"Working directory: {workspace}"
-            )
+                sys_content = (
+                    f"{executor_persona.backstory}\n\n{plan}\n"
+                    f"\nStage: {stage}\nWorking directory: {workspace}"
+                )
             if retry_count > 0:
                 sys_content += f"\n\nThis is retry attempt {retry_count}/{MAX_RETRIES}. Address any issues from the previous attempt."
 
@@ -457,7 +396,7 @@ class LangGraphAdapter(ToolAgentAdapter):
                                 record_tool_call(trace, tc_name, tc_args, "")
                             if cb is not None:
                                 elapsed = time.monotonic() - t0_ref[0]
-                                detail = _format_tool_detail(tc_name, tc_args)
+                                detail = format_tool_detail(tc_name, tc_args)
                                 tokens = trace.total_tokens_input + trace.total_tokens_output if trace else 0
                                 cb(
                                     f"    tool {tool_count_ref[0]} — {detail}"
