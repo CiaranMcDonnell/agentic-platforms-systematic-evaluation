@@ -14,6 +14,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+import yaml
+
+def _load_platforms_config() -> dict[str, dict]:
+    """Load platform config from YAML without triggering heavy adapter imports."""
+    yaml_path = Path(__file__).resolve().parent.parent.parent / "config" / "platforms.yaml"
+    with open(yaml_path, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    return {p["id"]: p for p in data["platforms"]}
+
 COMPOSE_FILE = (
     Path(__file__).resolve().parent.parent.parent
     / "infrastructure"
@@ -30,41 +39,19 @@ PROFILE_TARGETS: dict[str, list[str]] = {
     "all": ["flowise", "langflow", "dify", "n8n", "langfuse"],
 }
 
-# ── Evaluation platforms ────────────────────────────────────────────────
+# ── Evaluation platforms (derived from config/platforms.yaml) ───────────
+_platforms = _load_platforms_config()
+
 PLATFORM_PACKAGES: dict[str, str | None] = {
-    "langgraph": "langgraph",
-    "crewai": "crewai",
-    "microsoft_agent_framework": "agent_framework",
-    "openai_agents_sdk": "agents",
-    "google_adk": "google.adk",
-    "flowise": None,
-    "langflow": None,
-    "dify": None,
-    "n8n": None,
+    pid: data.get("python_package") for pid, data in _platforms.items()
 }
 
 PLATFORM_CONTAINERS: dict[str, str | None] = {
-    "langgraph": None,
-    "crewai": None,
-    "microsoft_agent_framework": None,
-    "openai_agents_sdk": None,
-    "google_adk": None,
-    "flowise": "desmet-flowise",
-    "langflow": "desmet-langflow",
-    "dify": "desmet-dify-api",
-    "n8n": "desmet-n8n",
+    pid: data.get("container_name") for pid, data in _platforms.items()
 }
 
 PLATFORM_NAMES: dict[str, str] = {
-    "langgraph": "LangGraph",
-    "crewai": "CrewAI",
-    "microsoft_agent_framework": "Microsoft Agent Framework",
-    "openai_agents_sdk": "OpenAI Agents SDK",
-    "google_adk": "Google ADK",
-    "flowise": "Flowise",
-    "langflow": "LangFlow",
-    "dify": "Dify",
-    "n8n": "n8n",
+    pid: data["name"] for pid, data in _platforms.items()
 }
 
 # ── Infrastructure services (not evaluation targets) ───────────────────
