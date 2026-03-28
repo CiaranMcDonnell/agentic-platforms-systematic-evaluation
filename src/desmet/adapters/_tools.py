@@ -958,7 +958,7 @@ def split_tools(tools: list, fmt: ToolFormat) -> tuple[list, list]:
     For all other formats, ``.name`` is used.
     """
     def _name(tool) -> str:
-        if fmt is ToolFormat.AGENT_FRAMEWORK:
+        if fmt in (ToolFormat.AGENT_FRAMEWORK, ToolFormat.CALLABLE):
             return getattr(tool, "__name__", "")
         return getattr(tool, "name", "")
 

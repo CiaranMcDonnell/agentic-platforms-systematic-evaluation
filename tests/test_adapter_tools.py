@@ -447,3 +447,18 @@ class TestSplitTools:
     def test_empty_tools(self) -> None:
         executor, reviewer = split_tools([], ToolFormat.LANGCHAIN)
         assert executor == [] and reviewer == []
+
+
+class TestSplitToolsCallable:
+    def test_split_tools_callable_format(self, tmp_path):
+        from desmet.adapters._tools import ToolFormat, create_tools, split_tools
+        tools = create_tools(
+            tmp_path, ["read_file", "write_file", "check_completion"],
+            fmt=ToolFormat.CALLABLE, stage_name="codegen",
+        )
+        executor, reviewer = split_tools(tools, ToolFormat.CALLABLE)
+        executor_names = [t.__name__ for t in executor]
+        reviewer_names = [t.__name__ for t in reviewer]
+        assert "check_completion" not in executor_names
+        assert "read_file" in reviewer_names
+        assert "check_completion" in reviewer_names
