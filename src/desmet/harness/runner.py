@@ -31,7 +31,7 @@ from desmet.observability import (
     langfuse_trace,
     record_generation,
 )
-from desmet.stages.stage1_stories.loader import prepare_stage_context
+from desmet.harness.story_loader import prepare_stage_context
 
 from .adapter import BasePlatformAdapter
 from .metrics import MetricsCollector, SetupMetrics, StageMetrics, StoryMetrics
@@ -418,9 +418,19 @@ class EvaluationRunner:
                             f"stage-{stage_key}",
                             metadata={"platform_id": platform_id, "story_id": story.id},
                         ):
-                            # Use containerized execution when a platform image exists;
-                            # fall back to in-process for development/testing.
+                            # Use containerized execution: auto-build image if
+                            # missing, fall back to in-process only when build
+                            # is unavailable (e.g. no Docker).
                             from desmet.harness import container_runner
+                            if not container_runner.has_image(platform_id):
+                                if self.progress_callback:
+                                    self.progress_callback(
+                                        f"Building Docker image for {platform_id}..."
+                                    )
+                                container_runner.build_image(
+                                    platform_id,
+                                    progress_callback=self.progress_callback,
+                                )
                             if container_runner.has_image(platform_id):
                                 stage_result = await container_runner.run_stage_in_container(
                                     platform_id, stage_key, stage_ctx,
@@ -683,14 +693,14 @@ class EvaluationRunner:
                 stage_entry["framework_metrics"] = sr.framework_metrics
             # Include message trace when available
             if sr.trace and sr.trace.messages:
+                def _truncate(content: object, limit: int = 500) -> str:
+                    s = str(content)
+                    return s[:limit] + "..." if len(s) > limit else s
+
                 stage_entry["messages"] = [
                     {
                         "role": msg.role,
-                        "content": (
-                            msg.content[:500] + "..."
-                            if len(msg.content) > 500
-                            else msg.content
-                        ),
+                        "content": _truncate(msg.content),
                         "timestamp": msg.timestamp.isoformat(),
                         "metadata": msg.metadata if msg.metadata else {},
                     }
