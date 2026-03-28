@@ -35,6 +35,7 @@ from desmet.adapters._tracing import (
 )
 from desmet.adapters._validation import validate_workspace
 from desmet.adapters.registry import load_platform_info
+from desmet.observability import get_langfuse, record_generation
 from desmet.harness.context import StageContext
 from desmet.harness.models import PlatformInfo
 from desmet.harness.trace import AgentTrace
@@ -459,6 +460,8 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                     # Agent finished — extract tool calls and token usage
                     _flush_message()
                     total_iterations += 1
+                    executor_name = getattr(event, "executor_id", "") or ""
+                    lf = get_langfuse()
                     responses = event.data if isinstance(event.data, list) else [event.data]
                     for resp in responses:
                         if not isinstance(resp, AgentExecutorResponse):
@@ -469,21 +472,38 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
 
                         # Extract token usage from AgentResponse.usage_details
                         usage = getattr(agent_resp, "usage_details", None)
+                        in_tok = 0
+                        out_tok = 0
                         if usage and isinstance(usage, dict):
                             in_tok = usage.get("input_tokens", 0) or 0
                             out_tok = usage.get("output_tokens", 0) or 0
                             if in_tok or out_tok:
                                 record_usage(trace, input_tokens=in_tok, output_tokens=out_tok, model=self._model_name)
 
+                        # Record agent completion as a Langfuse generation
+                        agent_output = ""
+                        agent_msgs = getattr(agent_resp, "messages", None)
+                        if agent_msgs is not None:
+                            if isinstance(agent_msgs, Message):
+                                agent_msgs = [agent_msgs]
+                            agent_output = "\n".join(
+                                getattr(m, "text", "") or "" for m in agent_msgs
+                            ).strip()
+
+                        record_generation(
+                            lf,
+                            name=f"agent-{executor_name}",
+                            model=self._model_name,
+                            output=agent_output[:2000] if agent_output else None,
+                            usage={"input_tokens": in_tok, "output_tokens": out_tok} if (in_tok or out_tok) else None,
+                            metadata={"agent": executor_name, "iteration": total_iterations},
+                        )
+
                         # Extract tool calls from response messages
-                        msgs = getattr(agent_resp, "messages", None)
-                        if msgs is None:
-                            continue
-                        if isinstance(msgs, Message):
-                            msgs = [msgs]
+                        msgs = agent_msgs or []
                         for msg in msgs:
-                            for content in (getattr(msg, "contents", None) or []):
-                                cd = content.to_dict() if hasattr(content, "to_dict") else {}
+                            for content_item in (getattr(msg, "contents", None) or []):
+                                cd = content_item.to_dict() if hasattr(content_item, "to_dict") else {}
                                 ctype = cd.get("type", "")
                                 if ctype == "function_call":
                                     tool_call_count += 1
@@ -500,7 +520,6 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                                         tokens = trace.total_tokens_input + trace.total_tokens_output
                                         cb(f"    tool {tool_call_count} \u2014 {detail}  ({elapsed:.0f}s, {tokens:,} tokens)")
 
-                    executor_name = getattr(event, "executor_id", "") or ""
                     if cb:
                         cb(f"    [completed] {executor_name}")
 
