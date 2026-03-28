@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from desmet.adapters._tracing import (
     build_stage_result,
     finish_trace,
+    format_tool_detail,
+    normalize_usage,
     record_message,
     record_node_event,
     record_tool_call,
@@ -401,3 +403,94 @@ class TestRecordNodeEvent:
         assert trace.messages == []
         assert trace.tool_calls == []
         assert trace.errors == []
+
+
+# ── TestFormatToolDetail ───────────────────────────────────────────────
+
+
+class TestFormatToolDetail:
+    """format_tool_detail() formats a tool call into a compact string."""
+
+    def test_read_file_with_path(self) -> None:
+        assert format_tool_detail("read_file", {"path": "main.py"}) == "read_file \u2192 main.py"
+
+    def test_write_file_with_path(self) -> None:
+        assert format_tool_detail("write_file", {"path": "out.txt"}) == "write_file \u2192 out.txt"
+
+    def test_execute_shell_truncates_long_command(self) -> None:
+        result = format_tool_detail("execute_shell", {"command": "x" * 100})
+        assert len(result) < 100
+        assert "\u2026" in result
+
+    def test_execute_shell_short_command(self) -> None:
+        result = format_tool_detail("execute_shell", {"command": "echo hi"})
+        assert result == "execute_shell \u2192 echo hi"
+
+    def test_search_code_with_pattern(self) -> None:
+        assert format_tool_detail("search_code", {"pattern": "TODO"}) == "search_code \u2192 /TODO/"
+
+    def test_list_directory_with_path(self) -> None:
+        assert format_tool_detail("list_directory", {"path": "src"}) == "list_directory \u2192 src"
+
+    def test_list_directory_default_dot(self) -> None:
+        assert format_tool_detail("list_directory", {}) == "list_directory \u2192 ."
+
+    def test_deploy_remote_with_action(self) -> None:
+        assert format_tool_detail("deploy_remote", {"action": "push"}) == "deploy_remote \u2192 push"
+
+    def test_unknown_tool_returns_name(self) -> None:
+        assert format_tool_detail("custom_tool", {"x": 1}) == "custom_tool"
+
+    def test_json_string_args_parsed(self) -> None:
+        import json
+
+        result = format_tool_detail("read_file", json.dumps({"path": "file.py"}))
+        assert result == "read_file \u2192 file.py"
+
+    def test_invalid_json_string_returns_name(self) -> None:
+        assert format_tool_detail("read_file", "not json") == "read_file"
+
+
+# ── TestNormalizeUsage ─────────────────────────────────────────────────
+
+
+class TestNormalizeUsage:
+    """normalize_usage() extracts (input_tokens, output_tokens) from varied formats."""
+
+    def test_attr_prompt_tokens(self) -> None:
+        class U:
+            prompt_tokens = 100
+            completion_tokens = 50
+
+        assert normalize_usage(U()) == (100, 50)
+
+    def test_attr_input_tokens(self) -> None:
+        class U:
+            input_tokens = 200
+            output_tokens = 80
+
+        assert normalize_usage(U()) == (200, 80)
+
+    def test_dict_prompt_tokens(self) -> None:
+        assert normalize_usage({"prompt_tokens": 100, "completion_tokens": 50}) == (100, 50)
+
+    def test_dict_input_tokens(self) -> None:
+        assert normalize_usage({"input_tokens": 200, "output_tokens": 80}) == (200, 80)
+
+    def test_dict_input_token_count(self) -> None:
+        assert normalize_usage({"input_token_count": 300, "output_token_count": 120}) == (300, 120)
+
+    def test_none_returns_zeros(self) -> None:
+        assert normalize_usage(None) == (0, 0)
+
+    def test_empty_dict_returns_zeros(self) -> None:
+        assert normalize_usage({}) == (0, 0)
+
+    def test_attr_zero_prompt_falls_back(self) -> None:
+        class U:
+            prompt_tokens = 0
+            input_tokens = 150
+            completion_tokens = 0
+            output_tokens = 60
+
+        assert normalize_usage(U()) == (150, 60)

@@ -130,6 +130,84 @@ def record_llm_duration(trace: AgentTrace, duration_ms: float) -> None:
     trace.total_llm_duration_ms += duration_ms
 
 
+# ── Formatting / normalisation helpers ─────────────────────────────────
+
+
+def format_tool_detail(name: str, raw_args: Any) -> str:
+    """Format a tool call into a compact human-readable string.
+
+    Handles both dict and JSON-string *raw_args*.  Returns ``name`` alone
+    when the tool is not recognised or when *raw_args* cannot be parsed.
+    """
+    import json as _json
+
+    args: dict[str, Any] = {}
+    if isinstance(raw_args, dict):
+        args = raw_args
+    elif isinstance(raw_args, str):
+        try:
+            parsed = _json.loads(raw_args)
+            if isinstance(parsed, dict):
+                args = parsed
+        except (ValueError, TypeError):
+            pass
+
+    if name in ("read_file", "write_file") and "path" in args:
+        return f"{name} \u2192 {args['path']}"
+    if name == "execute_shell" and "command" in args:
+        cmd = args["command"]
+        truncated = cmd[:60] + "\u2026" if len(cmd) > 60 else cmd
+        return f"{name} \u2192 {truncated}"
+    if name == "search_code" and "pattern" in args:
+        return f"{name} \u2192 /{args['pattern']}/"
+    if name == "list_directory":
+        return f"{name} \u2192 {args.get('path', '.')}"
+    if name == "deploy_remote" and "action" in args:
+        return f"{name} \u2192 {args['action']}"
+    return name
+
+
+def normalize_usage(raw: Any) -> tuple[int, int]:
+    """Extract ``(input_tokens, output_tokens)`` from varied usage formats.
+
+    Supports dicts, attribute-based objects, and ``None``.  Key priority:
+    ``prompt_tokens`` > ``input_tokens`` > ``input_token_count`` (and the
+    corresponding output variants).
+    """
+    if raw is None:
+        return (0, 0)
+
+    if isinstance(raw, dict):
+        inp = (
+            raw.get("prompt_tokens")
+            or raw.get("input_tokens")
+            or raw.get("input_token_count")
+            or 0
+        )
+        out = (
+            raw.get("completion_tokens")
+            or raw.get("output_tokens")
+            or raw.get("output_token_count")
+            or 0
+        )
+        return (int(inp), int(out))
+
+    # Attribute-based object
+    inp = (
+        getattr(raw, "prompt_tokens", 0)
+        or getattr(raw, "input_tokens", 0)
+        or getattr(raw, "input_token_count", 0)
+        or 0
+    )
+    out = (
+        getattr(raw, "completion_tokens", 0)
+        or getattr(raw, "output_tokens", 0)
+        or getattr(raw, "output_token_count", 0)
+        or 0
+    )
+    return (int(inp), int(out))
+
+
 # ── Automated framework metrics ───────────────────────────────────────
 
 _DUPLICATE_CHECK_TOOLS = frozenset({"read_file", "list_directory", "search_code"})
