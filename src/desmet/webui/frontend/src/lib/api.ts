@@ -346,8 +346,22 @@ export const fetchInfrastructure = () =>
 
 // ── Dashboard / Results ─────────────────
 
-export const fetchOverview = () =>
-  request<OverviewData>('/api/dashboard/overview');
+export interface ResultRun {
+  run_id: string;
+  started_at: string | null;
+  finished_at: string | null;
+  model: string | null;
+  platforms_filter: string[] | null;
+  note: string | null;
+}
+
+export const fetchResultRuns = () =>
+  request<{ runs: ResultRun[] }>('/api/result-runs');
+
+export const fetchOverview = (runId?: string | null) => {
+  const qs = runId ? `?run_id=${runId}` : '';
+  return request<OverviewData>(`/api/dashboard/overview${qs}`);
+};
 
 export const fetchChartJSON = (endpoint: string) =>
   request<{ chart: Record<string, unknown> | null }>(endpoint);
