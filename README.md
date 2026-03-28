@@ -1,84 +1,82 @@
 # Systematic Evaluation of Agentic Platforms
 
-A DESMET-based evaluation framework for comparing agentic platforms across effectiveness, efficiency, quality, reproducibility, usability, observability, and failure handling.
+A DESMET-based evaluation framework for comparing 9 agentic platforms across a standardized software development pipeline. All platforms run the same model against the same tasks, isolating what each framework contributes independently of LLM performance.
 
-## Selected Platforms
+## Platforms
 
 | Category | Platforms |
 |----------|-----------|
 | Multi-Agent Frameworks | LangGraph, CrewAI, Microsoft Agent Framework |
 | Agent SDK Runtimes | OpenAI Agents SDK, Google ADK |
-| Visual / Workflow Platforms | Flowise, LangFlow, Dify, N8n |
+| Visual / Workflow Platforms | Flowise, LangFlow, Dify, n8n |
 
 ## Pipeline
 
-The evaluation follows a 6-stage pipeline (see `docs/spec/PIPELINE_SPECIFICATION.md`):
+Each platform adapter implements a 5-stage SDLC pipeline:
 
 | Stage | Name | Purpose |
 |-------|------|---------|
-| 0 | Framework Setup & Onboarding | Measure setup friction and time-to-value |
-| 1 | Requirements Engineering | Define testable requirements for all platforms |
-| 2 | Requirements → User Stories | Translate into executable benchmark tasks |
-| 3 | Code Generation | Execute stories per platform, capture metrics |
-| 4 | Testing Generation | Evaluate generated test quality and coverage |
-| 5 | Building & Deploying | Verify code builds, passes CI, and deploys |
+| 1 | Story Loading | Load user stories and prepare evaluation context |
+| 2 | Requirements Analysis | Analyse stories into structured requirements and UML diagrams |
+| 3 | Code Generation | Implement the solution using platform-specific agents |
+| 4 | Test Generation | Write and execute a test suite against generated code |
+| 5 | Build & Deploy | Build the project and verify deployment readiness |
 
-Seven cross-cutting **evaluation dimensions** are assessed throughout: Effectiveness, Efficiency, Quality, Reproducibility, Usability/DX, Observability, and Failure Handling.
+Scoring uses 6 rubric dimensions (0-3 scale) mapped to 4 cross-cutting evaluation dimensions (1-5 Likert): Pipeline Completeness, Efficiency, Orchestration, and Autonomy.
 
 ## Project Structure
 
 ```
-├── src/desmet/              # Source code
-│   ├── harness/             #   Evaluation engine (adapter ABC, runner, metrics)
-│   ├── stages/              #   Pipeline stage implementations (stage0–stage5)
-│   ├── adapters/            #   Platform adapters (one per platform)
-│   ├── dimensions/          #   Cross-cutting dimension scorers
-│   ├── analysis/            #   Scoring, comparison, report generation
-│   ├── cli.py               #   `desmet webui` entry point
-│   └── webui/               #   Management Console (FastAPI + Svelte SPA)
-│
-├── config/                  # Platform definitions (platforms.yaml)
-├── data/                    # Input data: user stories, prompts, baseline repo
-│   └── stories/             #   YAML story definitions (basic/intermediate/advanced)
-├── results/                 # Evaluation outputs per platform per story
-├── docs/                    # All documentation
-│   ├── spec/                #   Pipeline specification, UML diagrams
-│   ├── report/              #   Academic report (Typst)
-│   ├── report-latex/        #   Academic report (LaTeX)
-│   └── literature/          #   Reference papers
-├── platforms/               # Deep-dive platform explorations
-├── infrastructure/          # Docker Compose, Dockerfiles
-├── notebooks/               # Jupyter analysis notebooks
-└── tests/                   # Test suite
+src/desmet/
+    harness/             Evaluation engine (adapter ABC, runner, metrics, trace)
+    adapters/            Platform adapters (one per platform)
+    stages/              Pipeline stages (stage1_stories through stage5_deploy)
+    webui/               Management Console (FastAPI + Svelte)
+    dashboard/           Results dashboard (Plotly charts)
+    cli.py               CLI entrypoint
+    llm_config.py        Centralised LLM configuration
+    observability.py     Langfuse tracing + structlog
+    cost_calculator.py   Token cost estimation
+
+config/                  Platform definitions (platforms.yaml), environment config
+data/stories/            YAML user story definitions (basic/intermediate/advanced)
+infrastructure/          Per-platform Dockerfiles, Docker Compose, base eval image
+docs/report/             Academic report (Typst)
+docs/spec/               Pipeline specification and UML diagrams
+tests/                   Test suite
 ```
 
 ## Quick Start
 
 ```bash
-# Install uv (if not already installed)
-# https://docs.astral.sh/uv/getting-started/installation/
-
-# Install core framework + dev dependencies
+# Install core dependencies (harness, webui — no platform SDKs)
 uv sync
 
-# Install with a specific platform adapter
-uv sync --extra langgraph
-
-# Launch the Management Console (browser UI)
+# Launch the Management Console
 uv run desmet
 
 # Run tests
-uv run --group test pytest
+uv run pytest
 ```
 
-> **Note:** Platform extras are mutually exclusive in many cases due to
-> conflicting transitive dependencies. Install one platform extra per
-> virtual environment. Visual platforms (Flowise, Dify, n8n) run via
-> Docker — see `infrastructure/`.
+## Platform Isolation
+
+Each SDK platform runs inside its own Docker container with only its dependencies installed. This avoids version conflicts between frameworks (e.g. incompatible opentelemetry pins across CrewAI, Agent Framework, and Google ADK).
+
+Platform images are built automatically on first evaluation run, or manually via the webui. If no Docker image exists for a platform, the runner falls back to in-process execution.
+
+Visual platforms (Flowise, Dify, n8n, LangFlow) run via Docker Compose — see `infrastructure/`.
+
+## Adding a New Platform
+
+1. Write an adapter extending `ToolAgentAdapter` (see `src/desmet/adapters/` for examples)
+2. Add an entry to `config/platforms.yaml`
+3. Add your framework's dependencies as an optional extra in `pyproject.toml`
+4. Copy `infrastructure/Dockerfile.framework.example` and update the extra name
 
 ## Methodology
 
-This project applies the DESMET (Determining an Evaluation Method for Software Engineering Methods and Tools) methodology to systematically compare agentic platforms using representative software engineering tasks.
+This project applies the DESMET methodology (Determining an Evaluation Method for Software Engineering Methods and Tools) to systematically compare agentic platforms using representative software engineering tasks.
 
 ## References
 
