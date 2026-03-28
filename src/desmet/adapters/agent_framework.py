@@ -33,7 +33,6 @@ from desmet.adapters.registry import load_platform_info
 from desmet.harness.context import StageContext
 from desmet.harness.models import PlatformInfo
 from desmet.harness.trace import AgentTrace
-from desmet.llm_config import Provider
 from desmet.llm_config import get_config as get_llm_config
 
 MAX_STALL_COUNT = 3
@@ -230,7 +229,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
 
         Returns (total_iterations, hit_limit).
         """
-        from agent_framework import AssistantAgent, UserProxyAgent
+        from agent_framework import AssistantAgent
         from agent_framework.magentic_one import MagenticOneGroupChat
 
         planner_persona = get_sub_persona("planner")
