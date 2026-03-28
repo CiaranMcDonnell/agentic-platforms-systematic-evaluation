@@ -23,6 +23,7 @@ dependencies = [
     # Data handling
     "pandas>=2.0.0",
     "numpy>=2.0.0",
+    "duckdb>=1.0.0",
     # Logging and tracing
     "structlog>=23.0.0",
     "langfuse>=4.0.0",
