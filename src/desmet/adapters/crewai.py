@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import re
-import threading
 import time
 from typing import Any
 
@@ -17,18 +16,14 @@ from desmet.adapters._planning import ImplementationPlan, format_plan_text, pars
 from desmet.adapters._prompts import STAGE_EXPECTED_OUTPUTS, get_stage_persona, get_sub_persona
 from desmet.adapters._validation import validate_workspace
 from desmet.adapters._tools import ToolFormat, split_tools
+from desmet.adapters._observation import ObservationCollector
 from desmet.adapters._tracing import (
-    finish_trace,
     format_tool_detail,
-    normalize_usage,
-    record_message,
-    record_tool_call,
-    record_usage,
+    record_node_event,
 )
 from desmet.adapters.registry import load_platform_info
 from desmet.harness.context import StageContext
 from desmet.harness.models import PlatformInfo
-from desmet.harness.trace import AgentTrace
 from desmet.llm_config import Provider
 from desmet.llm_config import get_config as get_llm_config
 
@@ -90,10 +85,8 @@ class CrewAIAdapter(ToolAgentAdapter):
     def __init__(self, config: dict[str, Any] | None = None):
         super().__init__(config)
         self._crew = None
-        # Per-LLM-call collection from CrewAI's event bus
-        self._llm_calls: list[dict[str, Any]] = []
-        self._llm_calls_lock = threading.Lock()
-        self._collecting_llm = False
+        # Bridges the event bus handler (registered once) to the per-stage collector
+        self._current_collector: ObservationCollector | None = None
         self._last_llm_start: float = 0.0
 
     @property
@@ -108,6 +101,10 @@ class CrewAIAdapter(ToolAgentAdapter):
             return getattr(crewai, "__version__", "unknown")
         except ImportError:
             return "not installed"
+
+    def _get_model_name(self) -> str | None:
+        # CrewAI creates the LLM per-run; model name is not known at init time
+        return None
 
     async def initialize(self) -> None:
         """Initialize CrewAI components."""
@@ -144,52 +141,32 @@ class CrewAIAdapter(ToolAgentAdapter):
         """Subscribe to CrewAI's event bus for individual LLM completion events."""
         try:
             from crewai.events.event_bus import crewai_event_bus
-            from crewai.events.types.llm_events import LLMCallCompletedEvent
-
-            from crewai.events.types.llm_events import LLMCallStartedEvent
+            from crewai.events.types.llm_events import LLMCallCompletedEvent, LLMCallStartedEvent
 
             @crewai_event_bus.on(LLMCallStartedEvent)
             def _on_llm_started(source, event) -> None:
-                if not self._collecting_llm:
+                if self._current_collector is None:
                     return
                 self._last_llm_start = time.monotonic()
 
             @crewai_event_bus.on(LLMCallCompletedEvent)
             def _on_llm_completed(source, event: LLMCallCompletedEvent) -> None:
-                if not self._collecting_llm:
+                col = self._current_collector
+                if col is None:
                     return
-                call_data: dict[str, Any] = {
-                    "model": event.model,
-                    "call_type": event.call_type.value if event.call_type else "unknown",
-                    "agent_role": getattr(event, "agent_role", None),
-                    "input_tokens": 0,
-                    "output_tokens": 0,
-                }
                 resp = event.response
-                usage = getattr(resp, "usage", None)
-                if usage is not None:
-                    in_tok, out_tok = normalize_usage(usage)
-                    call_data["input_tokens"] = in_tok
-                    call_data["output_tokens"] = out_tok
+                raw_usage = getattr(resp, "usage", None)
+                duration_ms = 0.0
                 if self._last_llm_start > 0:
-                    call_data["duration_ms"] = (time.monotonic() - self._last_llm_start) * 1000
+                    duration_ms = (time.monotonic() - self._last_llm_start) * 1000
                     self._last_llm_start = 0.0
-                with self._llm_calls_lock:
-                    self._llm_calls.append(call_data)
+                col.record_llm_response(
+                    raw_usage=raw_usage,
+                    duration_ms=duration_ms,
+                    model=event.model,
+                )
         except ImportError:
             _log.debug("crewai.events not available — per-call tracing disabled")
-
-    def _start_llm_collection(self) -> None:
-        with self._llm_calls_lock:
-            self._llm_calls.clear()
-            self._collecting_llm = True
-
-    def _stop_llm_collection(self) -> list[dict[str, Any]]:
-        self._collecting_llm = False
-        with self._llm_calls_lock:
-            calls = list(self._llm_calls)
-            self._llm_calls.clear()
-        return calls
 
     def _create_llm(self, context: StageContext):
         """Build a CrewAI LLM from centralised config + stage context overrides.
@@ -250,7 +227,7 @@ class CrewAIAdapter(ToolAgentAdapter):
         tools: list,
         llm: Any,
         context: StageContext,
-        trace: AgentTrace,
+        collector: ObservationCollector,
         *,
         retry_attempt: int = 0,
         prior_plan: str = "",
@@ -414,7 +391,7 @@ class CrewAIAdapter(ToolAgentAdapter):
             tasks = [implement_task, review_task]
 
         step_cb, task_cb, counter = self._create_trace_callbacks(
-            trace,
+            collector,
             progress_callback=context.progress_callback,
             max_iterations=context.max_iterations,
         )
@@ -443,14 +420,13 @@ class CrewAIAdapter(ToolAgentAdapter):
         prompt: str,
         system_msg: str | None,
         tools: list,
-        trace: AgentTrace,
+        collector: ObservationCollector,
         context: StageContext,
     ) -> tuple[int, bool]:
         """Run a CrewAI crew with retry loop. Returns (iterations, hit_limit)."""
         import asyncio
 
         from desmet.adapters._tools import _check_completion
-        from desmet.adapters._tracing import record_llm_duration, record_node_event
 
         llm = self._create_llm(context)
         cfg = get_llm_config(
@@ -459,7 +435,7 @@ class CrewAIAdapter(ToolAgentAdapter):
         )
         model_name = cfg.model
 
-        record_message(trace, "user", prompt)
+        collector.record_message("user", prompt)
 
         total_iterations = 0
         hit_limit = False
@@ -469,51 +445,24 @@ class CrewAIAdapter(ToolAgentAdapter):
 
         for attempt in range(MAX_RETRIES + 1):
             crew, counter = self._build_crew(
-                stage_name, prompt, system_msg, tools, llm, context, trace,
+                stage_name, prompt, system_msg, tools, llm, context, collector,
                 retry_attempt=attempt,
                 prior_plan=plan_text,
                 feedback=feedback,
                 plan=structured_plan,
             )
 
-            self._start_llm_collection()
+            usage_before = collector.usage_count
+            self._current_collector = collector
             result = await asyncio.to_thread(crew.kickoff)
-            record_message(trace, "assistant", str(result))
-            llm_calls = self._stop_llm_collection()
+            self._current_collector = None
+            collector.record_message("assistant", str(result))
 
-            # ── Record LLM call durations and token usage ────────────────
-            for call in llm_calls:
-                if call.get("duration_ms", 0) > 0:
-                    record_llm_duration(trace, call["duration_ms"])
-
-            if llm_calls:
-                for call in llm_calls:
-                    record_usage(
-                        trace,
-                        input_tokens=call.get("input_tokens", 0),
-                        output_tokens=call.get("output_tokens", 0),
-                        model=call.get("model") or model_name,
-                    )
-                from desmet.observability import get_langfuse
-                lf = get_langfuse()
-                if lf is not None:
-                    for i, call in enumerate(llm_calls):
-                        with lf.start_as_current_observation(
-                            name=f"llm-{call.get('call_type', 'call')}-{i + 1}",
-                            as_type="generation",
-                            model=call.get("model"),
-                            usage_details={
-                                "input": call.get("input_tokens", 0),
-                                "output": call.get("output_tokens", 0),
-                            },
-                            metadata={"agent_role": call.get("agent_role")},
-                        ):
-                            pass
-            else:
+            # ── Fallback: use result.token_usage if event bus recorded nothing ─
+            if collector.usage_count == usage_before:
                 usage = getattr(result, "token_usage", None)
                 if usage is not None:
-                    in_tok, out_tok = normalize_usage(usage)
-                    record_usage(trace, input_tokens=in_tok, output_tokens=out_tok, model=model_name)
+                    collector.record_llm_response(raw_usage=usage, model=model_name)
 
             total_iterations += counter[0]
 
@@ -533,7 +482,7 @@ class CrewAIAdapter(ToolAgentAdapter):
             # ── Validate workspace ───────────────────────────────────────
             valid = validate_workspace(stage_name, str(context.workspace))
             record_node_event(
-                trace, "validator",
+                collector.trace, "validator",
                 validator_passed=valid,
                 retry_count=attempt + 1,
             )
@@ -559,8 +508,7 @@ class CrewAIAdapter(ToolAgentAdapter):
         if not hit_limit:
             hit_limit = total_iterations >= context.max_iterations
 
-        trace.total_iterations = total_iterations
-        finish_trace(trace)
+        collector.mark_iterations(total_iterations)
         return total_iterations, hit_limit
 
     # Stage methods inherited from ToolAgentAdapter
@@ -571,7 +519,7 @@ class CrewAIAdapter(ToolAgentAdapter):
 
     @staticmethod
     def _create_trace_callbacks(
-        trace: AgentTrace,
+        collector: ObservationCollector,
         *,
         progress_callback: Any | None = None,
         max_iterations: int = 50,
@@ -599,12 +547,12 @@ class CrewAIAdapter(ToolAgentAdapter):
                 tool_input = getattr(step_output, "tool_input", "")
                 tool_result = getattr(step_output, "result", "")
                 args = tool_input if isinstance(tool_input, dict) else {"input": str(tool_input)}
-                record_tool_call(trace, str(tool_name), args, str(tool_result))
+                collector.record_tool_execution(str(tool_name), args, str(tool_result))
 
             # Emit progress for tool calls and periodic heartbeats
             if progress_callback is not None:
                 elapsed = time.monotonic() - t0
-                tokens = trace.total_tokens_input + trace.total_tokens_output
+                tokens = collector.trace.total_tokens_input + collector.trace.total_tokens_output
                 if tool_name:
                     detail = format_tool_detail(str(tool_name), tool_input)
                     progress_callback(
@@ -623,13 +571,13 @@ class CrewAIAdapter(ToolAgentAdapter):
             # Always record the step as a message so the full reasoning
             # chain is visible in the trace.
             content = _summarise_step(step_output)
-            record_message(trace, "assistant", content, metadata={"step": counter[0]})
-            trace.total_iterations = counter[0]
+            collector.record_message("assistant", content, metadata={"step": counter[0]})
+            collector.trace.total_iterations = counter[0]
 
         def task_callback(task_output: Any) -> None:
             """Called when a CrewAI Task completes."""
-            record_message(
-                trace, "assistant", str(task_output),
+            collector.record_message(
+                "assistant", str(task_output),
                 metadata={"event": "task_complete"},
             )
             if progress_callback is not None:
