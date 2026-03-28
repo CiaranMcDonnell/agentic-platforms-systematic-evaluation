@@ -273,7 +273,7 @@ class LangGraphAdapter(ToolAgentAdapter):
             collector.record_llm_response(raw_usage=raw_usage, duration_ms=duration_ms)
 
         # ── Wrapper: planner ────────────────────────────────────────────
-        async def planner_wrapper(state: ParentState) -> dict:
+        async def planner_wrapper(state: ParentState, config: RunnableConfig) -> dict:
             messages: list[BaseMessage] = []
             if state.get("system_msg"):
                 messages.append(SystemMessage(content=state["system_msg"]))
@@ -282,7 +282,7 @@ class LangGraphAdapter(ToolAgentAdapter):
             if progress is not None:
                 progress.agent_status("planner", "generating plan...")
 
-            result = await planner_sg.ainvoke({"messages": messages})
+            result = await planner_sg.ainvoke({"messages": messages}, config=config)
             last_msg = result["messages"][-1] if result["messages"] else None
             plan_text = getattr(last_msg, "content", "") if last_msg else ""
 
@@ -315,7 +315,7 @@ class LangGraphAdapter(ToolAgentAdapter):
             }
 
         # ── Wrapper: executor ───────────────────────────────────────────
-        async def executor_wrapper(state: ParentState) -> dict:
+        async def executor_wrapper(state: ParentState, config: RunnableConfig) -> dict:
             stage = state["stage"]
             plan = state.get("plan", "")
             plan_obj: ImplementationPlan | None = state.get("plan_obj")
@@ -349,7 +349,7 @@ class LangGraphAdapter(ToolAgentAdapter):
             llm_call_count = 0
             executor_t0 = time.monotonic()
             async for chunk in executor_sg.astream(
-                {"messages": messages}, stream_mode="updates",
+                {"messages": messages}, config=config, stream_mode="updates",
             ):
                 for node_name, node_update in chunk.items():
                     if not node_update or not isinstance(node_update, dict):
@@ -405,7 +405,7 @@ class LangGraphAdapter(ToolAgentAdapter):
             }
 
         # ── Wrapper: reviewer ───────────────────────────────────────────
-        async def reviewer_wrapper(state: ParentState) -> dict:
+        async def reviewer_wrapper(state: ParentState, config: RunnableConfig) -> dict:
             stage = state["stage"]
             plan = state.get("plan", "")
             workspace = state.get("workspace", "")
@@ -425,7 +425,7 @@ class LangGraphAdapter(ToolAgentAdapter):
             ]
 
             reviewer_t0 = time.monotonic()
-            result = await reviewer_sg.ainvoke({"messages": messages})
+            result = await reviewer_sg.ainvoke({"messages": messages}, config=config)
             reviewer_duration = (time.monotonic() - reviewer_t0) * 1000
 
             for msg in result.get("messages", []):
