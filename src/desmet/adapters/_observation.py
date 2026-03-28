@@ -43,6 +43,11 @@ class ObservationCollector:
 
     Wraps an ``AgentTrace``, provides typed recording methods that handle
     normalization internally, and validates completeness when sealed.
+
+    The collector assumes exclusive write access to the wrapped trace
+    while unsealed.  Do not mutate the trace directly from outside
+    except via the ``.trace`` escape hatch for framework-specific
+    operations (e.g. ``record_node_event``).
     """
 
     def __init__(
