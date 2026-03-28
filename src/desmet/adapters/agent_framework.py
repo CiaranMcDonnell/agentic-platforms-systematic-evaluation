@@ -16,11 +16,11 @@ from __future__ import annotations
 
 import json
 import logging
-import threading
 import time
 from typing import Any
 
 from desmet.adapters._base import ToolAgentAdapter
+from desmet.adapters._observation import ObservationCollector
 from desmet.adapters._planning import (
     ImplementationPlan,
     build_executor_instructions,
@@ -28,15 +28,7 @@ from desmet.adapters._planning import (
 )
 from desmet.adapters._prompts import get_stage_persona, get_sub_persona
 from desmet.adapters._tools import ToolFormat, split_tools
-from desmet.adapters._tracing import (
-    finish_trace,
-    format_tool_detail,
-    normalize_usage,
-    record_llm_duration,
-    record_message,
-    record_tool_call,
-    record_usage,
-)
+from desmet.adapters._tracing import format_tool_detail
 from desmet.adapters._validation import validate_workspace
 from desmet.adapters.registry import load_platform_info
 from desmet.observability import get_langfuse, record_generation
@@ -57,14 +49,12 @@ MAX_RESET_COUNT = 2
 class UsageTrackingMiddleware:
     """ChatMiddleware that intercepts every LLM call to record token usage.
 
-    Thread-safe: multiple agents in a MagenticOne team may invoke the
-    model concurrently, so all trace mutations go through ``_lock``.
+    Thread-safe: ``ObservationCollector`` handles its own lock, so no
+    additional lock is needed here.
     """
 
-    def __init__(self, trace: AgentTrace, model_name: str | None = None) -> None:
-        self._trace = trace
-        self._model_name = model_name
-        self._lock = threading.Lock()
+    def __init__(self, collector: ObservationCollector) -> None:
+        self._collector = collector
 
     async def invoke(self, context: Any, next_handler: Any) -> Any:
         """Middleware handler: call next, then record usage from the response."""
@@ -73,17 +63,7 @@ class UsageTrackingMiddleware:
         duration_ms = (time.monotonic() - t0) * 1000
 
         usage = getattr(response, "usage", None)
-        input_tokens, output_tokens = normalize_usage(usage)
-
-        with self._lock:
-            if input_tokens or output_tokens:
-                record_usage(
-                    self._trace,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    model=self._model_name,
-                )
-            record_llm_duration(self._trace, duration_ms)
+        self._collector.record_llm_response(raw_usage=usage, duration_ms=duration_ms)
 
         return response
 
@@ -179,6 +159,9 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
         except Exception:
             return False
 
+    def _get_model_name(self) -> str | None:
+        return self._model_name
+
     # -- Core agent runner ----------------------------------------------------
 
     async def _run_agent(
@@ -187,7 +170,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
         prompt: str,
         system_msg: str | None,
         tools: list,
-        trace: AgentTrace,
+        collector: ObservationCollector,
         context: StageContext,
     ) -> tuple[int, bool]:
         """Run MagenticOne orchestration: manager + planner/executor/reviewer.
@@ -212,10 +195,10 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
         t0 = time.monotonic()
         cb = context.progress_callback
 
-        record_message(trace, "user", prompt)
+        collector.record_message("user", prompt)
 
         # Register usage tracking middleware on agents
-        middleware = UsageTrackingMiddleware(trace, model_name=self._model_name)
+        middleware = UsageTrackingMiddleware(collector)
 
         # -- Step 1: Planner agent (structured output) ------------------------
         plan: ImplementationPlan | None = None
@@ -264,8 +247,8 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
 
         total_iterations += 1
         plan_json = json.dumps(plan.model_dump())
-        record_message(
-            trace, "assistant",
+        collector.record_message(
+            "assistant",
             f"Plan: {plan_json}",
             metadata={"agent": "planner"},
         )
@@ -348,8 +331,8 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
             if current_message_chunks:
                 full_text = "".join(current_message_chunks)
                 if full_text.strip():
-                    record_message(
-                        trace, "assistant", full_text,
+                    collector.record_message(
+                        "assistant", full_text,
                         metadata={"agent": current_agent_id},
                     )
                 current_message_chunks.clear()
@@ -375,8 +358,8 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                     content = getattr(event.data, "content", None)
                     event_name = getattr(getattr(event.data, "event_type", None), "name", "unknown")
                     if isinstance(content, Message):
-                        record_message(
-                            trace, "system", content.text or "",
+                        collector.record_message(
+                            "system", content.text or "",
                             metadata={"event": f"orchestrator_{event_name}"},
                         )
                     if cb:
@@ -390,8 +373,8 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                         for msg in event.data:
                             text = getattr(msg, "text", "") or ""
                             if text:
-                                record_message(
-                                    trace, "assistant", text,
+                                collector.record_message(
+                                    "assistant", text,
                                     metadata={"event": "final_output"},
                                 )
 
@@ -410,35 +393,8 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                         if agent_resp is None:
                             continue
 
-                        # Extract token usage — try multiple sources
-                        in_tok = 0
-                        out_tok = 0
-
-                        # Source 1: AgentResponse.usage_details
-                        # Keys vary by provider: input_token_count (Gemini/OpenRouter),
-                        # input_tokens (OpenAI), prompt_tokens (legacy)
-                        usage = getattr(agent_resp, "usage_details", None)
-                        in_tok, out_tok = normalize_usage(usage)
-
-                        # Source 2: raw_representation
-                        if not (in_tok or out_tok):
-                            raw = getattr(agent_resp, "raw_representation", None)
-                            raw_usage = getattr(raw, "usage", None)
-                            in_tok, out_tok = normalize_usage(raw_usage)
-
-                        # Source 3: usage Content items in messages
-                        if not (in_tok or out_tok):
-                            for msg in (agent_msgs or []):
-                                for ci in (getattr(msg, "contents", None) or []):
-                                    cd = ci.to_dict() if hasattr(ci, "to_dict") else {}
-                                    if cd.get("type") == "usage":
-                                        ud = cd.get("usage_details", {})
-                                        if isinstance(ud, dict):
-                                            in_tok += ud.get("input_tokens", 0) or 0
-                                            out_tok += ud.get("output_tokens", 0) or 0
-
-                        if in_tok or out_tok:
-                            record_usage(trace, input_tokens=in_tok, output_tokens=out_tok, model=self._model_name)
+                        # Token usage is recorded by UsageTrackingMiddleware per-LLM-call.
+                        # No duplicate recording here.
 
                         # Record agent completion as a Langfuse generation
                         agent_output = ""
@@ -455,7 +411,6 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                             name=f"agent-{executor_name}",
                             model=self._model_name,
                             output=agent_output[:2000] if agent_output else None,
-                            usage={"input_tokens": in_tok, "output_tokens": out_tok} if (in_tok or out_tok) else None,
                             metadata={"agent": executor_name, "iteration": total_iterations},
                         )
 
@@ -495,21 +450,21 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                                     # Match with pending call
                                     tc_name, tc_args = pending_calls.pop(call_id, ("unknown", {}))
                                     tool_call_count += 1
-                                    record_tool_call(trace, name=tc_name, args=tc_args, result=str(result_text))
+                                    collector.record_tool_execution(tc_name, tc_args, str(result_text))
                                     if cb:
                                         elapsed = time.monotonic() - t0
                                         detail = format_tool_detail(tc_name, tc_args)
-                                        tokens = trace.total_tokens_input + trace.total_tokens_output
+                                        tokens = collector.trace.total_tokens_input + collector.trace.total_tokens_output
                                         cb(f"    tool {tool_call_count} \u2014 {detail}  ({elapsed:.0f}s, {tokens:,} tokens)")
 
                         # Record any unmatched calls (no result yet)
                         for call_id, (tc_name, tc_args) in pending_calls.items():
                             tool_call_count += 1
-                            record_tool_call(trace, name=tc_name, args=tc_args, result="(no result)")
+                            collector.record_tool_execution(tc_name, tc_args, "(no result)")
                             if cb:
                                 elapsed = time.monotonic() - t0
                                 detail = format_tool_detail(tc_name, tc_args)
-                                tokens = trace.total_tokens_input + trace.total_tokens_output
+                                tokens = collector.trace.total_tokens_input + collector.trace.total_tokens_output
                                 cb(f"    tool {tool_call_count} \u2014 {detail}  ({elapsed:.0f}s, {tokens:,} tokens)")
 
                     if cb:
@@ -533,14 +488,14 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
             _flush_message()
         except Exception as e:
             _log.warning("MagenticOne orchestration error: %s", e)
-            trace.errors.append(str(e))
+            collector.trace.errors.append(str(e))
 
         run_duration_ms = (time.monotonic() - run_t0) * 1000
 
         # Estimate LLM time (total run minus tool execution time)
-        tool_time = sum(tc.duration_ms for tc in trace.tool_calls)
+        tool_time = sum(tc.duration_ms for tc in collector.trace.tool_calls)
         llm_time_estimate = max(0.0, run_duration_ms - tool_time)
-        record_llm_duration(trace, llm_time_estimate)
+        collector.record_llm_response(raw_usage=None, duration_ms=llm_time_estimate)
 
         # -- Step 5: Final validation -----------------------------------------
         passed = validate_workspace(stage_name, str(context.workspace))
@@ -553,8 +508,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                 elapsed = time.monotonic() - t0
                 cb(f"    validator: FAILED \u2014 {hint}  ({elapsed:.0f}s)")
 
-        trace.total_iterations = total_iterations
-        finish_trace(trace)
+        collector.mark_iterations(total_iterations)
         return total_iterations, hit_limit
 
     # -- Metadata -------------------------------------------------------------
