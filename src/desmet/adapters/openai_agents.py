@@ -15,20 +15,12 @@ from desmet.adapters._base import ToolAgentAdapter
 from desmet.adapters._planning import ImplementationPlan, build_executor_instructions, parse_plan_text
 from desmet.adapters._prompts import get_stage_persona, get_sub_persona
 from desmet.adapters._tools import ToolFormat
-from desmet.adapters._tracing import (
-    finish_trace,
-    format_tool_detail,
-    normalize_usage,
-    record_llm_duration,
-    record_message,
-    record_tool_call,
-    record_usage,
-)
+from desmet.adapters._observation import ObservationCollector
+from desmet.adapters._tracing import format_tool_detail
 from desmet.adapters._validation import validate_workspace
 from desmet.adapters.registry import load_platform_info
 from desmet.harness.context import StageContext
 from desmet.harness.models import PlatformInfo
-from desmet.harness.trace import AgentTrace
 from desmet.llm_config import Provider
 from desmet.llm_config import get_config as get_llm_config
 
@@ -90,6 +82,9 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
             return getattr(agents, "__version__", "unknown")
         except ImportError:
             return "not installed"
+
+    def _get_model_name(self) -> str | None:
+        return self._model_name
 
     async def initialize(self) -> None:
         try:
@@ -162,7 +157,7 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
         prompt: str,
         system_msg: str | None,
         tools: list,
-        trace: AgentTrace,
+        collector: ObservationCollector,
         context: StageContext,
     ) -> tuple[int, bool]:
         """Run a 3-agent handoff chain: planner → executor → reviewer.
@@ -182,7 +177,7 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
         t0 = time.monotonic()
         cb = context.progress_callback
 
-        record_message(trace, "user", prompt)
+        collector.record_message("user", prompt)
 
         # ── Step 1: Planner agent ────────────────────────────────────────
         # Try structured output (output_type) first — only works with
@@ -220,8 +215,8 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
             plan = parse_plan_text(text)
 
         iters, tool_call_count = self._extract_trace(
-            trace, planner_result, cb=cb, t0=t0,
-            tool_call_count=tool_call_count, model=self._model_name,
+            collector, planner_result, cb=cb, t0=t0,
+            tool_call_count=tool_call_count,
         )
         total_iterations += iters
 
@@ -273,21 +268,21 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
                         }
                     ]
 
-                tool_time_before = sum(tc.duration_ms for tc in trace.tool_calls)
+                tool_time_before = sum(tc.duration_ms for tc in collector.trace.tool_calls)
                 run_t0 = time.monotonic()
                 result = await Runner.run(executor_agent, input=input_msg, max_turns=max_turns)
                 run_duration_ms = (time.monotonic() - run_t0) * 1000
 
                 iters, tool_call_count = self._extract_trace(
-                    trace, result, cb=cb, t0=t0,
-                    tool_call_count=tool_call_count, model=self._model_name,
+                    collector, result, cb=cb, t0=t0,
+                    tool_call_count=tool_call_count,
                 )
                 total_iterations += iters
 
-                tool_time_after = sum(tc.duration_ms for tc in trace.tool_calls)
+                tool_time_after = sum(tc.duration_ms for tc in collector.trace.tool_calls)
                 tool_time_in_run = tool_time_after - tool_time_before
                 llm_time_estimate = max(0.0, run_duration_ms - tool_time_in_run)
-                record_llm_duration(trace, llm_time_estimate)
+                collector.record_llm_response(raw_usage=None, duration_ms=llm_time_estimate)
 
                 if total_iterations >= context.max_iterations:
                     hit_limit = True
@@ -321,19 +316,17 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
                     break
                 continue
 
-        trace.total_iterations = total_iterations
-        finish_trace(trace)
+        collector.mark_iterations(total_iterations)
         return total_iterations, hit_limit
 
     @staticmethod
     def _extract_trace(
-        trace: AgentTrace,
+        collector: ObservationCollector,
         result,
         *,
         cb=None,
         t0: float = 0.0,
         tool_call_count: int = 0,
-        model: str | None = None,
     ) -> tuple[int, int]:
         """Extract messages, tool calls, and usage from a RunResult.
 
@@ -348,36 +341,33 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
         for item in result.new_items:
             if isinstance(item, MessageOutputItem):
                 text = item.raw_item.content[0].text if item.raw_item.content else ""
-                record_message(trace, "assistant", text)
+                collector.record_message("assistant", text)
             elif isinstance(item, ToolCallItem):
                 tool_call_count += 1
                 call = item.raw_item
                 args = call.arguments if isinstance(call.arguments, dict) else {"raw": call.arguments}
-                record_tool_call(trace, name=call.name, args=args, result="")
+                collector.record_tool_execution(name=call.name, args=args, result="")
                 if cb is not None:
                     elapsed = time.monotonic() - t0
                     detail = format_tool_detail(call.name, call.arguments)
-                    tokens = trace.total_tokens_input + trace.total_tokens_output
+                    tokens = collector.trace.total_tokens_input + collector.trace.total_tokens_output
                     cb(
                         f"    tool {tool_call_count} — {detail}"
                         f"  ({elapsed:.0f}s, {tokens:,} tokens)"
                     )
             elif isinstance(item, ToolCallOutputItem):
-                record_message(
-                    trace, "tool", str(item.output),
+                collector.record_message(
+                    "tool", str(item.output),
                     metadata={"tool_call_id": getattr(item.raw_item, "call_id", "")},
                 )
 
         # Token usage from raw_responses
         for resp in result.raw_responses:
-            usage = getattr(resp, "usage", None)
-            if usage:
-                in_tok, out_tok = normalize_usage(usage)
-                record_usage(trace, input_tokens=in_tok, output_tokens=out_tok, model=model)
+            collector.record_llm_response(raw_usage=getattr(resp, "usage", None))
 
         # Record final output
         if result.final_output:
-            record_message(trace, "assistant", str(result.final_output), metadata={"event": "final_output"})
+            collector.record_message("assistant", str(result.final_output), metadata={"event": "final_output"})
 
         return len(result.new_items), tool_call_count
 
