@@ -258,6 +258,11 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
 
         record_message(trace, "user", prompt)
 
+        # OpenRouter session grouping: all LLM calls for this stage share
+        # a session_id so they appear as one conversation on the dashboard.
+        session_id = f"desmet-{context.platform_id}-{context.story.id}-{stage_name}"
+        default_options = {"extra_body": {"session_id": session_id}}
+
         # Register usage tracking middleware on agents
         middleware = UsageTrackingMiddleware(trace, model_name=self._model_name)
 
@@ -269,6 +274,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                 instructions=planner_persona.backstory,
                 client=self._client,
                 middleware=[middleware],
+                default_options=default_options,
             )
             planner_result = await planner.run(
                 prompt,
@@ -295,6 +301,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                     ),
                     client=self._client,
                     middleware=[middleware],
+                default_options=default_options,
                 )
                 planner_result = await planner.run(prompt)
                 text = getattr(planner_result, "text", "") or ""
