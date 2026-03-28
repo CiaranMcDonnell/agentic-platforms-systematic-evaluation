@@ -412,14 +412,23 @@ class EvaluationRunner:
                             f"  [{stage_key.upper()}] Starting {stage_key} stage..."
                         )
 
-                    stage_method = getattr(adapter, method_name)
                     try:
                         with langfuse_span(
                             span,
                             f"stage-{stage_key}",
                             metadata={"platform_id": platform_id, "story_id": story.id},
                         ):
-                            stage_result = await stage_method(stage_ctx)
+                            # Use containerized execution when a platform image exists;
+                            # fall back to in-process for development/testing.
+                            from desmet.harness import container_runner
+                            if container_runner.has_image(platform_id):
+                                stage_result = await container_runner.run_stage_in_container(
+                                    platform_id, stage_key, stage_ctx,
+                                    self.progress_callback,
+                                )
+                            else:
+                                stage_method = getattr(adapter, method_name)
+                                stage_result = await stage_method(stage_ctx)
                             stage_ctx.add_artifacts(stage_key, stage_result)
                             stage_results[stage_key] = stage_result
 
@@ -462,6 +471,10 @@ class EvaluationRunner:
                         if self.progress_callback is not None:
                             self.progress_callback(f"  [{stage_key.upper()}] ERROR — {e}")
                         # Continue -- do NOT block later stages
+
+                # Clean up platform container after story completes
+                from desmet.harness import container_runner
+                container_runner.stop_container(platform_id, story.id)
 
                 # Stop eval container before post-processing — Docker
                 # bind-mounts create Linux symlinks (e.g. .venv/lib64) that
