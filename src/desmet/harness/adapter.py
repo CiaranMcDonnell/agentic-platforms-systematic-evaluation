@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from .context import StageContext
-from .models import PlatformInfo
+from .models import PlatformCategory, PlatformInfo, PlatformRuntime
 from .results import (
     CodeResult,
     DeployResult,
@@ -156,6 +156,58 @@ class BasePlatformAdapter(ABC):
             "has_memory_inspection": False,
             "trace_format": None,
         }
+
+
+class ContainerOnlyAdapter(BasePlatformAdapter):
+    """Lightweight adapter stub for platforms that run entirely in Docker.
+
+    Used when the platform's Docker image exists but the SDK isn't installed
+    locally.  All stage methods raise — the runner uses
+    ``container_runner.run_stage_in_container()`` instead.
+    """
+
+    def __init__(self, platform_id: str):
+        super().__init__()
+        from desmet.platforms_config import get_platforms_config
+
+        cfg = get_platforms_config().get(platform_id, {})
+        self._platform_info = PlatformInfo(
+            name=cfg.get("name", platform_id),
+            id=platform_id,
+            category=PlatformCategory(cfg.get("category", "multi_agent_framework").lower()),
+            runtime=PlatformRuntime(cfg.get("runtime", "python").lower()),
+            version="container",
+            vendor=cfg.get("vendor", ""),
+            description=cfg.get("description", ""),
+            documentation_url=cfg.get("docs_url", ""),
+            repository_url=cfg.get("repo_url", ""),
+        )
+
+    @property
+    def platform_info(self) -> PlatformInfo:
+        return self._platform_info
+
+    async def initialize(self) -> None:
+        pass
+
+    async def shutdown(self) -> None:
+        pass
+
+    async def health_check(self) -> bool:
+        from .container_runner import has_image
+        return has_image(self._platform_info.id)
+
+    async def generate_requirements(self, context: StageContext) -> RequirementsResult:
+        raise NotImplementedError("Container-only adapter — use run_stage_in_container")
+
+    async def generate_code(self, context: StageContext) -> CodeResult:
+        raise NotImplementedError("Container-only adapter — use run_stage_in_container")
+
+    async def generate_tests(self, context: StageContext) -> TestResult:
+        raise NotImplementedError("Container-only adapter — use run_stage_in_container")
+
+    async def build_and_deploy(self, context: StageContext) -> DeployResult:
+        raise NotImplementedError("Container-only adapter — use run_stage_in_container")
 
     # Layer 2 assessment helpers — not used in Layer 3 pipeline benchmarking.
     def get_failure_handling_info(self) -> dict[str, Any]:

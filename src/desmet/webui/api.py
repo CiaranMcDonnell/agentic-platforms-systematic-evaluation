@@ -692,8 +692,15 @@ async def _execute_run(run: RunState, req: RunRequest):
             try:
                 adapters[pid] = get_adapter(pid)
                 await _broadcast_log(run.run_id, f"  {pid}: adapter loaded")
-            except (KeyError, AdapterNotImplementedError) as exc:
-                await _broadcast_log(run.run_id, f"  {pid}: FAILED — {exc}")
+            except (KeyError, AdapterNotImplementedError, ImportError, ModuleNotFoundError) as exc:
+                # Fall back to container-only stub if Docker image exists
+                from desmet.harness.adapter import ContainerOnlyAdapter
+                from desmet.harness.container_runner import has_image
+                if has_image(pid):
+                    adapters[pid] = ContainerOnlyAdapter(pid)
+                    await _broadcast_log(run.run_id, f"  {pid}: container-only mode (SDK not installed locally)")
+                else:
+                    await _broadcast_log(run.run_id, f"  {pid}: FAILED — {exc}")
 
         if not adapters:
             raise ValueError("No valid platform adapters found")
