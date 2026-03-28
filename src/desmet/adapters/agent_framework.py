@@ -472,6 +472,35 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                     executor_name = getattr(event, "executor_id", "") or ""
                     lf = get_langfuse()
                     responses = event.data if isinstance(event.data, list) else [event.data]
+
+                    # Debug: log what we're getting
+                    if cb:
+                        cb(f"    [debug] executor_completed data_type={type(event.data).__name__} len={len(responses)}")
+                        for i, r in enumerate(responses):
+                            cb(f"    [debug]   [{i}] type={type(r).__name__}")
+                            if hasattr(r, "agent_response"):
+                                ar = r.agent_response
+                                cb(f"    [debug]   agent_response type={type(ar).__name__}")
+                                cb(f"    [debug]   usage_details={getattr(ar, 'usage_details', 'N/A')}")
+                                cb(f"    [debug]   raw_repr type={type(getattr(ar, 'raw_representation', None)).__name__}")
+                                msgs = getattr(ar, "messages", None)
+                                if msgs is None:
+                                    cb(f"    [debug]   messages=None")
+                                elif isinstance(msgs, list):
+                                    cb(f"    [debug]   messages count={len(msgs)}")
+                                    for j, m in enumerate(msgs[:3]):
+                                        contents = getattr(m, "contents", None)
+                                        cb(f"    [debug]   msg[{j}] role={getattr(m, 'role', '?')} text={bool(getattr(m, 'text', ''))} contents={len(contents) if contents else 0}")
+                                        if contents:
+                                            for k, c in enumerate(contents[:5]):
+                                                cd = c.to_dict() if hasattr(c, "to_dict") else {}
+                                                cb(f"    [debug]     content[{k}] type={cd.get('type', '?')} keys={list(cd.keys())[:6]}")
+                                else:
+                                    cb(f"    [debug]   messages type={type(msgs).__name__}")
+                            elif hasattr(r, "full_conversation"):
+                                fc = r.full_conversation
+                                cb(f"    [debug]   full_conversation len={len(fc) if fc else 0}")
+
                     for resp in responses:
                         if not isinstance(resp, AgentExecutorResponse):
                             continue
