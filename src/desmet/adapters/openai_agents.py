@@ -7,18 +7,18 @@ the executor retries with conversation carry-forward.
 """
 from __future__ import annotations
 
-import json
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from pydantic import BaseModel
-
 from desmet.adapters._base import ToolAgentAdapter
+from desmet.adapters._planning import ImplementationPlan, build_executor_instructions, parse_plan_text
 from desmet.adapters._prompts import get_stage_persona, get_sub_persona
 from desmet.adapters._tools import ToolFormat
 from desmet.adapters._tracing import (
     finish_trace,
+    format_tool_detail,
+    normalize_usage,
     record_llm_duration,
     record_message,
     record_tool_call,
@@ -36,14 +36,6 @@ MAX_RETRIES = 3
 
 
 # ── Data models ───────────────────────────────────────────────────────────────
-
-
-class ImplementationPlan(BaseModel):
-    """Structured output from the planner agent."""
-
-    steps: list[str]
-    files_to_create: list[str]
-    files_to_modify: list[str]
 
 
 @dataclass
@@ -71,31 +63,6 @@ def _make_workspace_guardrail(stage_name: str, workspace: str):
         )
 
     return workspace_guardrail
-
-
-# ── Helper ────────────────────────────────────────────────────────────────────
-
-
-def _format_tool_detail(name: str, raw_args: Any) -> str:
-    """Format an OpenAI Agents tool call for human-readable progress logging."""
-    args = raw_args if isinstance(raw_args, dict) else {}
-    if not args and isinstance(raw_args, str):
-        try:
-            args = json.loads(raw_args)
-        except (json.JSONDecodeError, TypeError):
-            pass
-    if name in ("read_file", "write_file") and "path" in args:
-        return f"{name} → {args['path']}"
-    if name == "execute_shell" and "command" in args:
-        cmd = args["command"]
-        return f"{name} → {cmd[:60]}{'…' if len(cmd) > 60 else ''}"
-    if name == "search_code" and "pattern" in args:
-        return f"{name} → /{args['pattern']}/"
-    if name == "list_directory":
-        return f"{name} → {args.get('path', '.')}"
-    if name == "deploy_remote" and "action" in args:
-        return f"{name} → {args['action']}"
-    return name
 
 
 # ── Adapter ───────────────────────────────────────────────────────────────────
@@ -250,14 +217,7 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
             )
             planner_result = await Runner.run(planner, input=prompt, max_turns=3)
             text = str(planner_result.final_output or "")
-            # Parse numbered steps from free text
-            import re
-            steps = [m.group(1).strip() for m in re.finditer(r"^\d+\.\s+(.*)", text, re.MULTILINE)]
-            plan = ImplementationPlan(
-                steps=steps or [text],
-                files_to_create=[],
-                files_to_modify=[],
-            )
+            plan = parse_plan_text(text)
 
         iters, tool_call_count = self._extract_trace(
             trace, planner_result, cb=cb, t0=t0,
@@ -281,16 +241,9 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
         )
 
         # Dynamic executor instructions: persona + plan + system_msg
-        plan_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(plan.steps))
-        all_files = plan.files_to_create + plan.files_to_modify
-        files_text = ", ".join(all_files) if all_files else "(none specified)"
-        executor_instructions = (
-            f"{executor_persona.backstory}\n\n"
-            f"## Implementation Plan\n{plan_text}\n\n"
-            f"## Files\n{files_text}\n"
+        executor_instructions = build_executor_instructions(
+            executor_persona, plan, system_msg,
         )
-        if system_msg:
-            executor_instructions += f"\n## Additional Context\n{system_msg}\n"
 
         executor_agent = Agent(
             name=f"desmet_{stage_name}_executor",
@@ -403,7 +356,7 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
                 record_tool_call(trace, name=call.name, args=args, result="")
                 if cb is not None:
                     elapsed = time.monotonic() - t0
-                    detail = _format_tool_detail(call.name, call.arguments)
+                    detail = format_tool_detail(call.name, call.arguments)
                     tokens = trace.total_tokens_input + trace.total_tokens_output
                     cb(
                         f"    tool {tool_call_count} — {detail}"
@@ -419,12 +372,8 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
         for resp in result.raw_responses:
             usage = getattr(resp, "usage", None)
             if usage:
-                record_usage(
-                    trace,
-                    input_tokens=getattr(usage, "input_tokens", 0) or getattr(usage, "prompt_tokens", 0) or 0,
-                    output_tokens=getattr(usage, "output_tokens", 0) or getattr(usage, "completion_tokens", 0) or 0,
-                    model=model,
-                )
+                in_tok, out_tok = normalize_usage(usage)
+                record_usage(trace, input_tokens=in_tok, output_tokens=out_tok, model=model)
 
         # Record final output
         if result.final_output:
