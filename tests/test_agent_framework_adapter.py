@@ -86,6 +86,8 @@ class TestAgentFrameworkAdapterInterface:
         assert "prompt" in params
         assert "collector" in params
         assert "context" in params
+        assert "policy" in params
+        assert "progress" in params
 
 
 class TestAgentFrameworkAdapterStructure:

@@ -9,6 +9,7 @@ import pytest
 
 from desmet.adapters.crewai import CrewAIAdapter
 from desmet.adapters._observation import ObservationCollector, ObservationRequirements
+from desmet.adapters._retry import ProgressReporter
 from desmet.harness.trace import (
     AgentTrace,
 )
@@ -94,6 +95,8 @@ class TestCrewAIAdapterInterface:
         assert "prompt" in params
         assert "collector" in params
         assert "context" in params
+        assert "policy" in params
+        assert "progress" in params
 
 
 def _make_collector(trace: AgentTrace) -> ObservationCollector:
@@ -110,6 +113,11 @@ def _make_collector(trace: AgentTrace) -> ObservationCollector:
     )
 
 
+def _make_progress(collector: ObservationCollector) -> ProgressReporter:
+    """Return a no-op ProgressReporter for callback tests."""
+    return ProgressReporter(callback=None, collector=collector)
+
+
 class TestTraceCallbacks:
     """Tests for CrewAI step_callback / task_callback tracing.
 
@@ -119,7 +127,8 @@ class TestTraceCallbacks:
 
     def test_step_callback_increments_counter(self):
         trace = AgentTrace()
-        step_cb, _, counter = CrewAIAdapter._create_trace_callbacks(_make_collector(trace))
+        collector = _make_collector(trace)
+        step_cb, _, counter = CrewAIAdapter._create_trace_callbacks(collector, _make_progress(collector))
 
         step_cb("first step output")
         step_cb("second step output")
@@ -129,7 +138,8 @@ class TestTraceCallbacks:
 
     def test_step_callback_records_messages(self):
         trace = AgentTrace()
-        step_cb, _, _ = CrewAIAdapter._create_trace_callbacks(_make_collector(trace))
+        collector = _make_collector(trace)
+        step_cb, _, _ = CrewAIAdapter._create_trace_callbacks(collector, _make_progress(collector))
 
         step_cb("thinking about the problem")
 
@@ -140,7 +150,8 @@ class TestTraceCallbacks:
 
     def test_step_callback_captures_tool_calls(self):
         trace = AgentTrace()
-        step_cb, _, _ = CrewAIAdapter._create_trace_callbacks(_make_collector(trace))
+        collector = _make_collector(trace)
+        step_cb, _, _ = CrewAIAdapter._create_trace_callbacks(collector, _make_progress(collector))
 
         # Simulate a CrewAI step output with tool attributes
         tool_step = SimpleNamespace(
@@ -160,7 +171,8 @@ class TestTraceCallbacks:
     def test_step_callback_wraps_non_dict_tool_input(self):
         """When tool_input is not a dict, it should be wrapped in {"input": ...}."""
         trace = AgentTrace()
-        step_cb, _, _ = CrewAIAdapter._create_trace_callbacks(_make_collector(trace))
+        collector = _make_collector(trace)
+        step_cb, _, _ = CrewAIAdapter._create_trace_callbacks(collector, _make_progress(collector))
 
         tool_step = SimpleNamespace(
             tool="execute_shell",
@@ -174,7 +186,8 @@ class TestTraceCallbacks:
 
     def test_step_callback_skips_tool_call_when_no_tool_attr(self):
         trace = AgentTrace()
-        step_cb, _, _ = CrewAIAdapter._create_trace_callbacks(_make_collector(trace))
+        collector = _make_collector(trace)
+        step_cb, _, _ = CrewAIAdapter._create_trace_callbacks(collector, _make_progress(collector))
 
         # Step without tool attributes (pure reasoning)
         step_cb("just thinking")
@@ -184,7 +197,8 @@ class TestTraceCallbacks:
 
     def test_task_callback_records_completion(self):
         trace = AgentTrace()
-        _, task_cb, _ = CrewAIAdapter._create_trace_callbacks(_make_collector(trace))
+        collector = _make_collector(trace)
+        _, task_cb, _ = CrewAIAdapter._create_trace_callbacks(collector, _make_progress(collector))
 
         task_cb("Task completed: all requirements documented")
 
@@ -194,7 +208,8 @@ class TestTraceCallbacks:
 
     def test_step_callback_uses_log_attr_when_available(self):
         trace = AgentTrace()
-        step_cb, _, _ = CrewAIAdapter._create_trace_callbacks(_make_collector(trace))
+        collector = _make_collector(trace)
+        step_cb, _, _ = CrewAIAdapter._create_trace_callbacks(collector, _make_progress(collector))
 
         step = SimpleNamespace(log="Agent decided to read the file")
         step_cb(step)
@@ -204,7 +219,8 @@ class TestTraceCallbacks:
     def test_step_callback_falls_back_to_text_attr(self):
         """When log is empty/missing but text is present, use text."""
         trace = AgentTrace()
-        step_cb, _, _ = CrewAIAdapter._create_trace_callbacks(_make_collector(trace))
+        collector = _make_collector(trace)
+        step_cb, _, _ = CrewAIAdapter._create_trace_callbacks(collector, _make_progress(collector))
 
         step = SimpleNamespace(log="", text="Fallback text content")
         step_cb(step)
@@ -213,7 +229,8 @@ class TestTraceCallbacks:
 
     def test_multiple_steps_and_task_combined(self):
         trace = AgentTrace()
-        step_cb, task_cb, counter = CrewAIAdapter._create_trace_callbacks(_make_collector(trace))
+        collector = _make_collector(trace)
+        step_cb, task_cb, counter = CrewAIAdapter._create_trace_callbacks(collector, _make_progress(collector))
 
         # 3 steps then task completion
         step_cb("step 1: reasoning")
@@ -235,7 +252,8 @@ class TestTraceCallbacks:
     def test_messages_have_timestamps(self):
         """Verify that record_message sets timestamps (via _tracing helpers)."""
         trace = AgentTrace()
-        step_cb, task_cb, _ = CrewAIAdapter._create_trace_callbacks(_make_collector(trace))
+        collector = _make_collector(trace)
+        step_cb, task_cb, _ = CrewAIAdapter._create_trace_callbacks(collector, _make_progress(collector))
 
         step_cb("step with timestamp")
         task_cb("task with timestamp")
@@ -282,8 +300,8 @@ class TestCrewAIAdapterStructure:
         assert not hasattr(CrewAIAdapter, "_tool_call_patch_applied")
 
     def test_max_retries_constant(self):
-        from desmet.adapters.crewai import MAX_RETRIES
-        assert MAX_RETRIES == 3
+        from desmet.adapters._retry import RetryPolicy
+        assert RetryPolicy().max_retries == 3
 
     def test_has_build_crew(self, adapter):
         """_build_crew is the crew construction helper."""
