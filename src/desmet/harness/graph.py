@@ -396,7 +396,7 @@ def build_timeline(trace: dict[str, Any]) -> list[TimelineEvent]:
 
     for i, msg in enumerate(all_messages):
         metadata = msg.get("metadata") or {}
-        raw_node = metadata.get("node") or metadata.get("agent") or metadata.get("agent_role") or ""
+        raw_node = metadata.get("agent") or metadata.get("node") or metadata.get("agent_role") or ""
         raw_node_str = str(raw_node)
         agent_id = _normalize_agent_id(metadata) or ""
         role = msg.get("role", "")
@@ -429,17 +429,16 @@ def build_timeline(trace: dict[str, Any]) -> list[TimelineEvent]:
             tool_success=tool_success,
         ))
 
-    # Infer target_agent_id from agent transitions
-    for i in range(len(events)):
-        if not events[i].agent_id:
+    # Infer target_agent_id: set on the LAST message from an agent
+    # before the agent changes to a different one.
+    prev_agent_idx: int | None = None
+    prev_agent_id: str | None = None
+    for i, evt in enumerate(events):
+        if not evt.agent_id:
             continue
-        # Look ahead for next event with a different agent
-        for j in range(i + 1, len(events)):
-            next_agent = events[j].agent_id
-            if not next_agent:
-                continue
-            if next_agent != events[i].agent_id:
-                events[i].target_agent_id = next_agent
-            break  # stop at first event with any agent_id
+        if prev_agent_id and prev_agent_id != evt.agent_id and prev_agent_idx is not None:
+            events[prev_agent_idx].target_agent_id = evt.agent_id
+        prev_agent_id = evt.agent_id
+        prev_agent_idx = i
 
     return events

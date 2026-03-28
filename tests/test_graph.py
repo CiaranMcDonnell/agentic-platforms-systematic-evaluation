@@ -315,3 +315,37 @@ def test_build_timeline_serialization():
     assert d["agent_id"] == "planner"
     assert isinstance(d["content"], str)
     assert "timestamp" in d
+
+
+def test_build_timeline_target_agent_consecutive():
+    """target_agent_id is set on the LAST message of an agent run, not the first."""
+    trace = {
+        "platform_id": "langgraph",
+        "story_id": "US-001",
+        "stages": {
+            "requirements": {
+                "messages": [
+                    {"role": "assistant", "content": "Plan step 1",
+                     "timestamp": "2026-03-28T01:00:01Z",
+                     "metadata": {"node": "planner"}},
+                    {"role": "assistant", "content": "Plan step 2",
+                     "timestamp": "2026-03-28T01:00:02Z",
+                     "metadata": {"node": "planner"}},
+                    {"role": "assistant", "content": "Executing",
+                     "timestamp": "2026-03-28T01:00:03Z",
+                     "metadata": {"node": "executor"}},
+                ],
+                "tool_calls": [],
+                "node_events": [],
+                "tokens_input": 500,
+                "tokens_output": 200,
+            }
+        },
+    }
+    timeline = build_timeline(trace)
+    # First planner message should NOT have target (not the last)
+    assert timeline[0].target_agent_id is None
+    # Second planner message (last before transition) should target executor
+    assert timeline[1].target_agent_id == "executor"
+    # Executor (last) should have no target
+    assert timeline[2].target_agent_id is None
