@@ -1,0 +1,14 @@
+# Example Dockerfile for adding a new platform adapter.
+#
+# 1. Copy this file to Dockerfile.<your-framework>
+# 2. Add your framework's dependencies as an optional extra in pyproject.toml
+# 3. Replace "your-framework" below with the extra name
+# 4. Build: docker build -f infrastructure/Dockerfile.<your-framework> -t desmet-eval-<your-framework>:1.0 .
+#
+# The base image includes: Ubuntu 24.04, Python 3.11, uv, bun, git,
+# Mermaid CLI, and the desmet package with core dependencies.
+
+FROM desmet-eval-base:1.0
+WORKDIR /app
+RUN uv sync --extra your-framework --no-dev
+WORKDIR /workspace
