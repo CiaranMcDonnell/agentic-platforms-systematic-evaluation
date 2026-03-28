@@ -1,18 +1,34 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
-  import * as echarts from 'echarts';
+  import { onMount } from 'svelte';
+  import {
+    SvelteFlow,
+    type Node,
+    type Edge,
+    type NodeTypes,
+    Background,
+    BackgroundVariant,
+  } from '@xyflow/svelte';
+  import '@xyflow/svelte/dist/style.css';
+  import ELK from 'elkjs/lib/elk.bundled.js';
   import { fetchAgentGraph } from '../api';
-  import type { CommunicationGraph, GraphNode } from '../api';
+  import type { CommunicationGraph, TimelineEvent, GraphNode as ApiGraphNode } from '../api';
+  import AgentNode from './AgentNode.svelte';
+  import TimelineCard from './TimelineCard.svelte';
 
   let { platformId, storyId }: { platformId: string; storyId: string } = $props();
 
-  let container: HTMLDivElement | undefined = $state();
-  let chart: echarts.ECharts | null = null;
-  let resizeObserver: ResizeObserver | null = null;
   let graphData: CommunicationGraph | null = $state(null);
-  let selectedNode: GraphNode | null = $state(null);
   let loading = $state(true);
   let error: string | null = $state(null);
+  let activeAgentId: string | null = $state(null);
+  let filterAgentId: string | null = $state(null);
+  let selectedEventIndex: number | null = $state(null);
+  let listContainer: HTMLDivElement | undefined = $state();
+  let cardElements: Map<number, HTMLDivElement> = new Map();
+
+  // Svelte Flow state
+  let nodes: Node[] = $state([]);
+  let edges: Edge[] = $state([]);
 
   const ROLE_COLORS: Record<string, string> = {
     planner: '#4ade80',
@@ -25,83 +41,149 @@
     return ROLE_COLORS[id] ?? '#888888';
   }
 
-  function esc(s: string): string {
-    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const nodeTypes: NodeTypes = { agent: AgentNode as any };
+
+  // Visible edges tracking
+  let visibleEdgeKeys = $state(new Set<string>());
+  let activeEdgeKey: string | null = $state(null);
+
+  function edgeKey(source: string, target: string): string {
+    return `${source}->${target}`;
   }
 
-  function buildChartOption(data: CommunicationGraph): echarts.EChartsOption {
-    const maxTokens = Math.max(...data.nodes.map(n => n.tokens_in + n.tokens_out), 1);
+  function updateVisibleEdges(upToIndex: number) {
+    const timeline = graphData?.timeline ?? [];
+    const seen = new Set<string>();
+    let currentAgent: string | null = null;
+    let lastActiveKey: string | null = null;
 
-    const nodes = data.nodes.map(n => ({
-      id: n.id,
-      name: n.role,
-      symbolSize: 30 + 40 * ((n.tokens_in + n.tokens_out) / maxTokens),
-      itemStyle: { color: roleColor(n.id), borderColor: roleColor(n.id), borderWidth: 2 },
-      label: { show: true, color: '#e0e0e0', fontSize: 12, fontWeight: 'bold' as const },
+    for (let i = 0; i <= upToIndex && i < timeline.length; i++) {
+      const evt = timeline[i];
+      if (!evt.agent_id) continue;
+      if (currentAgent && currentAgent !== evt.agent_id) {
+        const key = edgeKey(currentAgent, evt.agent_id);
+        seen.add(key);
+        lastActiveKey = key;
+      }
+      currentAgent = evt.agent_id;
+    }
+
+    visibleEdgeKeys = seen;
+    activeEdgeKey = lastActiveKey;
+  }
+
+  let displayTimeline = $derived(
+    filterAgentId
+      ? (graphData?.timeline ?? []).filter(e => e.agent_id === filterAgentId)
+      : (graphData?.timeline ?? [])
+  );
+
+  let filterAgentName = $derived(
+    filterAgentId
+      ? graphData?.nodes.find(n => n.id === filterAgentId)?.role ?? filterAgentId
+      : null
+  );
+
+  let filterCount = $derived(displayTimeline.length);
+
+  // Update edges when visibility changes
+  $effect(() => {
+    if (!graphData) return;
+    edges = graphData.edges.map(e => {
+      const key = edgeKey(e.source, e.target);
+      const visible = visibleEdgeKeys.has(key);
+      const active = key === activeEdgeKey;
+      return {
+        id: key,
+        source: e.source,
+        target: e.target,
+        type: 'default',
+        animated: active,
+        style: visible
+          ? `stroke: ${active ? '#4a9eff' : '#555'}; stroke-width: ${active ? 2.5 : 1.5}; opacity: ${active ? 1 : 0.5};`
+          : 'stroke: transparent; stroke-width: 0;',
+        label: visible ? `${e.message_count}` : '',
+        labelStyle: 'fill: #888; font-size: 10px;',
+      };
+    });
+  });
+
+  // Update node active state
+  $effect(() => {
+    if (!graphData) return;
+    nodes = nodes.map(n => ({
+      ...n,
+      data: { ...n.data, active: n.id === activeAgentId },
     }));
+  });
 
-    const maxMsgCount = Math.max(...data.edges.map(e => e.message_count), 1);
+  async function layoutWithELK(apiNodes: ApiGraphNode[], apiEdges: typeof graphData.edges) {
+    const elk = new ELK();
 
-    const links = data.edges.map(e => ({
-      source: e.source,
-      target: e.target,
-      message_count: e.message_count,
-      lineStyle: { width: 1 + 4 * (e.message_count / maxMsgCount), curveness: 0.2 },
-      label: { show: true, formatter: `${e.message_count}`, fontSize: 10, color: '#888' },
-    }));
-
-    return {
-      tooltip: {
-        trigger: 'item',
-        formatter: (params: any) => {
-          if (params.dataType === 'node') {
-            const n = data.nodes.find(n => n.id === params.data.id);
-            if (!n) return '';
-            return `<b>${esc(n.role)}</b><br/>Tokens: ${(n.tokens_in + n.tokens_out).toLocaleString()}<br/>Iterations: ${n.iterations}`;
-          }
-          if (params.dataType === 'edge') {
-            return `${esc(params.data.source)} → ${esc(params.data.target)}<br/>Messages: ${params.data.message_count ?? 0}`;
-          }
-          return '';
-        },
+    const elkGraph = {
+      id: 'root',
+      layoutOptions: {
+        'elk.algorithm': 'layered',
+        'elk.direction': 'DOWN',
+        'elk.spacing.nodeNode': '80',
+        'elk.layered.spacing.nodeNodeBetweenLayers': '100',
       },
-      toolbox: {
-        show: true,
-        right: 10,
-        top: 10,
-        feature: {
-          saveAsImage: { title: 'Export', pixelRatio: 2 },
-        },
-        iconStyle: { borderColor: '#888' },
-      },
-      series: [
-        {
-          type: 'graph',
-          layout: 'force',
-          roam: true,
-          draggable: true,
-          force: { repulsion: 300, gravity: 0.1, edgeLength: [100, 200] },
-          edgeSymbol: ['none', 'arrow'],
-          edgeSymbolSize: 8,
-          data: nodes,
-          links,
-        },
-      ],
+      children: apiNodes.map(n => ({
+        id: n.id,
+        width: 120,
+        height: 80,
+      })),
+      edges: apiEdges.map((e, i) => ({
+        id: `elk-edge-${i}`,
+        sources: [e.source],
+        targets: [e.target],
+      })),
     };
+
+    const layout = await elk.layout(elkGraph);
+
+    return (layout.children ?? []).map(child => ({
+      id: child.id,
+      type: 'agent',
+      position: { x: child.x ?? 0, y: child.y ?? 0 },
+      data: {
+        label: apiNodes.find(n => n.id === child.id)?.role ?? child.id,
+        color: roleColor(child.id),
+        tokens: (() => {
+          const n = apiNodes.find(n => n.id === child.id);
+          return n ? n.tokens_in + n.tokens_out : 0;
+        })(),
+        active: false,
+      },
+    }));
   }
 
   async function loadGraph() {
     loading = true;
     error = null;
-    selectedNode = null;
+    activeAgentId = null;
+    filterAgentId = null;
+    selectedEventIndex = null;
+    visibleEdgeKeys = new Set();
+    activeEdgeKey = null;
+
     try {
       graphData = await fetchAgentGraph(platformId, storyId);
       if (graphData.nodes.length === 0) {
         error = 'No agent data available for this run.';
         return;
       }
-      if (chart && container) {
-        chart.setOption(buildChartOption(graphData), true);
+      nodes = await layoutWithELK(graphData.nodes, graphData.edges);
+      edges = graphData.edges.map(e => ({
+        id: edgeKey(e.source, e.target),
+        source: e.source,
+        target: e.target,
+        type: 'default',
+        style: 'stroke: transparent; stroke-width: 0;',
+        label: '',
+      }));
+      if (graphData.timeline.length > 0) {
+        updateVisibleEdges(graphData.timeline.length - 1);
       }
     } catch (e: any) {
       error = e.status === 404 ? 'No trace data found.' : `Failed to load graph: ${e.message}`;
@@ -110,27 +192,90 @@
     }
   }
 
+  // onnodeclick receives { node, event } destructured object
+  function handleNodeClick({ node }: { node: Node; event: MouseEvent | TouchEvent }) {
+    const nodeId = node?.id;
+    if (!nodeId) return;
+    filterAgentId = filterAgentId === nodeId ? null : nodeId;
+  }
+
+  function handleCardClick(evt: TimelineEvent) {
+    selectedEventIndex = evt.index;
+    activeAgentId = evt.agent_id || null;
+    updateVisibleEdges(evt.index);
+  }
+
+  // Scroll-driven tracking
+  let observer: IntersectionObserver | null = null;
+
+  // Svelte action for registering cards with IntersectionObserver
+  function registerCard(el: HTMLDivElement, index: number) {
+    cardElements.set(index, el);
+    observer?.observe(el);
+    return {
+      destroy() {
+        observer?.unobserve(el);
+        cardElements.delete(index);
+      },
+    };
+  }
+
   onMount(() => {
-    if (container) {
-      chart = echarts.init(container, 'dark', { renderer: 'canvas' });
-      resizeObserver = new ResizeObserver(() => chart?.resize());
-      resizeObserver.observe(container);
-      chart.on('click', (params: any) => {
-        if (params.dataType === 'node' && graphData) {
-          selectedNode = graphData.nodes.find(n => n.id === params.data.id) ?? null;
-        }
-      });
+    if (listContainer) {
+      observer = new IntersectionObserver(
+        (entries) => {
+          let topEntry: IntersectionObserverEntry | null = null;
+          for (const entry of entries) {
+            if (entry.isIntersecting) {
+              if (!topEntry || entry.boundingClientRect.top < topEntry.boundingClientRect.top) {
+                topEntry = entry;
+              }
+            }
+          }
+          if (topEntry) {
+            const idx = Number((topEntry.target as HTMLElement).dataset.eventIndex);
+            if (!isNaN(idx) && graphData?.timeline) {
+              const evt = graphData.timeline[idx];
+              if (evt?.agent_id) {
+                activeAgentId = evt.agent_id;
+                updateVisibleEdges(idx);
+              }
+            }
+          }
+        },
+        { root: listContainer, threshold: 0.5 }
+      );
     }
   });
 
-  onDestroy(() => {
-    resizeObserver?.disconnect();
-    chart?.dispose();
-  });
+  function handleListKeydown(e: KeyboardEvent) {
+    if (!graphData?.timeline) return;
+    const filtered = displayTimeline;
+    if (!filtered.length) return;
 
-  // Reload when platform/story changes
+    if (e.key === 'Escape') {
+      filterAgentId = null;
+      return;
+    }
+
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const currentIdx = filtered.findIndex(ev => ev.index === selectedEventIndex);
+      let nextIdx: number;
+      if (e.key === 'ArrowDown') {
+        nextIdx = currentIdx < filtered.length - 1 ? currentIdx + 1 : currentIdx;
+      } else {
+        nextIdx = currentIdx > 0 ? currentIdx - 1 : 0;
+      }
+      const nextEvent = filtered[nextIdx];
+      handleCardClick(nextEvent);
+      const el = cardElements.get(nextEvent.index);
+      el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }
+
   $effect(() => {
-    if (platformId && storyId && chart) {
+    if (platformId && storyId) {
       loadGraph();
     }
   });
@@ -144,6 +289,9 @@
         {graphData.nodes.length} agents &middot;
         {graphData.nodes.reduce((s, n) => s + n.tokens_in + n.tokens_out, 0).toLocaleString()} tokens &middot;
         {graphData.edges.reduce((s, e) => s + e.message_count, 0)} transitions
+        {#if graphData.timeline.length > 0}
+          &middot; {graphData.timeline.length} events
+        {/if}
       </span>
     </div>
   {/if}
@@ -154,64 +302,53 @@
         <div class="graph-status">Loading graph...</div>
       {:else if error}
         <div class="graph-status">{error}</div>
+      {:else}
+        <SvelteFlow
+          {nodes}
+          {edges}
+          {nodeTypes}
+          fitView
+          nodesDraggable={false}
+          nodesConnectable={false}
+          elementsSelectable={false}
+          panOnDrag={true}
+          zoomOnScroll={true}
+          onnodeclick={handleNodeClick}
+          colorMode="dark"
+        >
+          <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
+        </SvelteFlow>
       {/if}
-      <div bind:this={container} class="chart-container"></div>
     </div>
 
-    <div class="detail-panel">
-      {#if selectedNode}
-        <div class="detail-section">
-          <div class="detail-label">Agent</div>
-          <div class="detail-value" style="color: {roleColor(selectedNode.id)}">
-            {selectedNode.role}
-          </div>
+    <div
+      class="timeline-panel"
+      bind:this={listContainer}
+      onkeydown={handleListKeydown}
+      tabindex="0"
+      role="listbox"
+    >
+      {#if filterAgentId}
+        <div class="filter-bar">
+          <span>Showing: <strong style="color: {roleColor(filterAgentId)}">{filterAgentName}</strong> ({filterCount} messages)</span>
+          <button class="filter-clear" onclick={() => filterAgentId = null}>&times;</button>
         </div>
-        <div class="detail-section">
-          <div class="detail-label">Tokens</div>
-          <div class="detail-row">
-            <span>In:</span> <span class="detail-num">{selectedNode.tokens_in.toLocaleString()}</span>
-          </div>
-          <div class="detail-row">
-            <span>Out:</span> <span class="detail-num">{selectedNode.tokens_out.toLocaleString()}</span>
-          </div>
+      {/if}
+      {#each displayTimeline as evt (evt.index)}
+        <div
+          data-event-index={evt.index}
+          use:registerCard={evt.index}
+        >
+          <TimelineCard
+            event={evt}
+            agentColor={roleColor(evt.agent_id)}
+            selected={selectedEventIndex === evt.index}
+            onclick={() => handleCardClick(evt)}
+          />
         </div>
-        <div class="detail-section">
-          <div class="detail-label">Iterations</div>
-          <div class="detail-num">{selectedNode.iterations}</div>
-        </div>
-        {#if selectedNode.tool_calls.length > 0}
-          <div class="detail-section">
-            <div class="detail-label">Tool Calls</div>
-            {#each selectedNode.tool_calls as tc}
-              <div class="tool-row">
-                <span class="tool-name">{tc.name}</span>
-                <span class="tool-count">
-                  &times;{tc.count}
-                  {#if tc.success_rate < 1}
-                    <span class="tool-fail">({Math.round((1 - tc.success_rate) * tc.count)} fail)</span>
-                  {/if}
-                </span>
-              </div>
-            {/each}
-          </div>
-        {/if}
-      {:else}
-        <div class="detail-placeholder">
-          {#if graphData && graphData.nodes.length > 0}
-            <p>Click a node to see details</p>
-            <div class="detail-section">
-              <div class="detail-label">Summary</div>
-              <div class="detail-row"><span>Agents:</span> <span class="detail-num">{graphData.nodes.length}</span></div>
-              <div class="detail-row"><span>Topology:</span> <span class="detail-num">{graphData.topology}</span></div>
-              <div class="detail-row">
-                <span>Total tokens:</span>
-                <span class="detail-num">{graphData.nodes.reduce((s, n) => s + n.tokens_in + n.tokens_out, 0).toLocaleString()}</span>
-              </div>
-            </div>
-          {:else}
-            <p>No graph data</p>
-          {/if}
-        </div>
+      {/each}
+      {#if displayTimeline.length === 0 && !loading}
+        <div class="timeline-empty">No events to display</div>
       {/if}
     </div>
   </div>
@@ -251,19 +388,15 @@
   .graph-layout {
     display: flex;
     gap: 12px;
+    height: 500px;
   }
 
   .graph-panel {
-    flex: 2;
+    flex: 3;
     position: relative;
     background: rgba(255, 255, 255, 0.03);
     border-radius: 8px;
-    min-height: 400px;
-  }
-
-  .chart-container {
-    width: 100%;
-    height: 400px;
+    overflow: hidden;
   }
 
   .graph-status {
@@ -277,76 +410,59 @@
     z-index: 1;
   }
 
-  .detail-panel {
-    flex: 1;
-    background: rgba(255, 255, 255, 0.03);
-    border-radius: 8px;
-    padding: 16px;
-    min-height: 400px;
-    overflow-y: auto;
-  }
-
-  .detail-section {
-    margin-bottom: 16px;
-  }
-
-  .detail-label {
-    font-size: 11px;
-    color: #888;
-    text-transform: uppercase;
-    margin-bottom: 6px;
-    letter-spacing: 0.5px;
-  }
-
-  .detail-value {
-    font-size: 16px;
-    font-weight: 600;
-  }
-
-  .detail-row {
+  .timeline-panel {
+    flex: 2;
     display: flex;
+    flex-direction: column;
+    gap: 4px;
+    overflow-y: auto;
+    padding: 4px;
+    background: rgba(255, 255, 255, 0.02);
+    border-radius: 8px;
+    outline: none;
+  }
+
+  .timeline-panel:focus-visible {
+    outline: 1px solid rgba(74, 158, 255, 0.3);
+  }
+
+  .filter-bar {
+    display: flex;
+    align-items: center;
     justify-content: space-between;
-    font-size: 13px;
-    padding: 2px 0;
+    padding: 6px 10px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 4px;
+    font-size: 12px;
+    color: #ccc;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+
+  .filter-clear {
+    background: none;
+    border: none;
+    color: #888;
+    font-size: 16px;
+    cursor: pointer;
+    padding: 0 4px;
+  }
+
+  .filter-clear:hover {
     color: #ccc;
   }
 
-  .detail-num {
-    color: #4a9eff;
-    font-weight: 500;
-  }
-
-  .detail-placeholder {
+  .timeline-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 200px;
     color: #666;
     font-size: 13px;
-    padding-top: 20px;
   }
 
-  .detail-placeholder p {
-    text-align: center;
-    margin-bottom: 20px;
-  }
-
-  .tool-row {
-    display: flex;
-    justify-content: space-between;
-    padding: 4px 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-    font-size: 13px;
-    color: #ccc;
-  }
-
-  .tool-name {
-    font-family: monospace;
-    font-size: 12px;
-  }
-
-  .tool-count {
-    color: #4ade80;
-  }
-
-  .tool-fail {
-    color: #ff6b6b;
-    font-size: 11px;
+  :global(.svelte-flow) {
+    background: transparent !important;
   }
 </style>
