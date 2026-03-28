@@ -271,10 +271,25 @@ def _ensure_container(
     env = {**os.environ, "MSYS_NO_PATHCONV": "1"}
     tag = image_name(platform_id)
 
+    # Pass through API keys and config env vars
+    _PASSTHROUGH_VARS = [
+        "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY",
+        "OPENROUTER_API_KEY", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT",
+        "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST",
+        "LANGSMITH_API_KEY", "LANGCHAIN_API_KEY",
+        "DESMET_MODEL", "DESMET_TEMPERATURE", "DESMET_PROVIDER",
+    ]
+    env_flags: list[str] = []
+    for var in _PASSTHROUGH_VARS:
+        val = os.environ.get(var)
+        if val:
+            env_flags.extend(["-e", f"{var}={val}"])
+
     result = subprocess.run(
         [
             "docker", "run", "-d",
             "--name", name,
+            *env_flags,
             "-v", f"{workspace_abs}:/workspace",
             "-w", "/workspace",
             tag,
@@ -331,8 +346,8 @@ async def run_stage_in_container(
     # Run entrypoint via docker exec, streaming stderr
     env = {**os.environ, "MSYS_NO_PATHCONV": "1"}
     proc = await asyncio.create_subprocess_exec(
-        "docker", "exec", "-w", "/app", container,
-        "uv", "run", "python", "-m", "desmet.harness.entrypoint", "/workspace/.desmet-context.json",
+        "docker", "exec", container,
+        "/app/.venv/bin/python", "-m", "desmet.harness.entrypoint", "/workspace/.desmet-context.json",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=env,
