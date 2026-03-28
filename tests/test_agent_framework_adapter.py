@@ -113,6 +113,24 @@ class TestAgentFrameworkAdapterStructure:
         assert plan.files_to_create == ["main.py"]
 
 
+class TestLifecycle:
+    def test_initialize_is_coroutine(self, adapter):
+        assert inspect.iscoroutinefunction(adapter.initialize)
+
+    def test_shutdown_is_coroutine(self, adapter):
+        assert inspect.iscoroutinefunction(adapter.shutdown)
+
+    def test_health_check_is_coroutine(self, adapter):
+        assert inspect.iscoroutinefunction(adapter.health_check)
+
+    @pytest.mark.asyncio
+    async def test_shutdown_clears_state(self, adapter):
+        """shutdown() should reset client and initialized flag."""
+        await adapter.shutdown()
+        assert adapter._client is None
+        assert adapter._initialized is False
+
+
 class TestObservabilityMetadata:
     def test_observability_reports_stall_detection(self):
         adapter = AgentFrameworkAdapter()

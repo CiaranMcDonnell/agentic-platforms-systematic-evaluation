@@ -357,16 +357,10 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
             tools=reviewer_tools,
         )
 
-        # -- Step 4: Build manager agent (coordinator) -------------------------
-        manager_instructions = (
-            f"You are coordinating a software development team for the '{stage_name}' stage.\n"
-            f"The executor will implement the plan. The reviewer will verify completeness.\n"
-            "Delegate tasks to the executor first, then have the reviewer validate.\n"
-            "If the reviewer reports issues, send the executor back to fix them.\n"
-            "Stop when the reviewer confirms all artifacts are present."
-        )
-
-        # -- Step 5: MagenticOne orchestration ---------------------------------
+        # -- Step 4: MagenticOne orchestration ---------------------------------
+        # MagenticOneGroupChat uses an implicit manager (the model_client)
+        # that dynamically coordinates the participants, detects stalls,
+        # and manages retries — no explicit manager agent needed.
         max_rounds = max(3, context.max_iterations - 1)
 
         team = MagenticOneGroupChat(
