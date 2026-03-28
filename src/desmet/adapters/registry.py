@@ -42,9 +42,6 @@ ADAPTER_REGISTRY: dict[str, tuple[str, str]] = {
 }
 
 
-_PLATFORMS_YAML = Path(__file__).resolve().parents[3] / "config" / "platforms.yaml"
-_platforms_cache: dict[str, dict] | None = None
-
 _CATEGORY_MAP = {
     "multi_agent_framework": PlatformCategory.MULTI_AGENT_FRAMEWORK,
     "agent_sdk_runtime": PlatformCategory.AGENT_SDK_RUNTIME,
@@ -58,14 +55,12 @@ _RUNTIME_MAP = {
 }
 
 
-def _load_platforms_yaml() -> dict[str, dict]:
-    global _platforms_cache
-    if _platforms_cache is not None:
-        return _platforms_cache
-    with open(_PLATFORMS_YAML, encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    _platforms_cache = {p["id"]: p for p in data["platforms"]}
-    return _platforms_cache
+# Re-export from lightweight module (avoids circular import through adapters.__init__)
+from desmet.platforms_config import (  # noqa: E402, F401
+    _load_platforms_yaml,
+    get_platform_field,
+    get_platforms_config,
+)
 
 
 def load_platform_info(platform_id: str) -> PlatformInfo:

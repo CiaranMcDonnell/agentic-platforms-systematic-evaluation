@@ -14,14 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-import yaml
-
-def _load_platforms_config() -> dict[str, dict]:
-    """Load platform config from YAML without triggering heavy adapter imports."""
-    yaml_path = Path(__file__).resolve().parent.parent.parent / "config" / "platforms.yaml"
-    with open(yaml_path, encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    return {p["id"]: p for p in data["platforms"]}
+from desmet.platforms_config import get_platforms_config
 
 COMPOSE_FILE = (
     Path(__file__).resolve().parent.parent.parent
@@ -40,7 +33,7 @@ PROFILE_TARGETS: dict[str, list[str]] = {
 }
 
 # ── Evaluation platforms (derived from config/platforms.yaml) ───────────
-_platforms = _load_platforms_config()
+_platforms = get_platforms_config()
 
 PLATFORM_PACKAGES: dict[str, str | None] = {
     pid: data.get("python_package") for pid, data in _platforms.items()

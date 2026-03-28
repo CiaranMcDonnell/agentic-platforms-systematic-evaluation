@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from desmet.platforms_config import get_platforms_config
 from desmet.harness.store import ResultStore
 
 import pandas as pd
@@ -65,26 +66,21 @@ def _get_store() -> ResultStore:
 
 
 # ---------------------------------------------------------------------------
-# Platform colours -- fixed per category for consistent visual identity
+# Platform colours -- derived from config/platforms.yaml
 # ---------------------------------------------------------------------------
 
-CATEGORY_COLOURS: dict[str, dict[str, str]] = {
-    "multi_agent_framework": {
-        "langgraph": "#818cf8",          # indigo (lighter, reads well on dark)
-        "crewai": "#fb7185",             # rose
-        "microsoft_agent_framework": "#7dd3fc",  # sky
-    },
-    "agent_sdk_runtime": {
-        "openai_agents_sdk": "#fbbf24",  # amber (distinct from sky/teal)
-        "google_adk": "#2dd4bf",         # teal
-    },
-    "visual_workflow_platform": {
-        "flowise": "#fb923c",            # orange
-        "langflow": "#a78bfa",           # violet (replaces yellow)
-        "dify": "#f87171",              # coral
-        "n8n": "#34d399",               # emerald
-    },
-}
+def _build_category_colours() -> dict[str, dict[str, str]]:
+    """Build ``{category: {platform_id: colour}}`` from platforms.yaml."""
+    result: dict[str, dict[str, str]] = {}
+    for pid, data in get_platforms_config().items():
+        cat = data.get("category", "")
+        colour = data.get("colour")
+        if colour:
+            result.setdefault(cat, {})[pid] = colour
+    return result
+
+
+CATEGORY_COLOURS: dict[str, dict[str, str]] = _build_category_colours()
 
 # Build a flat lookup: platform_id -> colour
 _PLATFORM_COLOUR_MAP: dict[str, str] = {

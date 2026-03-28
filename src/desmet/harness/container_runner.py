@@ -16,6 +16,7 @@ from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import Any
 
+from desmet.platforms_config import get_platform_field, get_platforms_config
 from desmet.harness.context import StageContext
 from desmet.harness.results import StageResult
 
@@ -25,34 +26,26 @@ _INFRA_DIR = Path(__file__).resolve().parents[3] / "infrastructure"
 _IMAGE_TAG = "1.0"
 _BASE_IMAGE = f"desmet-eval-base:{_IMAGE_TAG}"
 
-PLATFORM_EXTRA_MAP: dict[str, str] = {
-    "langgraph": "langgraph",
-    "crewai": "crewai",
-    "openai_agents_sdk": "openai-agents",
-    "microsoft_agent_framework": "agent-framework",
-    "google_adk": "google-adk",
-}
-
-_DOCKERFILE_SUFFIX: dict[str, str] = {
-    "langgraph": "langgraph",
-    "crewai": "crewai",
-    "openai_agents_sdk": "openai-agents",
-    "microsoft_agent_framework": "agent-framework",
-    "google_adk": "google-adk",
-}
-
 _STAGE_NAMES = {"requirements", "codegen", "testing", "deploy"}
+
+# Built from config/platforms.yaml — maps SDK platform IDs to their pip extra.
+# Visual platforms (no pip_extra) are excluded.
+PLATFORM_EXTRA_MAP: dict[str, str] = {
+    pid: data["pip_extra"]
+    for pid, data in get_platforms_config().items()
+    if data.get("pip_extra")
+}
 
 
 def image_name(platform_id: str) -> str:
     """Return the Docker image tag for a platform."""
-    suffix = _DOCKERFILE_SUFFIX.get(platform_id, platform_id)
+    suffix = get_platform_field(platform_id, "pip_extra", platform_id)
     return f"desmet-eval-{suffix}:{_IMAGE_TAG}"
 
 
 def dockerfile_path(platform_id: str) -> Path:
     """Return the Dockerfile path for a platform."""
-    suffix = _DOCKERFILE_SUFFIX.get(platform_id, platform_id)
+    suffix = get_platform_field(platform_id, "pip_extra", platform_id)
     return _INFRA_DIR / f"Dockerfile.{suffix}"
 
 
@@ -241,7 +234,7 @@ def build_image_streaming(
 
 def _container_name(platform_id: str, story_id: str) -> str:
     """Deterministic container name for a platform+story run."""
-    suffix = _DOCKERFILE_SUFFIX.get(platform_id, platform_id)
+    suffix = get_platform_field(platform_id, "pip_extra", platform_id)
     return f"desmet-run-{suffix}-{story_id}"
 
 
