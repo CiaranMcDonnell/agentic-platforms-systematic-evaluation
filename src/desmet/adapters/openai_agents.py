@@ -203,7 +203,7 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
         Returns (total_iterations, hit_limit).
         """
         from agents import Agent, ModelSettings, Runner
-        from agents.exceptions import OutputGuardrailTripwireTriggered
+        from agents.exceptions import MaxTurnsExceeded, OutputGuardrailTripwireTriggered
 
         planner_persona = get_sub_persona("planner")
         executor_persona = get_stage_persona(stage_name)
@@ -217,22 +217,44 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
 
         record_message(trace, "user", prompt)
 
-        # ── Step 1: Planner agent (structured output, no tools) ────────────
-        planner = Agent(
-            name=f"desmet-{stage_name}-planner",
-            instructions=planner_persona.backstory,
-            model=self._model,
-            output_type=ImplementationPlan,
-            model_settings=ModelSettings(temperature=context.temperature),
-        )
+        # ── Step 1: Planner agent ────────────────────────────────────────
+        # Try structured output (output_type) first — only works with
+        # OpenAI models.  Fall back to free-text planning for other models.
+        plan: ImplementationPlan | None = None
+        try:
+            planner = Agent(
+                name=f"desmet_{stage_name}_planner",
+                instructions=planner_persona.backstory,
+                model=self._model,
+                output_type=ImplementationPlan,
+                model_settings=ModelSettings(temperature=context.temperature),
+            )
+            planner_result = await Runner.run(planner, input=prompt, max_turns=3)
 
-        planner_result = await Runner.run(planner, input=prompt, max_turns=3)
+            if isinstance(planner_result.final_output, ImplementationPlan):
+                plan = planner_result.final_output
+        except Exception:
+            pass  # structured output not supported — fall back below
 
-        if isinstance(planner_result.final_output, ImplementationPlan):
-            plan = planner_result.final_output
-        else:
+        if plan is None:
+            # Free-text fallback: no output_type, parse steps from text
+            planner = Agent(
+                name=f"desmet_{stage_name}_planner",
+                instructions=(
+                    f"{planner_persona.backstory}\n\n"
+                    "Produce a numbered implementation plan listing steps, "
+                    "files to create, and files to modify."
+                ),
+                model=self._model,
+                model_settings=ModelSettings(temperature=context.temperature),
+            )
+            planner_result = await Runner.run(planner, input=prompt, max_turns=3)
+            text = str(planner_result.final_output or "")
+            # Parse numbered steps from free text
+            import re
+            steps = [m.group(1).strip() for m in re.finditer(r"^\d+\.\s+(.*)", text, re.MULTILINE)]
             plan = ImplementationPlan(
-                steps=[str(planner_result.final_output)],
+                steps=steps or [text],
                 files_to_create=[],
                 files_to_modify=[],
             )
@@ -244,13 +266,13 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
         total_iterations += iters
 
         if cb:
-            cb(f"    planner: {len(plan.steps)} steps, {len(plan.files_to_create)} files to create")
+            cb(f"    planner: {len(plan.steps)} steps planned")
 
         # ── Step 2: Build executor + reviewer agents ───────────────────────
         guardrail = _make_workspace_guardrail(stage_name, str(context.workspace))
 
         reviewer_agent = Agent(
-            name=f"desmet-{stage_name}-reviewer",
+            name=f"desmet_{stage_name}_reviewer",
             instructions=reviewer_persona.backstory,
             model=self._model,
             tools=tools,
@@ -271,7 +293,7 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
             executor_instructions += f"\n## Additional Context\n{system_msg}\n"
 
         executor_agent = Agent(
-            name=f"desmet-{stage_name}-executor",
+            name=f"desmet_{stage_name}_executor",
             instructions=executor_instructions,
             model=self._model,
             tools=tools,
@@ -280,7 +302,9 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
         )
 
         # ── Step 3: Retry loop ─────────────────────────────────────────────
-        max_turns = (context.max_iterations - 3) // MAX_RETRIES
+        # Give each attempt a generous turn budget. The planner used ~3 turns,
+        # so the remaining budget is split across retry attempts.
+        max_turns = max(10, (context.max_iterations - 3) // MAX_RETRIES)
         result = None
 
         for attempt in range(MAX_RETRIES):
@@ -328,6 +352,17 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
                     _, hint = _check_completion(context.workspace, stage_name)
                     elapsed = time.monotonic() - t0
                     cb(f"    reviewer: FAILED (attempt {attempt + 1}/{MAX_RETRIES}) — {hint}  ({elapsed:.0f}s)")
+                if total_iterations >= context.max_iterations:
+                    hit_limit = True
+                    break
+                continue
+
+            except MaxTurnsExceeded:
+                # Executor/reviewer exhausted their turn budget — treat as retry
+                total_iterations += max_turns
+                if cb:
+                    elapsed = time.monotonic() - t0
+                    cb(f"    max turns exceeded (attempt {attempt + 1}/{MAX_RETRIES})  ({elapsed:.0f}s)")
                 if total_iterations >= context.max_iterations:
                     hit_limit = True
                     break
