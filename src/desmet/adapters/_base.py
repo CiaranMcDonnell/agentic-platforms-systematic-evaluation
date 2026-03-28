@@ -13,7 +13,6 @@ direction (``harness`` never imports from ``adapters``).
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import Any
 
 from desmet.adapters._prompts import (
     build_codegen_prompt,
@@ -23,6 +22,7 @@ from desmet.adapters._prompts import (
     build_testing_prompt,
 )
 from desmet.adapters._tools import ToolFormat, create_tools
+from desmet.adapters._observation import ObservationCollector, ObservationRequirements
 from desmet.adapters._tracing import (
     build_stage_result,
     compute_framework_metrics,
@@ -38,7 +38,6 @@ from desmet.harness.results import (
     StageResult,
     TestResult,
 )
-from desmet.harness.trace import AgentTrace
 
 
 class ToolAgentAdapter(BasePlatformAdapter):
@@ -58,14 +57,25 @@ class ToolAgentAdapter(BasePlatformAdapter):
         prompt: str,
         system_msg: str | None,
         tools: list,
-        trace: AgentTrace,
+        collector: ObservationCollector,
         context: StageContext,
     ) -> tuple[int, bool]:
         """Run the platform-specific agent for one SDLC stage.
 
+        Records observation data via *collector*.  The caller (``_execute_stage``)
+        creates the collector and seals it after this method returns.
+
         Returns ``(iterations, hit_limit)``.
         """
         ...
+
+    def observation_requirements(self) -> ObservationRequirements:
+        """Override to adjust completeness requirements per adapter."""
+        return ObservationRequirements()
+
+    def _get_model_name(self) -> str | None:
+        """Override to provide the model name for usage recording."""
+        return None
 
     # ── Template method ──────────────────────────────────────────────────
 
@@ -77,6 +87,8 @@ class ToolAgentAdapter(BasePlatformAdapter):
         context: StageContext,
     ) -> StageResult:
         """Shared template: build prompt → create tools → run agent → build result."""
+        import logging
+
         trace = start_trace()
         try:
             if stage_name == "codegen":
@@ -93,9 +105,26 @@ class ToolAgentAdapter(BasePlatformAdapter):
                 story_id=context.story.id,
                 stage_name=stage_name,
             )
-            iterations, hit_limit = await self._run_agent(
-                stage_name, prompt, system_msg, tools, trace, context,
+            collector = ObservationCollector(
+                trace,
+                model=self._get_model_name(),
+                requirements=self.observation_requirements(),
             )
+            iterations, hit_limit = await self._run_agent(
+                stage_name, prompt, system_msg, tools, collector, context,
+            )
+            warnings = collector.seal()
+            if warnings:
+                log = logging.getLogger(
+                    f"desmet.adapters.{self.platform_info.id}"
+                )
+                for w in warnings:
+                    log.warning(
+                        "Observation gap [%s/%s]: %s",
+                        self.platform_info.id,
+                        stage_name,
+                        w,
+                    )
             fm = compute_framework_metrics(trace, context.max_iterations)
             return build_stage_result(
                 result_cls, self.platform_info.id, stage_name,
