@@ -132,6 +132,8 @@ def get_container_status(container_name: str) -> str:
 
 
 def get_platform_statuses() -> list[PlatformStatus]:
+    from desmet.harness.container_runner import has_image
+
     statuses = []
     for pid in PLATFORM_PACKAGES:
         name = PLATFORM_NAMES[pid]
@@ -139,13 +141,22 @@ def get_platform_statuses() -> list[PlatformStatus]:
         container = PLATFORM_CONTAINERS[pid]
 
         if package is not None:
-            installed = is_package_importable(package)
-            statuses.append(PlatformStatus(
-                platform_id=pid,
-                name=name,
-                infra_type="Python SDK",
-                status="ready" if installed else "not installed",
-            ))
+            # SDK platform: check for container image first, then local install
+            if has_image(pid):
+                statuses.append(PlatformStatus(
+                    platform_id=pid,
+                    name=name,
+                    infra_type="Docker (isolated)",
+                    status="ready",
+                ))
+            else:
+                installed = is_package_importable(package)
+                statuses.append(PlatformStatus(
+                    platform_id=pid,
+                    name=name,
+                    infra_type="Python SDK",
+                    status="ready" if installed else "not installed",
+                ))
         else:
             container_status = get_container_status(container) if container else "not started"
             statuses.append(PlatformStatus(
