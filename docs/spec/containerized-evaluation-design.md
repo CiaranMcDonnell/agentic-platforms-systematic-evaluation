@@ -30,7 +30,7 @@ Host (webui + harness + runner)
 ### Docker Image Structure
 
 **Base image** (`infrastructure/Dockerfile.base`):
-Extends the existing `Dockerfile.eval`. Ubuntu 24.04, Python 3.11, uv, bun, git, Mermaid CLI. Installs the desmet package with core dependencies only (no platform extras).
+Formerly `Dockerfile.eval`, now `Dockerfile.base`. Ubuntu 24.04, Python 3.11, uv, bun, git, Mermaid CLI. Installs the desmet package with core dependencies only (no platform extras).
 
 Image tag: `desmet-eval-base:1.0`
 

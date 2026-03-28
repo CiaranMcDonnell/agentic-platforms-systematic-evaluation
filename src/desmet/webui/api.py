@@ -233,8 +233,13 @@ async def get_platforms():
         package = PLATFORM_PACKAGES[pid]
 
         if package is not None:
-            status = "ready" if is_package_importable(package) else "not installed"
-            infra_type = "Python SDK"
+            from desmet.harness.container_runner import has_image
+            if has_image(pid):
+                status = "ready"
+                infra_type = "Docker (isolated)"
+            else:
+                status = "ready" if is_package_importable(package) else "not installed"
+                infra_type = "Python SDK"
         else:
             status = "unknown"
             infra_type = "Docker"

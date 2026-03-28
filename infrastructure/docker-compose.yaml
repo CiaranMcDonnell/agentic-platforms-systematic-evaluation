@@ -61,7 +61,7 @@ services:
   eval-env:
     build:
       context: .
-      dockerfile: Dockerfile.eval
+      dockerfile: Dockerfile.base
     container_name: desmet-eval-env
     volumes:
       - ../../results:/results

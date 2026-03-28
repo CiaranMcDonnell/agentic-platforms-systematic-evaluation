@@ -5,7 +5,7 @@
 # full software lifecycle (requirements -> code -> test -> build -> deploy).
 #
 # Build:
-#   docker build -f infrastructure/Dockerfile.eval -t desmet-eval-env:1.0 infrastructure/
+#   docker build -f infrastructure/Dockerfile.base -t desmet-eval-base:1.0 .
 #
 # Run (per story):
 #   docker run --rm \
