@@ -51,7 +51,7 @@ export = [
     "kaleido>=1.0.0",
 ]
 agent-framework = [
-    "agent-framework>=1.0rc5",
+    "agent-framework-core>=1.0rc5",
 ]
 google-adk = [
     "google-adk>=1.0.0",
@@ -89,11 +89,30 @@ packages = ["src/desmet"]
 # ── uv ──────────────────────────────────────────────────────────────────────
 
 [tool.uv]
+# Ensure uv resolves wheels that work on Windows (lancedb has no win_amd64 wheels).
+required-environments = [
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+]
+
 # Many platform SDKs pin conflicting transitive dependency versions (especially
 # pydantic, openai, litellm). Each platform extra is intended to be installed in
 # isolation — pick ONE per virtual-env. Declare all known conflicts so uv can
 # resolve the base dependencies without trying to unify incompatible extras.
-conflicts = []
+conflicts = [
+    [
+        { extra = "agent-framework" },
+        { extra = "google-adk" },
+    ],
+]
+
+# agent-framework-core requires opentelemetry-api>=1.39 but crewai pins <1.35.
+# Since agent-framework and crewai are declared conflicting (never co-installed),
+# loosen the OTEL lower bounds so uv can resolve both extras independently.
+override-dependencies = [
+    "opentelemetry-api>=1.34.0",
+    "opentelemetry-sdk>=1.34.0",
+]
+
 
 # ── Tool config ─────────────────────────────────────────────────────────────
 

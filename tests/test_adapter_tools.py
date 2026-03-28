@@ -356,3 +356,52 @@ class TestDeployRemoteTool:
             platform_id="crewai", story_id="US-001",
         )
         assert len(tools) == 2
+
+
+class TestAgentFrameworkToolFormat:
+    def test_agent_framework_enum_exists(self):
+        from desmet.adapters._tools import ToolFormat
+        assert hasattr(ToolFormat, "AGENT_FRAMEWORK")
+
+    def test_create_agent_framework_tools(self, tmp_path):
+        from desmet.adapters._tools import ToolFormat, create_tools
+        tools = create_tools(
+            tmp_path,
+            ["read_file", "write_file", "list_directory"],
+            fmt=ToolFormat.AGENT_FRAMEWORK,
+        )
+        assert len(tools) == 3
+
+    def test_agent_framework_tools_are_callable(self, tmp_path):
+        from desmet.adapters._tools import ToolFormat, create_tools
+        tools = create_tools(tmp_path, ["read_file"], fmt=ToolFormat.AGENT_FRAMEWORK)
+        assert callable(tools[0])
+
+    def test_agent_framework_read_file_works(self, tmp_path):
+        from desmet.adapters._tools import ToolFormat, create_tools
+        (tmp_path / "hello.txt").write_text("world")
+        tools = create_tools(tmp_path, ["read_file"], fmt=ToolFormat.AGENT_FRAMEWORK)
+        read_file = tools[0]
+        result = read_file(path="hello.txt")
+        assert result == "world"
+
+    def test_agent_framework_check_completion_included(self, tmp_path):
+        from desmet.adapters._tools import ToolFormat, create_tools
+        tools = create_tools(
+            tmp_path,
+            ["check_completion"],
+            fmt=ToolFormat.AGENT_FRAMEWORK,
+            stage_name="codegen",
+        )
+        assert len(tools) == 1
+
+    def test_agent_framework_tools_have_descriptions(self, tmp_path):
+        """Agent Framework @tool functions need docstrings for schema inference."""
+        from desmet.adapters._tools import ToolFormat, create_tools
+        tools = create_tools(
+            tmp_path,
+            ["read_file", "write_file", "execute_shell"],
+            fmt=ToolFormat.AGENT_FRAMEWORK,
+        )
+        for t in tools:
+            assert t.__doc__ is not None and len(t.__doc__) > 5

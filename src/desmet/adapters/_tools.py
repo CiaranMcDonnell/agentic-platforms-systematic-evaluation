@@ -22,6 +22,7 @@ class ToolFormat(Enum):
     LANGCHAIN = "langchain"  # @tool decorated functions
     CREWAI = "crewai"  # BaseTool subclasses
     OPENAI_AGENTS = "openai_agents"  # OpenAI Agents SDK FunctionTool instances
+    AGENT_FRAMEWORK = "agent_framework"  # Microsoft Agent Framework @tool functions
     CALLABLE = "callable"  # plain Python callables
 
 
@@ -99,58 +100,153 @@ def _list_directory(workspace: Path, path: str = ".") -> str:
     return f"Directory not found: {path}"
 
 
-def _find_bash() -> str | None:
-    """Find a bash executable (Git Bash or WSL) on Windows, None on Unix."""
-    import shutil
-    import sys
+_EVAL_IMAGE = os.environ.get("DESMET_EVAL_IMAGE", "desmet-eval-env:1.0")
+_SHELL_TIMEOUT = 120  # mermaid rendering w/ Puppeteer needs >30s
 
-    if sys.platform != "win32":
-        return None  # Unix already uses bash via shell=True
-
-    # Prefer Git Bash, then WSL bash
-    for candidate in [
-        r"C:\Program Files\Git\usr\bin\bash.exe",
-        r"C:\Windows\System32\bash.exe",
-    ]:
-        if Path(candidate).exists():
-            return candidate
-    return shutil.which("bash")
+# Container registry: maps container name → True while running.
+# Containers are started lazily on first execute_shell call and cleaned
+# up by stop_eval_container().
+_running_containers: dict[str, bool] = {}
 
 
-_BASH_PATH: str | None = _find_bash()
+def _eval_container_name(platform_id: str | None, story_id: str | None) -> str:
+    """Deterministic container name for a platform+story evaluation run."""
+    p = platform_id or "default"
+    s = story_id or "default"
+    return f"desmet-eval-{p}-{s}"
 
 
-def _execute_shell(workspace: Path, command: str) -> str:
-    """Run a shell command with cwd=workspace, timeout 30 s.
+def _ensure_eval_container(
+    container_name: str, workspace: Path
+) -> bool:
+    """Start the eval container if not already running.
 
-    Uses bash when available (Git Bash / WSL on Windows) instead of
-    cmd.exe, which avoids PowerShell profile errors and gives agents
-    a Unix-compatible shell.
-
-    NOTE: This tool is intentionally unsandboxed beyond cwd — it can run
-    arbitrary shell commands.  Production deployments should rely on
-    container-level isolation (Docker) to restrict blast radius.  The
-    ``allowed_tools`` list in StageContext can be used to disable this
-    tool for stories that don't need shell access.
+    Returns True if the container is ready, False on failure.
     """
+    if _running_containers.get(container_name):
+        return True
+
+    # Check if already running (from a previous invocation)
     try:
-        if _BASH_PATH:
-            result = subprocess.run(
-                [_BASH_PATH, "-c", command],
-                cwd=workspace,
-                capture_output=True,
-                text=True,
-                timeout=30,
+        probe = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", container_name],
+            capture_output=True, text=True, timeout=10,
+        )
+        if probe.returncode == 0 and "true" in probe.stdout.lower():
+            _running_containers[container_name] = True
+            return True
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+    # Start container: mount workspace at /workspace, run bash -c 'sleep infinity'
+    workspace_abs = str(workspace.resolve()).replace("\\", "/")
+
+    # Build the docker run command.  On Windows (Git Bash / MSYS), path
+    # arguments like /workspace are mangled to C:/Program Files/Git/workspace.
+    # Setting MSYS_NO_PATHCONV=1 in the subprocess env disables this.
+    env = {**os.environ, "MSYS_NO_PATHCONV": "1"}
+
+    run_cmd = [
+        "docker", "run", "-d",
+        "--name", container_name,
+        "-v", f"{workspace_abs}:/workspace",
+        "-w", "/workspace",
+        _EVAL_IMAGE,
+        "bash", "-c", "sleep infinity",
+    ]
+    try:
+        result = subprocess.run(
+            run_cmd, capture_output=True, text=True, timeout=60, env=env,
+        )
+        if result.returncode != 0:
+            # Container name might exist but be stopped — remove and retry
+            subprocess.run(
+                ["docker", "rm", "-f", container_name],
+                capture_output=True, timeout=10,
             )
-        else:
             result = subprocess.run(
-                command,
-                shell=True,
-                cwd=workspace,
-                capture_output=True,
-                text=True,
-                timeout=30,
+                run_cmd, capture_output=True, text=True, timeout=60, env=env,
             )
+        if result.returncode == 0:
+            _running_containers[container_name] = True
+            return True
+        return False
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def stop_eval_container(
+    platform_id: str | None = None,
+    story_id: str | None = None,
+    container_name: str | None = None,
+) -> None:
+    """Stop and remove an eval container.
+
+    Call with either ``container_name`` directly or ``platform_id`` +
+    ``story_id`` to derive it.
+    """
+    name = container_name or _eval_container_name(platform_id, story_id)
+    _running_containers.pop(name, None)
+    try:
+        subprocess.run(
+            ["docker", "rm", "-f", name],
+            capture_output=True, timeout=15,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+
+def _execute_shell(
+    workspace: Path,
+    command: str,
+    *,
+    container_name: str | None = None,
+) -> str:
+    """Run a shell command, either inside a Docker eval container or locally.
+
+    When ``container_name`` is provided, the command runs via
+    ``docker exec`` inside the ``desmet-eval-env`` container (started
+    lazily).  The workspace is bind-mounted at ``/workspace`` so all
+    file-system tools and shell commands see the same files.
+
+    When ``container_name`` is ``None``, falls back to local execution
+    (Git Bash on Windows, ``/bin/bash`` on Unix).
+    """
+    if container_name is not None:
+        if not _ensure_eval_container(container_name, workspace):
+            return "Error: failed to start eval container"
+        try:
+            env = {**os.environ, "MSYS_NO_PATHCONV": "1"}
+            result = subprocess.run(
+                [
+                    "docker", "exec", container_name,
+                    "bash", "-c", command,
+                ],
+                capture_output=True, text=True,
+                timeout=_SHELL_TIMEOUT,
+                env=env,
+            )
+            output = result.stdout + result.stderr
+            # Cap output to 2000 chars so LLMs see the key error message
+            # instead of drowning in stack traces
+            if len(output) > 2000:
+                output = output[:1000] + "\n...(truncated)...\n" + output[-800:]
+            return output if output else "(no output)"
+        except subprocess.TimeoutExpired:
+            return "Command timed out"
+        except Exception as exc:
+            return f"Error: {exc}"
+
+    # Local fallback
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            timeout=_SHELL_TIMEOUT,
+        )
         output = result.stdout + result.stderr
         return output if output else "(no output)"
     except subprocess.TimeoutExpired:
@@ -301,15 +397,71 @@ def _deploy_remote(
     timeouts = {"restart": 180, "health_check": 30}
 
     if action == "restart":
-        # SSH to server: clone/pull the branch, then docker compose up
+        # SSH to server: clone or pull the branch, then docker compose up.
+        # The restricted shell (desmet-shell) allows:
+        #   git clone [-b branch] <url> <path>
+        #   cd <path> && git pull|fetch|status|log
+        #   docker compose --project-directory <path> <subcommand>
+        import subprocess as _sp
+
+        # Step 1: git clone (first deploy) or cd && git pull (subsequent)
+        clone_result = _sp.run(
+            f'{ssh_opts} {user}@{host} '
+            f'"git clone -b {branch} {deploy_repo} {remote_path}"',
+            shell=True, capture_output=True, text=True, timeout=120,
+        )
+        if clone_result.returncode != 0:
+            # Already cloned — pull latest
+            _sp.run(
+                f'{ssh_opts} {user}@{host} '
+                f'"cd {remote_path} && git fetch origin {branch}"',
+                shell=True, capture_output=True, text=True, timeout=60,
+            )
+            _sp.run(
+                f'{ssh_opts} {user}@{host} '
+                f'"cd {remote_path} && git pull origin {branch}"',
+                shell=True, capture_output=True, text=True, timeout=60,
+            )
+
+        # Step 2: docker compose up.
+        # Write .env into workspace before the git push (done in the push
+        # action) so docker compose reads COMPOSE_PROJECT_NAME and PORT
+        # automatically from the working directory.
+        compose_project = f"{platform_id}-{story_id}".lower()
+        env_file = workspace / ".env"
+        # Write/overwrite compose vars (filter out old values, append new)
+        existing = env_file.read_text() if env_file.exists() else ""
+        lines = [
+            ln for ln in existing.splitlines()
+            if not ln.startswith("COMPOSE_PROJECT_NAME=")
+            and not ln.startswith("PORT=")
+        ]
+        lines.append(f"COMPOSE_PROJECT_NAME={compose_project}")
+        lines.append(f"PORT={port}")
+        env_file.write_text("\n".join(lines) + "\n")
+
+        # Re-push so .env is on the server
+        _sp.run(
+            ["git", "add", "-A"], cwd=workspace, capture_output=True, timeout=10,
+        )
+        _sp.run(
+            ["git", "commit", "-m", "add compose env"], cwd=workspace,
+            capture_output=True, timeout=10,
+        )
+        push_url = _git_push_url(deploy_repo)
+        _sp.run(
+            ["git", "push", "deploy", f"HEAD:{branch}", "--force"],
+            cwd=workspace, capture_output=True, timeout=60,
+        )
+        # Pull on server
+        _sp.run(
+            f'{ssh_opts} {user}@{host} "cd {remote_path} && git pull origin {branch}"',
+            shell=True, capture_output=True, text=True, timeout=60,
+        )
+
         cmd = (
             f'{ssh_opts} {user}@{host} '
-            f'"mkdir -p {remote_path} && cd {remote_path} '
-            f"&& (git -C . rev-parse 2>/dev/null "
-            f"&& git fetch origin {branch} && git checkout FETCH_HEAD "
-            f"|| git clone -b {branch} {deploy_repo} .) "
-            f"&& COMPOSE_PROJECT_NAME={platform_id}-{story_id} "
-            f'PORT={port} docker compose up -d --build"'
+            f'"cd {remote_path} && docker compose up -d --build"'
         )
     elif action == "health_check":
         cmd = (
@@ -373,6 +525,7 @@ def _check_completion(workspace: Path, stage: str) -> tuple[bool, str]:
 def _build_callable_tools(workspace: Path, tool_names: list[str], platform_id=None, story_id=None, stage_name=None) -> list:
     """Return plain callables with meaningful ``__name__`` attributes."""
     tools: list = []
+    cname = _eval_container_name(platform_id, story_id) if platform_id else None
 
     for name in tool_names:
         if name == "read_file":
@@ -396,7 +549,7 @@ def _build_callable_tools(workspace: Path, tool_names: list[str], platform_id=No
         elif name == "execute_shell":
             def execute_shell(*, command: str) -> str:
                 """Execute a shell command."""
-                return _execute_shell(workspace, command)
+                return _execute_shell(workspace, command, container_name=cname)
             tools.append(execute_shell)
 
         elif name == "search_code":
@@ -426,6 +579,7 @@ def _build_langchain_tools(workspace: Path, tool_names: list[str], platform_id=N
     from langchain.tools import tool as lc_tool
 
     tools: list = []
+    cname = _eval_container_name(platform_id, story_id) if platform_id else None
 
     for name in tool_names:
         if name == "read_file":
@@ -453,7 +607,7 @@ def _build_langchain_tools(workspace: Path, tool_names: list[str], platform_id=N
             @lc_tool
             def execute_shell(command: str) -> str:
                 """Execute a shell command."""
-                return _execute_shell(workspace, command)
+                return _execute_shell(workspace, command, container_name=cname)
             tools.append(execute_shell)
 
         elif name == "search_code":
@@ -493,6 +647,7 @@ def _build_crewai_tools(workspace: Path, tool_names: list[str], platform_id=None
     from pydantic import BaseModel, Field
 
     tools: list = []
+    cname = _eval_container_name(platform_id, story_id) if platform_id else None
 
     if "read_file" in tool_names:
 
@@ -551,7 +706,7 @@ def _build_crewai_tools(workspace: Path, tool_names: list[str], platform_id=None
             args_schema: type[BaseModel] = ExecuteShellInput
 
             def _run(self, command: str) -> str:
-                return _execute_shell(workspace, command)
+                return _execute_shell(workspace, command, container_name=cname)
 
         tools.append(ExecuteShellTool())
 
@@ -613,6 +768,7 @@ def _build_openai_agents_tools(workspace: Path, tool_names: list[str], platform_
     from agents import function_tool
 
     tools: list = []
+    cname = _eval_container_name(platform_id, story_id) if platform_id else None
 
     if "read_file" in tool_names:
         @function_tool
@@ -639,7 +795,7 @@ def _build_openai_agents_tools(workspace: Path, tool_names: list[str], platform_
         @function_tool
         def execute_shell(command: str) -> str:
             """Execute a shell command in the project directory."""
-            return _execute_shell(workspace, command)
+            return _execute_shell(workspace, command, container_name=cname)
         tools.append(execute_shell)
 
     if "search_code" in tool_names:
@@ -658,6 +814,61 @@ def _build_openai_agents_tools(workspace: Path, tool_names: list[str], platform_
 
     if "check_completion" in tool_names:
         @function_tool
+        def check_completion() -> str:
+            """Check if all required artifacts are present in the workspace."""
+            _, msg = _check_completion(workspace, stage_name)
+            return msg
+        tools.append(check_completion)
+
+    return tools
+
+
+def _build_agent_framework_tools(workspace: Path, tool_names: list[str], platform_id=None, story_id=None, stage_name=None) -> list:
+    """Return plain callables for Microsoft Agent Framework.
+
+    Produces the same functions as the CALLABLE format.  The Agent Framework
+    adapter wraps these with ``@tool`` at runtime when the SDK is available.
+    """
+    tools: list = []
+    cname = _eval_container_name(platform_id, story_id) if platform_id else None
+
+    if "read_file" in tool_names:
+        def read_file(path: str) -> str:
+            """Read the contents of a file at the given relative path."""
+            return _read_file(workspace, path)
+        tools.append(read_file)
+
+    if "write_file" in tool_names:
+        def write_file(path: str, content: str) -> str:
+            """Write content to a file, creating parent directories as needed."""
+            return _write_file(workspace, path, content)
+        tools.append(write_file)
+
+    if "list_directory" in tool_names:
+        def list_directory(path: str = ".") -> str:
+            """List files and directories at the given relative path."""
+            return _list_directory(workspace, path)
+        tools.append(list_directory)
+
+    if "execute_shell" in tool_names:
+        def execute_shell(command: str) -> str:
+            """Execute a shell command in the project directory."""
+            return _execute_shell(workspace, command, container_name=cname)
+        tools.append(execute_shell)
+
+    if "search_code" in tool_names:
+        def search_code(pattern: str, path: str = ".") -> str:
+            """Search code files for lines matching a regex pattern."""
+            return _search_code(workspace, pattern, path)
+        tools.append(search_code)
+
+    if "deploy_remote" in tool_names:
+        def deploy_remote(action: str, url: str = "/health") -> str:
+            """Deploy to remote server: push artifacts, restart Docker, or health check."""
+            return _deploy_remote(workspace, platform_id, story_id, action, url)
+        tools.append(deploy_remote)
+
+    if "check_completion" in tool_names:
         def check_completion() -> str:
             """Check if all required artifacts are present in the workspace."""
             _, msg = _check_completion(workspace, stage_name)
@@ -723,5 +934,8 @@ def create_tools(
 
     if fmt is ToolFormat.OPENAI_AGENTS:
         return _build_openai_agents_tools(workspace, tool_names, **kwargs)
+
+    if fmt is ToolFormat.AGENT_FRAMEWORK:
+        return _build_agent_framework_tools(workspace, tool_names, **kwargs)
 
     raise ValueError(f"Unknown tool format: {fmt}")
