@@ -8,8 +8,9 @@
 import {
   fetchPlatforms, fetchStories, fetchConfig,
   fetchPlatformStatuses, fetchInfrastructure,
+  fetchImageDetails,
 } from './api';
-import type { Platform, Story, AppConfig, InfraService } from './api';
+import type { Platform, Story, AppConfig, InfraService, ImageDetail } from './api';
 
 // ── Shared reactive store object ─────────────────────────
 // Svelte 5 module context: exported $state variables cannot be reassigned,
@@ -23,6 +24,7 @@ export const store = $state({
   // Slow-live (fetched lazily, updated in background)
   platformStatuses: {} as Record<string, string>,
   infraServices: [] as InfraService[],
+  imageDetails: {} as Record<string, ImageDetail>,
 
   // Loading flags
   initialized: false,
@@ -53,6 +55,7 @@ export async function initData(): Promise<void> {
     // Fire-and-forget: slow checks resolve in background
     refreshPlatformStatuses().catch(() => {});
     refreshInfra().catch(() => {});
+    refreshImageDetails().catch(() => {});
   } catch (e) {
     store.initError = e instanceof Error ? e.message : 'Failed to load';
   }
@@ -67,4 +70,9 @@ export async function refreshPlatformStatuses(): Promise<void> {
 export async function refreshInfra(): Promise<void> {
   const res = await fetchInfrastructure();
   store.infraServices = res.services || [];
+}
+
+export async function refreshImageDetails(): Promise<void> {
+  const res = await fetchImageDetails();
+  store.imageDetails = res;
 }

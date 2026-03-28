@@ -332,6 +332,43 @@ export const dockerUp = (target: string) =>
 export const dockerDown = (target: string) =>
   request<{ success: boolean; message: string }>('/api/docker/down', { method: 'POST', body: JSON.stringify({ target }) });
 
+// ── Image build ───────────────────
+
+export interface ImageDetail {
+  exists: boolean;
+  tag: string | null;
+  size_bytes: number;
+  created_at: string;
+}
+
+export interface ImageBuildMessage {
+  platform?: string;
+  phase?: string;
+  line?: string;
+  status?: string;
+  error?: string;
+  done?: boolean;
+  summary?: { built: number; exists: number; failed: number };
+}
+
+export const buildImages = (platforms?: string[]) =>
+  request<{ images: Record<string, { status: string; reason?: string }> }>('/api/images/build', {
+    method: 'POST',
+    body: JSON.stringify(platforms ? { platforms } : {}),
+  });
+
+export const fetchImageStatus = () =>
+  request<Record<string, { exists: boolean }>>('/api/images/status');
+
+export const fetchImageDetails = () =>
+  request<Record<string, ImageDetail>>('/api/images/detail');
+
+export const deleteImage = (platformId: string) =>
+  request<{ success: boolean; message: string }>(`/api/images/${platformId}`, { method: 'DELETE' });
+
+export const rebuildImage = (platformId: string) =>
+  request<{ status: string; reason?: string }>(`/api/images/${platformId}/rebuild`, { method: 'POST' });
+
 // ── Infrastructure ─────────────────
 
 export interface InfraService {
@@ -428,5 +465,25 @@ export function connectRunLogs(runId: string, onMessage: (line: string) => void)
   const ws = new WebSocket(`${proto}//${location.host}/ws/runs/${runId}`);
   ws.onmessage = (e) => onMessage(e.data);
   ws.onerror = (e) => console.warn('[DESMET] WebSocket error for run', runId, e);
+  return ws;
+}
+
+export function connectImageBuild(
+  platforms: string[] | undefined,
+  onMessage: (msg: ImageBuildMessage) => void,
+): WebSocket {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(`${proto}//${location.host}/ws/images/build`);
+  ws.onopen = () => {
+    ws.send(JSON.stringify(platforms ? { platforms } : {}));
+  };
+  ws.onmessage = (e) => {
+    try {
+      onMessage(JSON.parse(e.data));
+    } catch {
+      console.warn('[DESMET] Failed to parse image build message', e.data);
+    }
+  };
+  ws.onerror = (e) => console.warn('[DESMET] Image build WS error', e);
   return ws;
 }
