@@ -290,8 +290,174 @@ class GoogleADKAdapter(ToolAgentAdapter):
 
         Returns (total_iterations, hit_limit).
         """
-        # Placeholder — will be implemented in Task 6
-        return 0, False
+        from google.adk.agents import Agent, LoopAgent, SequentialAgent
+        from google.adk.runners import Runner
+        from google.adk.sessions import InMemorySessionService
+        from google.adk.tools import exit_loop
+        from google.genai import types
+
+        total_iterations = 0
+        hit_limit = False
+
+        collector.record_message("user", prompt)
+
+        # ── Step 1: Planner ──────────────────────────────────────────────
+        plan = await self._run_planner(
+            stage_name, prompt, collector, progress,
+            temperature=context.temperature,
+        )
+        total_iterations += 1
+
+        # ── Step 2: Build executor and reviewer agents ───────────────────
+        executor_persona = get_stage_persona(stage_name)
+        reviewer_persona = get_sub_persona("reviewer")
+
+        executor_instructions = build_executor_instructions(
+            executor_persona, plan, system_msg,
+        )
+
+        executor_tools, reviewer_tools = split_tools(tools, self.TOOL_FORMAT)
+
+        gen_config = types.GenerateContentConfig(
+            temperature=context.temperature,
+        )
+
+        # Callback closures for observation tracking
+        def _after_model_callback(callback_context, response):
+            """Record token usage from every LLM call."""
+            usage = getattr(response, "usage_metadata", None)
+            if usage:
+                collector.record_llm_response(raw_usage=usage)
+            return None
+
+        def _after_tool_callback(tool_context, result, tool):
+            """Record tool execution for observation."""
+            tool_name = getattr(tool, "name", "") or getattr(tool, "__name__", "unknown")
+            args = getattr(tool_context, "function_call_args", {}) or {}
+            collector.record_tool_execution(tool_name, args, str(result) if result else "")
+            progress.tool_call(tool_name, args)
+            return None
+
+        executor_agent = Agent(
+            name=f"desmet_{stage_name}_executor",
+            model=self._model_id,
+            instruction=executor_instructions,
+            tools=executor_tools,
+            generate_content_config=gen_config,
+            after_model_callback=_after_model_callback,
+            after_tool_callback=_after_tool_callback,
+        )
+
+        reviewer_agent = Agent(
+            name=f"desmet_{stage_name}_reviewer",
+            model=self._model_id,
+            instruction=(
+                f"{reviewer_persona.backstory}\n\n"
+                "After the executor finishes, inspect the workspace using "
+                "the available tools and call check_completion to verify "
+                "all artifacts are present.\n"
+                "If check_completion reports VALIDATION PASSED, call exit_loop "
+                "to signal completion.\n"
+                "If validation fails, describe what is missing so the executor "
+                "can fix it on the next iteration."
+            ),
+            tools=reviewer_tools + [exit_loop],
+            generate_content_config=gen_config,
+            after_model_callback=_after_model_callback,
+            after_tool_callback=_after_tool_callback,
+        )
+
+        # ── Step 3: Build LoopAgent + SequentialAgent ────────────────────
+        loop_budget = max(3, context.max_iterations - 1)
+
+        execute_loop = LoopAgent(
+            name=f"desmet_{stage_name}_loop",
+            max_iterations=loop_budget,
+            sub_agents=[executor_agent, reviewer_agent],
+        )
+
+        pipeline = SequentialAgent(
+            name=f"desmet_{stage_name}_pipeline",
+            sub_agents=[execute_loop],
+        )
+
+        # ── Step 4: Stream events ────────────────────────────────────────
+        session_svc = InMemorySessionService()
+        runner = Runner(
+            app_name=f"desmet_{stage_name}",
+            agent=pipeline,
+            session_service=session_svc,
+        )
+        session = await session_svc.create_session(
+            app_name=f"desmet_{stage_name}", user_id="eval",
+        )
+
+        run_config = types.RunConfig(max_llm_calls=context.max_iterations)
+
+        run_t0 = time.monotonic()
+        try:
+            async for event in runner.run_async(
+                user_id="eval",
+                session_id=session.id,
+                new_message=types.Content(
+                    role="user", parts=[types.Part(text=prompt)],
+                ),
+                run_config=run_config,
+            ):
+                author = getattr(event, "author", "") or ""
+
+                # Record text content
+                if event.content and event.content.parts:
+                    text = "".join(
+                        p.text for p in event.content.parts
+                        if hasattr(p, "text") and p.text
+                    )
+                    if text:
+                        collector.record_message(
+                            "assistant", text,
+                            metadata={"agent": author},
+                        )
+
+                # Count agent turns (not user messages)
+                if author and author != "user":
+                    total_iterations += 1
+
+                # Report agent activity
+                if event.is_final_response():
+                    collector.record_message(
+                        "assistant",
+                        "".join(
+                            p.text for p in (event.content.parts if event.content else [])
+                            if hasattr(p, "text") and p.text
+                        ) or "(final)",
+                        metadata={"event": "final_output"},
+                    )
+
+                # Check iteration limit
+                if total_iterations >= context.max_iterations:
+                    hit_limit = True
+                    break
+
+        except Exception as e:
+            _log.warning("ADK pipeline error: %s", e)
+            collector.trace.errors.append(str(e))
+
+        run_duration_ms = (time.monotonic() - run_t0) * 1000
+
+        # Estimate LLM time (total minus tool time)
+        tool_time = sum(tc.duration_ms for tc in collector.trace.tool_calls)
+        llm_time_estimate = max(0.0, run_duration_ms - tool_time)
+        collector.record_llm_response(raw_usage=None, duration_ms=llm_time_estimate)
+
+        # ── Step 5: Final validation ─────────────────────────────────────
+        passed, feedback = policy.validate()
+        if passed:
+            progress.validation_passed()
+        else:
+            progress.validation_failed(1, 1, feedback)
+
+        collector.mark_iterations(total_iterations)
+        return total_iterations, hit_limit
 
     # ── Metadata ──────────────────────────────────────────────────────
 
