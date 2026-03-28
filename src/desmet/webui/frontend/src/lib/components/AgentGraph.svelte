@@ -258,14 +258,14 @@
       // Build edges
       const flowEdges: Edge[] = [];
 
-      // Inner edges (sequential within clusters)
-      for (const agentLayout of layout.children ?? []) {
-        const children = agentLayout.children ?? [];
-        for (let i = 0; i < children.length - 1; i++) {
+      // Inner edges (sequential within clusters, using original flatObs order)
+      for (const agent of agentObs) {
+        const flatObs = flattenObservations(agent);
+        for (let i = 0; i < flatObs.length - 1; i++) {
           flowEdges.push({
-            id: `inner-${children[i].id}-${children[i + 1].id}`,
-            source: children[i].id,
-            target: children[i + 1].id,
+            id: `inner-${flatObs[i].id}-${flatObs[i + 1].id}`,
+            source: flatObs[i].id,
+            target: flatObs[i + 1].id,
             style: 'stroke: #444; stroke-width: 1; opacity: 0.5;',
           });
         }
