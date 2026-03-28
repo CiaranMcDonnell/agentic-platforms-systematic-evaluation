@@ -176,7 +176,7 @@ class TestGetConfigStatus:
     def test_model_and_key_detected(self):
         status = get_config_status()
         assert status.model == "gpt-4o"
-        assert "OPENAI_API_KEY" in status.api_keys_set
+        assert "openai" in status.api_keys_set
 
     @patch.dict("os.environ", {
         "DESMET_MODEL": "",
