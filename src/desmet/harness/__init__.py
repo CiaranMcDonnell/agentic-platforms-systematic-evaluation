@@ -29,6 +29,7 @@ from .results import (
     UMLDiagram,
 )
 from .runner import EvaluationRunner, RunnerConfig
+from .store import ResultStore
 from .story import (
     SCORING_DIMENSIONS,
     SCORING_RUBRIC,
@@ -58,6 +59,7 @@ __all__ = [
     "PlatformInfo",
     "PlatformRuntime",
     "RequirementsResult",
+    "ResultStore",
     "RunnerConfig",
     "SCORING_DIMENSIONS",
     "SCORING_RUBRIC",
