@@ -106,19 +106,8 @@ def _classify_topology(nodes: list[GraphNode], edges: list[GraphEdge]) -> str:
 
     node_ids = {n.id for n in nodes}
 
-    # Check for hub-spoke: one node connects to all others
-    for nid in node_ids:
-        others = node_ids - {nid}
-        connected = set()
-        for e in edges:
-            if e.source == nid:
-                connected.add(e.target)
-            if e.target == nid:
-                connected.add(e.source)
-        if connected >= others and len(others) >= 2:
-            return "hub-spoke"
-
-    # Check for chain: each node has at most 1 outgoing and 1 incoming
+    # Check for chain first: each node has at most 1 outgoing and 1 incoming edge.
+    # A chain is a linear sequence — no node fans out or merges.
     out_degree: dict[str, int] = {}
     in_degree: dict[str, int] = {}
     for e in edges:
@@ -128,6 +117,35 @@ def _classify_topology(nodes: list[GraphNode], edges: list[GraphEdge]) -> str:
         in_degree.get(n, 0) <= 1 for n in node_ids
     ):
         return "chain"
+
+    # Check for hub-spoke: one node (the hub) connects to most other nodes,
+    # AND the hub's edge count dominates over spoke-to-spoke edges.
+    # We allow the hub to miss at most one spoke (e.g. when a spoke only
+    # communicates with another spoke before the hub is introduced).
+    for nid in node_ids:
+        others = node_ids - {nid}
+        if len(others) < 2:
+            continue
+        # Gather nodes the candidate hub has a direct edge to/from
+        hub_connected = set()
+        hub_edge_count = 0
+        for e in edges:
+            if e.source == nid:
+                hub_connected.add(e.target)
+                hub_edge_count += 1
+            if e.target == nid:
+                hub_connected.add(e.source)
+                hub_edge_count += 1
+        # Hub must connect to at least len(others)-1 spokes (allow 1 gap)
+        min_required = max(2, len(others) - 1)
+        if len(hub_connected) < min_required:
+            continue
+        # Hub edge count must exceed spoke-to-spoke edge count
+        spoke_edge_count = sum(
+            1 for e in edges if e.source in others and e.target in others
+        )
+        if hub_edge_count >= spoke_edge_count:
+            return "hub-spoke"
 
     return "mesh"
 
