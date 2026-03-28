@@ -238,7 +238,12 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
 
         Returns (total_iterations, hit_limit).
         """
-        from agent_framework import Agent, AgentResponseUpdate, Message
+        from agent_framework import (
+            Agent,
+            AgentExecutorResponse,
+            AgentResponseUpdate,
+            Message,
+        )
         from agent_framework.orchestrations import MagenticBuilder
 
         planner_persona = get_sub_persona("planner")
@@ -450,16 +455,63 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                                     metadata={"event": "final_output"},
                                 )
 
+                elif event.type == "executor_completed":
+                    # Agent finished — extract tool calls and token usage
+                    _flush_message()
+                    total_iterations += 1
+                    responses = event.data if isinstance(event.data, list) else [event.data]
+                    for resp in responses:
+                        if not isinstance(resp, AgentExecutorResponse):
+                            continue
+                        agent_resp = getattr(resp, "agent_response", None)
+                        if agent_resp is None:
+                            continue
+
+                        # Extract token usage from AgentResponse.usage_details
+                        usage = getattr(agent_resp, "usage_details", None)
+                        if usage and isinstance(usage, dict):
+                            in_tok = usage.get("input_tokens", 0) or 0
+                            out_tok = usage.get("output_tokens", 0) or 0
+                            if in_tok or out_tok:
+                                record_usage(trace, input_tokens=in_tok, output_tokens=out_tok, model=self._model_name)
+
+                        # Extract tool calls from response messages
+                        msgs = getattr(agent_resp, "messages", None)
+                        if msgs is None:
+                            continue
+                        if isinstance(msgs, Message):
+                            msgs = [msgs]
+                        for msg in msgs:
+                            for content in (getattr(msg, "contents", None) or []):
+                                cd = content.to_dict() if hasattr(content, "to_dict") else {}
+                                ctype = cd.get("type", "")
+                                if ctype == "function_call":
+                                    tool_call_count += 1
+                                    tc_name = cd.get("name", "unknown")
+                                    tc_args_raw = cd.get("arguments", "{}")
+                                    try:
+                                        tc_args = json.loads(tc_args_raw) if isinstance(tc_args_raw, str) else tc_args_raw
+                                    except (json.JSONDecodeError, TypeError):
+                                        tc_args = {"raw": tc_args_raw}
+                                    record_tool_call(trace, name=tc_name, args=tc_args, result="")
+                                    if cb:
+                                        elapsed = time.monotonic() - t0
+                                        detail = _format_tool_detail(tc_name, tc_args)
+                                        tokens = trace.total_tokens_input + trace.total_tokens_output
+                                        cb(f"    tool {tool_call_count} \u2014 {detail}  ({elapsed:.0f}s, {tokens:,} tokens)")
+
+                    executor_name = getattr(event, "executor_id", "") or ""
+                    if cb:
+                        cb(f"    [completed] {executor_name}")
+
                 else:
-                    # Log unhandled event types so we can capture tool calls etc.
+                    # Log unhandled event types for debugging
                     _log.debug(
                         "Unhandled event type=%s executor=%s data_type=%s",
                         event.type,
                         getattr(event, "executor_id", ""),
                         type(event.data).__name__,
                     )
-                    if cb:
-                        cb(f"    [event] {event.type} ({type(event.data).__name__})")
 
                 # Check iteration limit
                 if total_iterations >= context.max_iterations:
