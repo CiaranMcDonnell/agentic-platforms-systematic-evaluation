@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -320,6 +320,48 @@ async def docker_down(action: DockerAction):
 async def get_infrastructure():
     """Return status of infrastructure services (Langfuse, Postgres+Redis)."""
     return {"services": get_infra_statuses()}
+
+
+# ── Image build endpoints ────────────────────────────────────────────────
+
+
+@app.post("/api/images/build")
+async def build_platform_images(
+    request: dict = Body(default={}),
+):
+    """Build Docker images for SDK platform adapters."""
+    from desmet.harness.container_runner import (
+        PLATFORM_EXTRA_MAP,
+        build_image,
+        has_image,
+    )
+
+    platforms = request.get("platforms", list(PLATFORM_EXTRA_MAP.keys()))
+    results = {}
+
+    for pid in platforms:
+        if pid not in PLATFORM_EXTRA_MAP:
+            results[pid] = {"status": "skipped", "reason": "not an SDK platform"}
+            continue
+        if has_image(pid):
+            results[pid] = {"status": "exists"}
+            continue
+
+        success = build_image(pid)
+        results[pid] = {"status": "built" if success else "failed"}
+
+    return {"images": results}
+
+
+@app.get("/api/images/status")
+async def image_status():
+    """Return Docker image availability for all SDK platforms."""
+    from desmet.harness.container_runner import PLATFORM_EXTRA_MAP, has_image
+
+    return {
+        pid: {"exists": has_image(pid)}
+        for pid in PLATFORM_EXTRA_MAP
+    }
 
 
 # ── Story endpoints ─────────────────────────────────────────────────────
