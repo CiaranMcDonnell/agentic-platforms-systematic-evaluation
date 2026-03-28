@@ -316,10 +316,19 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                 )
 
         total_iterations += 1
+        plan_json = json.dumps(plan.model_dump())
         record_message(
             trace, "assistant",
-            f"Plan: {json.dumps(plan.model_dump())}",
+            f"Plan: {plan_json}",
             metadata={"agent": "planner"},
+        )
+        record_generation(
+            get_langfuse(),
+            name="agent-planner",
+            model=self._model_name,
+            input=prompt[:500],
+            output=plan_json[:2000],
+            metadata={"steps": len(plan.steps), "stage": stage_name},
         )
         if cb:
             cb(f"    planner: {len(plan.steps)} steps planned")
@@ -470,15 +479,37 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                         if agent_resp is None:
                             continue
 
-                        # Extract token usage from AgentResponse.usage_details
-                        usage = getattr(agent_resp, "usage_details", None)
+                        # Extract token usage — try multiple sources
                         in_tok = 0
                         out_tok = 0
+
+                        # Source 1: AgentResponse.usage_details
+                        usage = getattr(agent_resp, "usage_details", None)
                         if usage and isinstance(usage, dict):
-                            in_tok = usage.get("input_tokens", 0) or 0
-                            out_tok = usage.get("output_tokens", 0) or 0
-                            if in_tok or out_tok:
-                                record_usage(trace, input_tokens=in_tok, output_tokens=out_tok, model=self._model_name)
+                            in_tok = usage.get("input_tokens", 0) or usage.get("prompt_tokens", 0) or 0
+                            out_tok = usage.get("output_tokens", 0) or usage.get("completion_tokens", 0) or 0
+
+                        # Source 2: raw_representation (original OpenAI response)
+                        if not (in_tok or out_tok):
+                            raw = getattr(agent_resp, "raw_representation", None)
+                            raw_usage = getattr(raw, "usage", None)
+                            if raw_usage is not None:
+                                in_tok = getattr(raw_usage, "prompt_tokens", 0) or getattr(raw_usage, "input_tokens", 0) or 0
+                                out_tok = getattr(raw_usage, "completion_tokens", 0) or getattr(raw_usage, "output_tokens", 0) or 0
+
+                        # Source 3: usage Content items in messages
+                        if not (in_tok or out_tok):
+                            for msg in (agent_msgs or []):
+                                for ci in (getattr(msg, "contents", None) or []):
+                                    cd = ci.to_dict() if hasattr(ci, "to_dict") else {}
+                                    if cd.get("type") == "usage":
+                                        ud = cd.get("usage_details", {})
+                                        if isinstance(ud, dict):
+                                            in_tok += ud.get("input_tokens", 0) or 0
+                                            out_tok += ud.get("output_tokens", 0) or 0
+
+                        if in_tok or out_tok:
+                            record_usage(trace, input_tokens=in_tok, output_tokens=out_tok, model=self._model_name)
 
                         # Record agent completion as a Langfuse generation
                         agent_output = ""
@@ -499,26 +530,53 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                             metadata={"agent": executor_name, "iteration": total_iterations},
                         )
 
-                        # Extract tool calls from response messages
+                        # Extract tool calls and results from response messages.
+                        # Function calls and results come as separate Content items;
+                        # results reference calls by call_id.
                         msgs = agent_msgs or []
+                        pending_calls: dict[str, tuple[str, dict]] = {}  # call_id -> (name, args)
                         for msg in msgs:
                             for content_item in (getattr(msg, "contents", None) or []):
                                 cd = content_item.to_dict() if hasattr(content_item, "to_dict") else {}
                                 ctype = cd.get("type", "")
+
                                 if ctype == "function_call":
-                                    tool_call_count += 1
                                     tc_name = cd.get("name", "unknown")
                                     tc_args_raw = cd.get("arguments", "{}")
                                     try:
                                         tc_args = json.loads(tc_args_raw) if isinstance(tc_args_raw, str) else tc_args_raw
                                     except (json.JSONDecodeError, TypeError):
                                         tc_args = {"raw": tc_args_raw}
-                                    record_tool_call(trace, name=tc_name, args=tc_args, result="")
+                                    call_id = cd.get("call_id", "")
+                                    pending_calls[call_id] = (tc_name, tc_args)
+
+                                elif ctype == "function_result":
+                                    call_id = cd.get("call_id", "")
+                                    result_text = cd.get("output", "") or cd.get("result", "") or ""
+                                    if isinstance(result_text, list):
+                                        result_text = str(result_text)
+                                    # Truncate large results for trace storage
+                                    if len(str(result_text)) > 1000:
+                                        result_text = str(result_text)[:500] + "...(truncated)..." + str(result_text)[-300:]
+                                    # Match with pending call
+                                    tc_name, tc_args = pending_calls.pop(call_id, ("unknown", {}))
+                                    tool_call_count += 1
+                                    record_tool_call(trace, name=tc_name, args=tc_args, result=str(result_text))
                                     if cb:
                                         elapsed = time.monotonic() - t0
                                         detail = _format_tool_detail(tc_name, tc_args)
                                         tokens = trace.total_tokens_input + trace.total_tokens_output
                                         cb(f"    tool {tool_call_count} \u2014 {detail}  ({elapsed:.0f}s, {tokens:,} tokens)")
+
+                        # Record any unmatched calls (no result yet)
+                        for call_id, (tc_name, tc_args) in pending_calls.items():
+                            tool_call_count += 1
+                            record_tool_call(trace, name=tc_name, args=tc_args, result="(no result)")
+                            if cb:
+                                elapsed = time.monotonic() - t0
+                                detail = _format_tool_detail(tc_name, tc_args)
+                                tokens = trace.total_tokens_input + trace.total_tokens_output
+                                cb(f"    tool {tool_call_count} \u2014 {detail}  ({elapsed:.0f}s, {tokens:,} tokens)")
 
                     if cb:
                         cb(f"    [completed] {executor_name}")
