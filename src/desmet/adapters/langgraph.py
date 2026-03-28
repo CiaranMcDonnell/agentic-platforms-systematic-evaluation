@@ -22,8 +22,10 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from typing_extensions import TypedDict
 
+from pydantic import BaseModel
+
 from desmet.adapters._base import ToolAgentAdapter
-from desmet.adapters._prompts import get_sub_persona
+from desmet.adapters._prompts import get_stage_persona, get_sub_persona
 from desmet.adapters._tools import ToolFormat
 from desmet.adapters._tracing import (
     finish_trace,
@@ -43,6 +45,17 @@ from desmet.observability import get_langchain_callback
 MAX_RETRIES = 3
 
 
+# ── Structured output model ───────────────────────────────────────────────
+
+
+class ImplementationPlan(BaseModel):
+    """Structured output from the planner agent."""
+
+    steps: list[str]
+    files_to_create: list[str]
+    files_to_modify: list[str]
+
+
 # ── State schemas ──────────────────────────────────────────────────────────
 
 
@@ -52,6 +65,7 @@ class ParentState(TypedDict):
     prompt: str
     system_msg: str | None
     plan: str
+    plan_obj: ImplementationPlan | None
     stage: str
     workspace: str
     retry_count: int
@@ -184,18 +198,55 @@ class LangGraphAdapter(ToolAgentAdapter):
     # ── Subgraph builders ──────────────────────────────────────────────────
 
     def _build_planner_subgraph(self, llm) -> Any:
-        """Single 'plan' node: Technical Lead persona produces a numbered plan."""
+        """Single 'plan' node: Technical Lead persona produces a numbered plan.
+
+        Tries LangChain structured output first (``with_structured_output``),
+        falls back to free-text parsing when the provider does not support it.
+        The structured ``ImplementationPlan`` (if obtained) is stashed in the
+        response metadata so the parent wrapper can extract it.
+        """
         planner_persona = get_sub_persona("planner")
 
-        def plan_node(state: SubgraphState) -> dict:
+        async def plan_node(state: SubgraphState) -> dict:
+            from langchain_core.messages import AIMessage
+
             sys = SystemMessage(
                 content=(
                     f"You are a {planner_persona.role}. {planner_persona.backstory}\n\n"
                     "Produce a concise numbered implementation plan. "
+                    "List steps, files to create, and files to modify. "
                     "Mark independent steps that can run concurrently with [PARALLEL]."
                 )
             )
-            response = llm.invoke([sys] + state["messages"])
+            messages = [sys] + state["messages"]
+
+            # Try structured output first
+            plan: ImplementationPlan | None = None
+            try:
+                structured_llm = llm.with_structured_output(ImplementationPlan)
+                result = await structured_llm.ainvoke(messages)
+                if isinstance(result, ImplementationPlan):
+                    plan = result
+            except Exception:
+                pass  # fall back to text parsing
+
+            if plan is not None:
+                # Build text representation from the structured plan
+                plan_text = "\n".join(
+                    f"{i + 1}. {s}" for i, s in enumerate(plan.steps)
+                )
+                all_files = plan.files_to_create + plan.files_to_modify
+                if all_files:
+                    plan_text += "\n\nFiles: " + ", ".join(all_files)
+                # Synthesize an AIMessage carrying the text + plan object
+                response = AIMessage(
+                    content=plan_text,
+                    response_metadata={"_plan_obj": plan},
+                )
+                return {"messages": [response]}
+
+            # Fallback: free-text plan
+            response = await llm.ainvoke(messages)
             return {"messages": [response]}
 
         builder = StateGraph(SubgraphState)
@@ -208,8 +259,8 @@ class LangGraphAdapter(ToolAgentAdapter):
         """executor_node ⇄ tool_node loop: executes the plan using tools."""
         llm_with_tools = llm.bind_tools(tools) if tools else llm
 
-        def executor_node(state: SubgraphState) -> dict:
-            response = llm_with_tools.invoke(state["messages"])
+        async def executor_node(state: SubgraphState) -> dict:
+            response = await llm_with_tools.ainvoke(state["messages"])
             return {"messages": [response]}
 
         def route_executor(state: SubgraphState) -> str:
@@ -231,13 +282,13 @@ class LangGraphAdapter(ToolAgentAdapter):
         reviewer_persona = get_sub_persona("reviewer")
         llm_with_tools = llm.bind_tools(tools) if tools else llm
 
-        def review_node(state: SubgraphState) -> dict:
+        async def review_node(state: SubgraphState) -> dict:
             sys = SystemMessage(
                 content=(
                     f"You are a {reviewer_persona.role}. {reviewer_persona.backstory}"
                 )
             )
-            response = llm_with_tools.invoke([sys] + state["messages"])
+            response = await llm_with_tools.ainvoke([sys] + state["messages"])
             return {"messages": [response]}
 
         builder = StateGraph(SubgraphState)
@@ -248,17 +299,28 @@ class LangGraphAdapter(ToolAgentAdapter):
 
     # ── Parent graph builder ───────────────────────────────────────────────
 
-    def _build_graph(self, llm, tools: list, trace=None) -> Any:
+    def _build_graph(self, llm, tools: list, trace=None, progress_callback=None) -> Any:
         """Build and compile the parent StateGraph with three subgraph nodes.
 
         Returns a compiled StateGraph (not a tuple).
         ``trace`` is optional; if provided, token usage is recorded during streaming.
+        ``progress_callback`` is optional; if provided, subgraph wrappers emit
+        per-tool-call progress during execution.
         """
         model_name = self._model_name
+        cb = progress_callback
+        t0_ref: list[float] = [time.monotonic()]  # mutable ref for closures
+        tool_count_ref: list[int] = [0]
+
+        # Asymmetric tool distribution: executor gets all except
+        # check_completion, reviewer gets only inspection tools.
+        executor_tools = [t for t in tools if t.name != "check_completion"]
+        reviewer_tool_names = {"read_file", "list_directory", "search_code", "check_completion"}
+        reviewer_tools = [t for t in tools if t.name in reviewer_tool_names]
 
         planner_sg = self._build_planner_subgraph(llm)
-        executor_sg = self._build_executor_subgraph(llm, tools)
-        reviewer_sg = self._build_reviewer_subgraph(llm, tools)
+        executor_sg = self._build_executor_subgraph(llm, executor_tools)
+        reviewer_sg = self._build_reviewer_subgraph(llm, reviewer_tools)
 
         # ── Helper: extract token usage from a message ──────────────────
         def _extract_and_record_usage(msg: BaseMessage) -> None:
@@ -276,34 +338,81 @@ class LangGraphAdapter(ToolAgentAdapter):
                 )
 
         # ── Wrapper: planner ────────────────────────────────────────────
-        def planner_wrapper(state: ParentState) -> dict:
+        async def planner_wrapper(state: ParentState) -> dict:
             messages: list[BaseMessage] = []
             if state.get("system_msg"):
                 messages.append(SystemMessage(content=state["system_msg"]))
             messages.append(HumanMessage(content=state["prompt"]))
 
-            result = planner_sg.invoke({"messages": messages})
+            if cb is not None:
+                elapsed = time.monotonic() - t0_ref[0]
+                cb(f"    [planner] generating plan...  ({elapsed:.0f}s)")
+
+            result = await planner_sg.ainvoke({"messages": messages})
             last_msg = result["messages"][-1] if result["messages"] else None
             plan_text = getattr(last_msg, "content", "") if last_msg else ""
 
+            # Extract structured plan from response metadata (if available)
+            resp_meta = getattr(last_msg, "response_metadata", {}) or {}
+            plan_obj: ImplementationPlan | None = resp_meta.get("_plan_obj")
+
+            if plan_obj is None:
+                # Build a fallback ImplementationPlan from text parsing
+                parsed = parse_plan(plan_text)
+                plan_obj = ImplementationPlan(
+                    steps=[s["text"] for s in parsed] if parsed else [plan_text],
+                    files_to_create=[],
+                    files_to_modify=[],
+                )
+
             if last_msg:
                 _extract_and_record_usage(last_msg)
+                if trace is not None:
+                    record_message(trace, "assistant", plan_text, metadata={"node": "planner"})
+
+            if cb is not None:
+                step_count = len(plan_obj.steps)
+                elapsed = time.monotonic() - t0_ref[0]
+                tokens = trace.total_tokens_input + trace.total_tokens_output if trace else 0
+                cb(f"    [planner] done — {step_count} steps planned  ({elapsed:.0f}s, {tokens:,} tokens)")
 
             return {
                 "plan": plan_text,
+                "plan_obj": plan_obj,
                 "iterations": state.get("iterations", 0) + 1,
             }
 
         # ── Wrapper: executor ───────────────────────────────────────────
-        def executor_wrapper(state: ParentState) -> dict:
+        async def executor_wrapper(state: ParentState) -> dict:
             stage = state["stage"]
             plan = state.get("plan", "")
+            plan_obj: ImplementationPlan | None = state.get("plan_obj")
             workspace = state.get("workspace", "")
+            system_msg = state.get("system_msg")
             retry_count = state.get("retry_count", 0)
 
+            executor_persona = get_stage_persona(stage)
+
+            # Build enriched executor instructions matching OpenAI/AF adapters
+            if plan_obj is not None:
+                plan_text = "\n".join(
+                    f"{i + 1}. {s}" for i, s in enumerate(plan_obj.steps)
+                )
+                all_files = plan_obj.files_to_create + plan_obj.files_to_modify
+                files_text = ", ".join(all_files) if all_files else "(none specified)"
+            else:
+                plan_text = plan
+                files_text = "(none specified)"
+
             sys_content = (
-                f"Stage: {stage}\nPlan:\n{plan}\n"
-                "Execute the plan. Use tools to write files or run commands. "
+                f"{executor_persona.backstory}\n\n"
+                f"## Implementation Plan\n{plan_text}\n\n"
+                f"## Files\n{files_text}\n"
+            )
+            if system_msg:
+                sys_content += f"\n## Additional Context\n{system_msg}\n"
+            sys_content += (
+                f"\nStage: {stage}\n"
                 f"Working directory: {workspace}"
             )
             if retry_count > 0:
@@ -314,13 +423,52 @@ class LangGraphAdapter(ToolAgentAdapter):
                 HumanMessage(content=state["prompt"]),
             ]
 
-            result = executor_sg.invoke({"messages": messages})
+            # Stream the executor subgraph so we can emit per-tool progress
+            llm_call_count = 0
+            async for chunk in executor_sg.astream(
+                {"messages": messages}, stream_mode="updates",
+            ):
+                for node_name, node_update in chunk.items():
+                    if not node_update or not isinstance(node_update, dict):
+                        continue
+                    for msg in node_update.get("messages", []):
+                        _extract_and_record_usage(msg)
 
-            for msg in result.get("messages", []):
-                _extract_and_record_usage(msg)
+                        # Record messages in trace
+                        content = getattr(msg, "content", "")
+                        if content and trace is not None:
+                            record_message(
+                                trace,
+                                getattr(msg, "type", "assistant"),
+                                str(content),
+                                metadata={"node": f"executor/{node_name}"},
+                            )
 
-            last_msg = result["messages"][-1] if result.get("messages") else None
-            response_text = getattr(last_msg, "content", "") if last_msg else ""
+                        # Count LLM calls
+                        if hasattr(msg, "response_metadata") and msg.response_metadata:
+                            llm_call_count += 1
+
+                        # Record and report tool calls
+                        for tc in getattr(msg, "tool_calls", []):
+                            tool_count_ref[0] += 1
+                            tc_name = tc.get("name", "unknown")
+                            tc_args = tc.get("args", {})
+                            if trace is not None:
+                                record_tool_call(trace, tc_name, tc_args, "")
+                            if cb is not None:
+                                elapsed = time.monotonic() - t0_ref[0]
+                                detail = _format_tool_detail(tc_name, tc_args)
+                                tokens = trace.total_tokens_input + trace.total_tokens_output if trace else 0
+                                cb(
+                                    f"    tool {tool_count_ref[0]} — {detail}"
+                                    f"  ({elapsed:.0f}s, {tokens:,} tokens)"
+                                )
+
+                    # Heartbeat for long-running executor loops
+                    if cb is not None and node_name == "executor_node":
+                        elapsed = time.monotonic() - t0_ref[0]
+                        tokens = trace.total_tokens_input + trace.total_tokens_output if trace else 0
+                        cb(f"    [executor] step {llm_call_count}  ({elapsed:.0f}s, {tokens:,} tokens)")
 
             passed = validate_workspace(stage, workspace)
             new_retry = retry_count + 1
@@ -336,14 +484,18 @@ class LangGraphAdapter(ToolAgentAdapter):
             return {
                 "validator_passed": passed,
                 "retry_count": new_retry,
-                "iterations": state.get("iterations", 0) + 1,
+                "iterations": state.get("iterations", 0) + max(llm_call_count, 1),
             }
 
         # ── Wrapper: reviewer ───────────────────────────────────────────
-        def reviewer_wrapper(state: ParentState) -> dict:
+        async def reviewer_wrapper(state: ParentState) -> dict:
             stage = state["stage"]
             plan = state.get("plan", "")
             workspace = state.get("workspace", "")
+
+            if cb is not None:
+                elapsed = time.monotonic() - t0_ref[0]
+                cb(f"    [reviewer] reviewing workspace...  ({elapsed:.0f}s)")
 
             messages: list[BaseMessage] = [
                 HumanMessage(
@@ -356,7 +508,7 @@ class LangGraphAdapter(ToolAgentAdapter):
                 )
             ]
 
-            result = reviewer_sg.invoke({"messages": messages})
+            result = await reviewer_sg.ainvoke({"messages": messages})
 
             for msg in result.get("messages", []):
                 _extract_and_record_usage(msg)
@@ -371,6 +523,11 @@ class LangGraphAdapter(ToolAgentAdapter):
                         str(content),
                         metadata={"node": "reviewer"},
                     )
+
+            if cb is not None:
+                elapsed = time.monotonic() - t0_ref[0]
+                tokens = trace.total_tokens_input + trace.total_tokens_output if trace else 0
+                cb(f"    [reviewer] done  ({elapsed:.0f}s, {tokens:,} tokens)")
 
             return {
                 "iterations": state.get("iterations", 0) + 1,
@@ -419,7 +576,8 @@ class LangGraphAdapter(ToolAgentAdapter):
         self._last_langsmith_run_id = None
 
         # Build parent graph with trace closure for token recording
-        graph = self._build_graph(self._llm, tools, trace=trace)
+        progress_cb = getattr(context, "progress_callback", None)
+        graph = self._build_graph(self._llm, tools, trace=trace, progress_callback=progress_cb)
 
         record_message(trace, "user", prompt)
 
@@ -437,6 +595,7 @@ class LangGraphAdapter(ToolAgentAdapter):
             "prompt": prompt,
             "system_msg": system_msg,
             "plan": "",
+            "plan_obj": None,
             "stage": stage_name,
             "workspace": str(context.workspace),
             "retry_count": 0,
@@ -445,55 +604,19 @@ class LangGraphAdapter(ToolAgentAdapter):
         }
 
         iteration = 0
-        tool_call_count = 0
         hit_limit = False
         final_state: dict[str, Any] = {}
-        t0 = time.monotonic()
-        cb = getattr(context, "progress_callback", None)
+
+        cb = progress_cb
 
         async for chunk in graph.astream(initial_state, config=config, stream_mode="updates"):
             iteration += 1
 
             for node_name, node_update in chunk.items():
-                if not node_update:
-                    continue
-
                 if isinstance(node_update, dict):
                     final_state.update(node_update)
 
-                # Progress callbacks for node transitions
-                if cb is not None and node_name in ("planner", "executor", "reviewer"):
-                    elapsed = time.monotonic() - t0
-                    cb(f"    [{node_name}]  ({elapsed:.0f}s)")
-
-                # Record messages from node updates
-                messages = node_update.get("messages", []) if isinstance(node_update, dict) else []
-                for msg in messages:
-                    content = getattr(msg, "content", "")
-                    if content:
-                        record_message(
-                            trace,
-                            getattr(msg, "type", "assistant"),
-                            str(content),
-                            metadata={"node": node_name},
-                        )
-
-                    # Record tool calls from messages
-                    for tc in getattr(msg, "tool_calls", []):
-                        tool_call_count += 1
-                        tc_name = tc.get("name", "unknown")
-                        tc_args = tc.get("args", {})
-                        record_tool_call(trace, tc_name, tc_args, "")
-                        if cb is not None:
-                            elapsed = time.monotonic() - t0
-                            detail = _format_tool_detail(tc_name, tc_args)
-                            tokens = trace.total_tokens_input + trace.total_tokens_output
-                            cb(
-                                f"    tool {tool_call_count} — {detail}"
-                                f"  ({elapsed:.0f}s, {tokens:,} tokens)"
-                            )
-
-                # Capture executor validator outcomes
+                # Executor validator outcome (reported by executor_wrapper)
                 if node_name == "executor" and isinstance(node_update, dict):
                     passed = node_update.get("validator_passed", False)
                     retry = node_update.get("retry_count", 0)
@@ -502,13 +625,10 @@ class LangGraphAdapter(ToolAgentAdapter):
                             cb("    validator: PASSED")
                         else:
                             from desmet.adapters._tools import _check_completion
-
                             _, hint = _check_completion(context.workspace, stage_name)
-                            cb(
-                                f"    validator: FAILED (attempt {retry}/{MAX_RETRIES}) — {hint}"
-                            )
+                            cb(f"    validator: FAILED (attempt {retry}/{MAX_RETRIES}) — {hint}")
 
-            if iteration >= context.max_iterations:
+            if final_state.get("iterations", 0) >= context.max_iterations:
                 hit_limit = True
                 break
 
