@@ -2,11 +2,15 @@
 Microsoft Agent Framework Platform Adapter — MagenticOne orchestration.
 
 Uses a manager-driven multi-agent team: planner (structured output) → executor
-→ reviewer, orchestrated by MagenticOneGroupChat with built-in stall detection
+→ reviewer, orchestrated by MagenticBuilder with built-in stall detection
 and round-count limits.
 
 All imports from ``agent_framework`` are deferred so the module loads cleanly
 even when the package is not installed.
+
+Requires::
+
+    uv pip install -e ".[agent-framework]"
 """
 from __future__ import annotations
 
@@ -39,6 +43,7 @@ from desmet.llm_config import get_config as get_llm_config
 _log = logging.getLogger(__name__)
 
 MAX_STALL_COUNT = 3
+MAX_RESET_COUNT = 2
 
 
 # -- Data models -------------------------------------------------------------
@@ -56,7 +61,7 @@ class ImplementationPlan(BaseModel):
 
 
 class UsageTrackingMiddleware:
-    """Intercepts LLM responses to record token usage into an AgentTrace.
+    """ChatMiddleware that intercepts every LLM call to record token usage.
 
     Thread-safe: multiple agents in a MagenticOne team may invoke the
     model concurrently, so all trace mutations go through ``_lock``.
@@ -73,7 +78,6 @@ class UsageTrackingMiddleware:
         response = await next_handler(context)
         duration_ms = (time.monotonic() - t0) * 1000
 
-        # Extract usage from the response (OpenAI-compatible structure)
         input_tokens = 0
         output_tokens = 0
         usage = getattr(response, "usage", None)
@@ -134,8 +138,9 @@ def _format_tool_detail(name: str, raw_args: Any) -> str:
 class AgentFrameworkAdapter(ToolAgentAdapter):
     """Microsoft Agent Framework adapter using MagenticOne orchestration.
 
-    Orchestrates a planner, executor, and reviewer via MagenticOneGroupChat
-    with built-in stall detection and round-count limits.
+    Orchestrates a planner, executor, and reviewer via ``MagenticBuilder``
+    with built-in stall detection, automatic re-planning, and round-count
+    limits.
     """
 
     TOOL_FORMAT = ToolFormat.AGENT_FRAMEWORK
@@ -159,33 +164,33 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
             return "not installed"
 
     @staticmethod
-    def _create_model(cfg):
+    def _create_client(cfg):
         """Build an OpenAIChatClient from the resolved LLM config.
 
         Defers the import so the module loads without agent-framework installed.
         """
         from agent_framework.openai import OpenAIChatClient
 
-        kwargs: dict[str, Any] = {
-            "model": cfg.model,
-            "api_key": cfg.api_key,
-        }
+        kwargs: dict[str, Any] = {"model_id": cfg.model}
+        if cfg.api_key:
+            kwargs["api_key"] = cfg.api_key
         if cfg.base_url:
             kwargs["base_url"] = cfg.base_url
         return OpenAIChatClient(**kwargs)
 
     async def initialize(self) -> None:
         try:
-            from agent_framework.openai import OpenAIChatClient  # noqa: F401
+            from agent_framework import Agent  # noqa: F401
+            from agent_framework.orchestrations import MagenticBuilder  # noqa: F401
 
             cfg = get_llm_config(model=self.config.get("model"))
-            self._client = self._create_model(cfg)
+            self._client = self._create_client(cfg)
             self._model_name = cfg.model
 
             # Optionally enable OpenTelemetry tracing if configured
             try:
-                from agent_framework.telemetry import enable_otel
-                enable_otel()
+                from agent_framework.observability import configure_otel_providers
+                configure_otel_providers()
             except (ImportError, AttributeError, Exception):
                 pass
 
@@ -193,7 +198,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
         except ImportError as e:
             raise RuntimeError(
                 f"Failed to import Microsoft Agent Framework: {e}. "
-                "Install with: uv pip install agent-framework"
+                'Install with: uv pip install -e ".[agent-framework]"'
             )
         except Exception as e:
             raise RuntimeError(f"Failed to initialize Agent Framework: {e}")
@@ -206,17 +211,15 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
         if not self._initialized or self._client is None:
             return False
         try:
-            from agent_framework import AssistantAgent
+            from agent_framework import Agent
 
-            agent = AssistantAgent(
+            agent = Agent(
                 name="health_check",
-                system_message="Respond with 'ok'.",
-                model_client=self._client,
+                instructions="Respond with 'ok'.",
+                client=self._client,
             )
-            response = await agent.on_messages(
-                [{"role": "user", "content": "Say 'ok'"}]
-            )
-            return bool(getattr(response, "content", None))
+            result = await agent.run("Say 'ok'")
+            return bool(getattr(result, "text", None))
         except Exception:
             return False
 
@@ -231,12 +234,12 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
         trace: AgentTrace,
         context: StageContext,
     ) -> tuple[int, bool]:
-        """Run MagenticOne orchestration: planner -> executor -> reviewer.
+        """Run MagenticOne orchestration: manager + planner/executor/reviewer.
 
         Returns (total_iterations, hit_limit).
         """
-        from agent_framework import AssistantAgent
-        from agent_framework.magentic_one import MagenticOneGroupChat
+        from agent_framework import Agent, AgentResponseUpdate, Message
+        from agent_framework.orchestrations import MagenticBuilder
 
         planner_persona = get_sub_persona("planner")
         executor_persona = get_stage_persona(stage_name)
@@ -250,54 +253,46 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
 
         record_message(trace, "user", prompt)
 
-        # Register usage tracking middleware on the client
+        # Register usage tracking middleware on agents
         middleware = UsageTrackingMiddleware(trace, model_name=self._model_name)
-        try:
-            client = self._client.with_middleware([middleware])
-        except (AttributeError, TypeError):
-            _log.debug("ChatMiddleware not supported — using client without token tracking")
-            client = self._client
 
         # -- Step 1: Planner agent (structured output) ------------------------
         plan: ImplementationPlan | None = None
         try:
-            planner = AssistantAgent(
+            planner = Agent(
                 name=f"desmet_{stage_name}_planner",
-                system_message=planner_persona.backstory,
-                model_client=client,
+                instructions=planner_persona.backstory,
+                client=self._client,
+                middleware=[middleware],
             )
-
-            # Try structured output via response_format
-            planner_response = await planner.on_messages(
-                [{"role": "user", "content": prompt}],
+            planner_result = await planner.run(
+                prompt,
                 response_format=ImplementationPlan,
             )
-
-            text = getattr(planner_response, "content", "")
+            text = getattr(planner_result, "text", "") or ""
             if text:
                 try:
                     plan = ImplementationPlan.model_validate_json(text)
                 except Exception:
                     pass
         except Exception:
-            pass  # structured output not supported -- fall back below
+            pass  # structured output not supported — fall back below
 
         if plan is None:
             # Free-text fallback: parse steps from plain text
             try:
-                planner = AssistantAgent(
+                planner = Agent(
                     name=f"desmet_{stage_name}_planner",
-                    system_message=(
+                    instructions=(
                         f"{planner_persona.backstory}\n\n"
                         "Produce a numbered implementation plan listing steps, "
                         "files to create, and files to modify."
                     ),
-                    model_client=client,
+                    client=self._client,
+                    middleware=[middleware],
                 )
-                planner_response = await planner.on_messages(
-                    [{"role": "user", "content": prompt}],
-                )
-                text = getattr(planner_response, "content", "") or ""
+                planner_result = await planner.run(prompt)
+                text = getattr(planner_result, "text", "") or ""
                 steps = [
                     m.group(1).strip()
                     for m in re.finditer(r"^\d+\.\s+(.*)", text, re.MULTILINE)
@@ -320,12 +315,10 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
             f"Plan: {json.dumps(plan.model_dump())}",
             metadata={"agent": "planner"},
         )
-
         if cb:
             cb(f"    planner: {len(plan.steps)} steps planned")
 
-        # -- Step 2: Build executor agent (stage persona + all tools except
-        #    check_completion) with the plan injected into instructions --------
+        # -- Step 2: Build executor and reviewer agents -----------------------
         plan_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(plan.steps))
         all_files = plan.files_to_create + plan.files_to_modify
         files_text = ", ".join(all_files) if all_files else "(none specified)"
@@ -349,85 +342,92 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
             if getattr(t, "__name__", "") in reviewer_tool_names
         ]
 
-        executor_agent = AssistantAgent(
+        executor_agent = Agent(
             name=f"desmet_{stage_name}_executor",
-            system_message=executor_instructions,
-            model_client=client,
+            description="Implements the plan by writing files, running commands, and building the project.",
+            instructions=executor_instructions,
+            client=self._client,
             tools=executor_tools,
+            middleware=[middleware],
         )
 
-        # -- Step 3: Build reviewer agent (reviewer persona + subset of tools) -
-        reviewer_agent = AssistantAgent(
+        reviewer_agent = Agent(
             name=f"desmet_{stage_name}_reviewer",
-            system_message=(
+            description="Validates implementation completeness by inspecting the workspace.",
+            instructions=(
                 f"{reviewer_persona.backstory}\n\n"
                 "After the executor finishes, inspect the workspace and call "
                 "check_completion to verify all artifacts are present."
             ),
-            model_client=client,
+            client=self._client,
             tools=reviewer_tools,
+            middleware=[middleware],
         )
 
-        # -- Step 4: MagenticOne orchestration ---------------------------------
-        # MagenticOneGroupChat uses an implicit manager (the model_client)
-        # that dynamically coordinates the participants, detects stalls,
-        # and manages retries — no explicit manager agent needed.
+        # -- Step 3: Build manager agent and MagenticOne workflow -------------
+        manager_agent = Agent(
+            name=f"desmet_{stage_name}_manager",
+            description="Coordinates executor and reviewer to complete the stage.",
+            instructions=(
+                "You coordinate a software development team. Delegate implementation "
+                "to the executor first, then have the reviewer validate. If the "
+                "reviewer reports issues, send the executor back to fix them. "
+                "Stop when the reviewer confirms all artifacts are present."
+            ),
+            client=self._client,
+            middleware=[middleware],
+        )
+
         max_rounds = max(3, context.max_iterations - 1)
 
-        team = MagenticOneGroupChat(
+        workflow = MagenticBuilder(
             participants=[executor_agent, reviewer_agent],
-            model_client=client,
-            max_turns=max_rounds,
+            manager_agent=manager_agent,
+            intermediate_outputs=True,
+            max_round_count=max_rounds,
             max_stall_count=MAX_STALL_COUNT,
-        )
+            max_reset_count=MAX_RESET_COUNT,
+        ).build()
 
-        # -- Step 5: Stream events from the team execution --------------------
+        # -- Step 4: Stream events from the workflow --------------------------
         run_t0 = time.monotonic()
 
         try:
-            async for event in team.run_stream(task=prompt):
+            async for event in workflow.run(prompt, stream=True):
                 total_iterations += 1
 
-                # Record agent messages
-                agent_name = getattr(event, "source", "") or getattr(event, "agent", "")
-                content = getattr(event, "content", "") or ""
-
-                if content:
-                    record_message(
-                        trace, "assistant", str(content),
-                        metadata={"agent": str(agent_name)},
-                    )
-
-                # Record tool calls from the event
-                for tc in getattr(event, "tool_calls", []) or []:
-                    tool_call_count += 1
-                    tc_name = getattr(tc, "name", "") or getattr(tc, "function", {}).get("name", "unknown")
-                    tc_args = getattr(tc, "arguments", {})
-                    if isinstance(tc_args, str):
-                        try:
-                            tc_args = json.loads(tc_args)
-                        except (json.JSONDecodeError, TypeError):
-                            tc_args = {"raw": tc_args}
-                    record_tool_call(trace, name=tc_name, args=tc_args, result="")
-
-                    if cb is not None:
-                        elapsed = time.monotonic() - t0
-                        detail = _format_tool_detail(tc_name, tc_args)
-                        tokens = trace.total_tokens_input + trace.total_tokens_output
-                        cb(
-                            f"    tool {tool_call_count} \u2014 {detail}"
-                            f"  ({elapsed:.0f}s, {tokens:,} tokens)"
+                if event.type == "output" and isinstance(event.data, AgentResponseUpdate):
+                    # Streaming token from an agent
+                    text = str(event.data)
+                    agent_id = getattr(event, "executor_id", "") or ""
+                    if text.strip():
+                        record_message(
+                            trace, "assistant", text,
+                            metadata={"agent": agent_id},
                         )
 
-                # Track stall events
-                if getattr(event, "type", "") == "stall":
-                    record_message(
-                        trace, "system", "Stall detected by MagenticOne manager",
-                        metadata={"event": "stall"},
-                    )
+                elif event.type == "magentic_orchestrator":
+                    # Manager plan/progress event
+                    content = getattr(event.data, "content", None)
+                    event_name = getattr(getattr(event.data, "event_type", None), "name", "unknown")
+                    if isinstance(content, Message):
+                        record_message(
+                            trace, "system", content.text or "",
+                            metadata={"event": f"orchestrator_{event_name}"},
+                        )
                     if cb:
-                        elapsed = time.monotonic() - t0
-                        cb(f"    [manager] stall detected  ({elapsed:.0f}s)")
+                        cb(f"    [manager] {event_name}")
+
+                elif event.type == "output":
+                    # Final output — list[Message]
+                    if isinstance(event.data, list):
+                        for msg in event.data:
+                            text = getattr(msg, "text", "") or ""
+                            if text:
+                                record_message(
+                                    trace, "assistant", text,
+                                    metadata={"event": "final_output"},
+                                )
 
                 # Check iteration limit
                 if total_iterations >= context.max_iterations:
@@ -444,23 +444,16 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
         llm_time_estimate = max(0.0, run_duration_ms - tool_time)
         record_llm_duration(trace, llm_time_estimate)
 
-        # -- Step 6: Final validation ------------------------------------------
+        # -- Step 5: Final validation -----------------------------------------
         passed = validate_workspace(stage_name, str(context.workspace))
         if cb:
             if passed:
-                cb("    reviewer: PASSED")
+                cb("    validator: PASSED")
             else:
                 from desmet.adapters._tools import _check_completion
                 _, hint = _check_completion(context.workspace, stage_name)
                 elapsed = time.monotonic() - t0
-                cb(f"    reviewer: FAILED \u2014 {hint}  ({elapsed:.0f}s)")
-
-        # Record final output
-        if hasattr(team, "result") and team.result:
-            record_message(
-                trace, "assistant", str(team.result),
-                metadata={"event": "final_output"},
-            )
+                cb(f"    validator: FAILED \u2014 {hint}  ({elapsed:.0f}s)")
 
         trace.total_iterations = total_iterations
         finish_trace(trace)
@@ -480,7 +473,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
             "trace_format": "opentelemetry",
             "notes": (
                 "MagenticOne orchestration with manager-driven stall detection. "
-                "OpenTelemetry tracing via agent_framework.telemetry. "
+                "OpenTelemetry tracing via agent_framework.observability. "
                 "Planner (structured output) -> executor -> reviewer team."
             ),
         }
@@ -494,7 +487,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
             "is_idempotent": True,
             "notes": (
                 "Manager-driven stall detection with max_stall_count=3. "
-                "MagenticOne manager automatically re-assigns stalled tasks. "
+                "MagenticOne manager automatically re-plans on stalls. "
                 "Round-count limit prevents runaway execution."
             ),
         }

@@ -97,10 +97,10 @@ class TestAgentFrameworkAdapterStructure:
         from desmet.adapters.agent_framework import MAX_STALL_COUNT
         assert MAX_STALL_COUNT == 3
 
-    def test_has_create_model(self, adapter):
-        """_create_model builds the chat client."""
-        assert hasattr(adapter, "_create_model")
-        assert callable(adapter._create_model)
+    def test_has_create_client(self, adapter):
+        """_create_client builds the chat client."""
+        assert hasattr(adapter, "_create_client")
+        assert callable(adapter._create_client)
 
     def test_has_implementation_plan_model(self):
         from desmet.adapters.agent_framework import ImplementationPlan
