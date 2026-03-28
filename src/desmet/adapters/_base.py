@@ -23,6 +23,7 @@ from desmet.adapters._prompts import (
 )
 from desmet.adapters._tools import ToolFormat, create_tools
 from desmet.adapters._observation import ObservationCollector, ObservationRequirements
+from desmet.adapters._retry import ProgressReporter, RetryPolicy
 from desmet.adapters._tracing import (
     build_stage_result,
     compute_framework_metrics,
@@ -49,6 +50,7 @@ class ToolAgentAdapter(BasePlatformAdapter):
     """
 
     TOOL_FORMAT: ToolFormat
+    max_retries: int = 3
 
     @abstractmethod
     async def _run_agent(
@@ -59,11 +61,15 @@ class ToolAgentAdapter(BasePlatformAdapter):
         tools: list,
         collector: ObservationCollector,
         context: StageContext,
+        policy: RetryPolicy,
+        progress: ProgressReporter,
     ) -> tuple[int, bool]:
         """Run the platform-specific agent for one SDLC stage.
 
-        Records observation data via *collector*.  The caller (``_execute_stage``)
-        creates the collector and seals it after this method returns.
+        Records observation data via *collector*.  Uses *policy* for retry
+        parameters and validation, *progress* for standardized progress
+        reporting.  The caller (``_execute_stage``) creates all three and
+        seals the collector after this method returns.
 
         Returns ``(iterations, hit_limit)``.
         """
@@ -110,8 +116,18 @@ class ToolAgentAdapter(BasePlatformAdapter):
                 model=self._get_model_name(),
                 requirements=self.observation_requirements(),
             )
+            policy = RetryPolicy(
+                max_retries=self.max_retries,
+                stage_name=stage_name,
+                workspace=context.workspace,
+            )
+            progress = ProgressReporter(
+                callback=context.progress_callback,
+                collector=collector,
+            )
             iterations, hit_limit = await self._run_agent(
-                stage_name, prompt, system_msg, tools, collector, context,
+                stage_name, prompt, system_msg, tools,
+                collector, context, policy, progress,
             )
             warnings = collector.seal()
             if warnings:
