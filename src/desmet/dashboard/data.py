@@ -17,6 +17,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from desmet.harness.store import ResultStore
+
 import pandas as pd
 import yaml
 
@@ -50,6 +52,17 @@ CONFIG_YAML = REPO_ROOT / "config" / "platforms.yaml"
 STORIES_DIR = REPO_ROOT / "data" / "stories"
 LOGS_DIR = RESULTS_DIR / "logs"
 FIGURES_DIR = RESULTS_DIR / "figures"
+
+_store: ResultStore | None = None
+
+
+def _get_store() -> ResultStore:
+    """Lazily create a singleton ResultStore."""
+    global _store
+    if _store is None:
+        _store = ResultStore(db_path=RESULTS_DIR / "desmet.duckdb")
+    return _store
+
 
 # ---------------------------------------------------------------------------
 # Platform colours -- fixed per category for consistent visual identity
@@ -135,23 +148,88 @@ def get_platform_category(platform_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def load_results_raw() -> dict[str, Any]:
-    """Load the evaluation results JSON as a plain dict.
+def load_results_raw(run_id: str | None = None) -> dict[str, Any]:
+    """Load evaluation results for a specific run.
 
-    Intentionally **not** cached so that the dashboard always reflects
-    the latest state after scoring updates.
+    When *run_id* is ``None``, loads the most recent run. Falls back to
+    the legacy JSON file when the DuckDB store has no data (e.g., for
+    results produced before the store was introduced).
     """
-    if not RESULTS_JSON.exists():
-        return {"platforms": {}}
-    with open(RESULTS_JSON, encoding="utf-8") as fh:
-        return json.load(fh)
+    store = _get_store()
+    target_id = run_id or store.latest_run_id()
+
+    if target_id is None:
+        # No runs in DB — fall back to legacy JSON
+        if not RESULTS_JSON.exists():
+            return {"platforms": {}}
+        with open(RESULTS_JSON, encoding="utf-8") as fh:
+            return json.load(fh)
+
+    exec_df = store.get_executions(target_id)
+    if exec_df.empty:
+        # Run exists but no executions — return empty
+        return {"platforms": {}, "run_id": target_id}
+
+    # Reshape into the legacy dict format expected by downstream functions
+    platforms: dict[str, Any] = {}
+    for pid, group in exec_df.groupby("platform_id"):
+        story_metrics = []
+        for _, row in group.iterrows():
+            sm: dict[str, Any] = {
+                "story_id": row["story_id"],
+                "success": row["status"] == "completed",
+                "wall_clock_seconds": row["wall_clock_seconds"],
+                "iterations": int(row["iterations"] or 0),
+                "tool_calls": int(row["tool_calls"] or 0),
+                "tokens_input": int(row["tokens_input"] or 0),
+                "tokens_output": int(row["tokens_output"] or 0),
+                "api_cost_usd": row["cost_usd"],
+                "pipeline_completeness_score": row["rubric_pipeline_completeness"],
+                "tool_integration_score": row["rubric_tool_integration"],
+                "error_recovery_score": row["rubric_error_recovery"],
+                "trace_quality_score": row["rubric_trace_quality"],
+                "time_efficiency_score": row["rubric_time_efficiency"],
+                "autonomy_score": row["rubric_autonomy"],
+                "scored": any(
+                    row.get(f"rubric_{d}") not in (None, 0.0)
+                    for d in ["pipeline_completeness", "tool_integration",
+                              "error_recovery", "trace_quality",
+                              "time_efficiency", "autonomy"]
+                ),
+            }
+            fm_raw = row.get("framework_metrics")
+            if pd.notna(fm_raw) and isinstance(fm_raw, str):
+                sm["framework_metrics"] = json.loads(fm_raw)
+            story_metrics.append(sm)
+
+        platforms[str(pid)] = {
+            "platform_id": str(pid),
+            "platform_name": str(pid),
+            "stories_total": len(group),
+            "stories_completed": int((group["status"] == "completed").sum()),
+            "stories_failed": int((group["status"] != "completed").sum()),
+            "overall_score": float(group["overall_score"].mean()) if group["overall_score"].notna().any() else 0.0,
+            "story_metrics": story_metrics,
+            "dimension_scores": [],  # computed on-the-fly by dashboard
+        }
+
+    run_df = store.get_run(target_id)
+    started = run_df.iloc[0]["started_at"] if len(run_df) else None
+
+    return {
+        "evaluation_date": str(started) if started else None,
+        "run_id": target_id,
+        "platforms": platforms,
+    }
 
 
 def save_results(data: dict[str, Any]) -> None:
-    """Write evaluation results back to the JSON file.
+    """Write evaluation results back.
 
-    Uses ``default=str`` so datetime objects serialise cleanly.
+    Delegates score updates to the store.  Also writes the legacy JSON
+    file for backwards compatibility.
     """
+    # Legacy file write
     RESULTS_JSON.parent.mkdir(parents=True, exist_ok=True)
     with open(RESULTS_JSON, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2, default=str)

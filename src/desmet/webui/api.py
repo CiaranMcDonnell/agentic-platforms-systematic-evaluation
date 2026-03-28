@@ -61,6 +61,7 @@ from desmet.dashboard.data import (
     update_story_scores,
 )
 from desmet.harness.graph import build_graph, build_timeline
+from desmet.harness.store import ResultStore
 from desmet.harness.loader import StoryLoadError, load_all_stories, resolve_baseline_dir
 from desmet.harness.runner import EvaluationRunner, RunnerConfig
 from desmet.harness.story import DifficultyLevel
@@ -94,6 +95,17 @@ from desmet.webui.langsmith_client import (
 )
 
 load_dotenv()
+
+_result_store: ResultStore | None = None
+
+
+def _get_result_store() -> ResultStore:
+    global _result_store
+    if _result_store is None:
+        from desmet.dashboard.data import RESULTS_DIR
+        _result_store = ResultStore(db_path=RESULTS_DIR / "desmet.duckdb")
+    return _result_store
+
 
 logger = logging.getLogger("desmet.webui")
 
@@ -587,10 +599,42 @@ async def _execute_run(run: RunState, req: RunRequest):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+@app.get("/api/result-runs")
+async def list_result_runs():
+    """List all persisted evaluation runs for the run selector."""
+    store = _get_result_store()
+    df = store.list_runs()
+    if df.empty:
+        return {"runs": []}
+    runs = []
+    for _, row in df.iterrows():
+        runs.append({
+            "run_id": row["run_id"],
+            "started_at": str(row["started_at"]) if row["started_at"] else None,
+            "finished_at": str(row["finished_at"]) if row["finished_at"] else None,
+            "model": row["model"],
+            "platforms_filter": row["platforms_filter"],
+            "note": row["note"],
+        })
+    return {"runs": runs}
+
+
+@app.post("/api/result-runs/{run_id}/export")
+async def export_result_run(run_id: str, format: str = "json"):
+    """Export a run to JSON or CSV."""
+    store = _get_result_store()
+    from desmet.dashboard.data import RESULTS_DIR
+    if format == "csv":
+        path = store.export_run_csv(run_id, RESULTS_DIR / f"export_{run_id}.csv")
+    else:
+        path = store.export_run_json(run_id, RESULTS_DIR / f"export_{run_id}.json")
+    return FileResponse(path, filename=path.name)
+
+
 @app.get("/api/dashboard/stats")
-async def dashboard_stats():
+async def dashboard_stats(run_id: str | None = None):
     """High-level stats from persisted results on disk."""
-    data = load_results_raw()
+    data = load_results_raw(run_id)
     pdata = data.get("platforms", {})
 
     platforms_evaluated = list(pdata.keys())
@@ -621,9 +665,9 @@ async def dashboard_stats():
 
 
 @app.get("/api/dashboard/overview")
-async def dashboard_overview():
+async def dashboard_overview(run_id: str | None = None):
     """Overview page data: summary table, scoring progress, colours."""
-    data = load_results_raw()
+    data = load_results_raw(run_id)
     platform_ids = get_platform_ids(data)
 
     if not platform_ids:
@@ -661,9 +705,9 @@ async def dashboard_overview():
 
 
 @app.get("/api/dashboard/charts/rankings")
-async def chart_rankings():
+async def chart_rankings(run_id: str | None = None):
     """ECharts option for platform rankings bar chart."""
-    data = load_results_raw()
+    data = load_results_raw(run_id)
     if not get_platform_ids(data):
         return {"chart": None}
     df = get_platform_summary_df(data)
@@ -671,9 +715,9 @@ async def chart_rankings():
 
 
 @app.get("/api/dashboard/charts/completion")
-async def chart_completion():
+async def chart_completion(run_id: str | None = None):
     """ECharts option for completion rates bar chart."""
-    data = load_results_raw()
+    data = load_results_raw(run_id)
     if not get_platform_ids(data):
         return {"chart": None}
     df = get_platform_summary_df(data)
@@ -681,9 +725,9 @@ async def chart_completion():
 
 
 @app.get("/api/dashboard/charts/radar")
-async def chart_radar():
+async def chart_radar(run_id: str | None = None):
     """ECharts option for DESMET dimension radar."""
-    data = load_results_raw()
+    data = load_results_raw(run_id)
     pids = get_platform_ids(data)
     if not pids:
         return {"chart": None}
@@ -702,9 +746,9 @@ async def chart_radar():
 
 
 @app.get("/api/dashboard/charts/efficiency")
-async def chart_efficiency():
+async def chart_efficiency(run_id: str | None = None):
     """ECharts option for efficiency breakdown."""
-    data = load_results_raw()
+    data = load_results_raw(run_id)
     if not get_platform_ids(data):
         return {"chart": None}
     metrics_df = get_story_metrics_df(data)
@@ -714,9 +758,9 @@ async def chart_efficiency():
 
 
 @app.get("/api/dashboard/charts/story-comparison")
-async def chart_story_comparison(metric: str = "wall_clock_seconds", platforms: str = ""):
+async def chart_story_comparison(metric: str = "wall_clock_seconds", platforms: str = "", run_id: str | None = None):
     """ECharts option for story-level metric comparison."""
-    data = load_results_raw()
+    data = load_results_raw(run_id)
     if not get_platform_ids(data):
         return {"chart": None}
     metrics_df = get_story_metrics_df(data)
@@ -731,9 +775,9 @@ async def chart_story_comparison(metric: str = "wall_clock_seconds", platforms: 
 
 
 @app.get("/api/dashboard/charts/dimension/{dimension}")
-async def chart_dimension(dimension: str):
+async def chart_dimension(dimension: str, run_id: str | None = None):
     """ECharts option for a single dimension comparison."""
-    data = load_results_raw()
+    data = load_results_raw(run_id)
     if not get_platform_ids(data):
         return {"chart": None}
     dim_df = get_dimension_scores_df(data)
@@ -743,9 +787,9 @@ async def chart_dimension(dimension: str):
 
 
 @app.get("/api/dashboard/framework-metrics")
-async def dashboard_framework_metrics():
+async def dashboard_framework_metrics(run_id: str | None = None):
     """Return aggregated framework metrics per platform."""
-    data = load_results_raw()
+    data = load_results_raw(run_id)
     platforms_out = []
     for pid, pdata in data.get("platforms", {}).items():
         pname = pdata.get("platform_name", pid)
@@ -781,9 +825,9 @@ async def get_rubric():
 
 
 @app.get("/api/dashboard/scoring/{platform_id}/{story_id}")
-async def get_story_score(platform_id: str, story_id: str):
+async def get_story_score(platform_id: str, story_id: str, run_id: str | None = None):
     """Get current scores and trace info for a platform/story pair."""
-    data = load_results_raw()
+    data = load_results_raw(run_id)
     pdata = data.get("platforms", {}).get(platform_id, {})
     metrics = pdata.get("story_metrics", [])
 
@@ -868,9 +912,9 @@ async def get_agent_graph(platform_id: str, story_id: str):
 
 
 @app.post("/api/dashboard/scoring/submit")
-async def submit_score(submission: ScoreSubmission):
+async def submit_score(submission: ScoreSubmission, run_id: str | None = None):
     """Submit dimension scores for a platform/story pair."""
-    data = load_results_raw()
+    data = load_results_raw(run_id)
     update_story_scores(
         data,
         submission.platform_id,
@@ -883,21 +927,21 @@ async def submit_score(submission: ScoreSubmission):
 
 
 @app.get("/api/dashboard/scoring/progress")
-async def scoring_progress():
+async def scoring_progress(run_id: str | None = None):
     """Return per-platform scoring progress."""
-    data = load_results_raw()
+    data = load_results_raw(run_id)
     progress = get_scoring_progress(data)
     return {"progress": {pid: {"scored": s, "total": t} for pid, (s, t) in progress.items()}}
 
 
 @app.get("/api/dashboard/scoring/matrix")
-async def scoring_matrix():
+async def scoring_matrix(run_id: str | None = None):
     """Platform × 6-dimension rubric average score matrix.
 
     Returns all platforms sorted by sum of dimension averages (highest first).
     Platforms with no scored stories have None for all dimensions.
     """
-    data = load_results_raw()
+    data = load_results_raw(run_id)
     pids = get_platform_ids(data)
     if not pids:
         return {"platforms": [], "dimensions": SCORING_DIMENSIONS}
@@ -932,9 +976,9 @@ async def scoring_matrix():
 
 
 @app.get("/api/dashboard/story/{story_id}")
-async def story_detail(story_id: str):
+async def story_detail(story_id: str, run_id: str | None = None):
     """Get per-platform performance for a specific story."""
-    data = load_results_raw()
+    data = load_results_raw(run_id)
     pids = get_platform_ids(data)
 
     rows = []
@@ -968,9 +1012,9 @@ async def story_detail(story_id: str):
 
 
 @app.get("/api/dashboard/comparison")
-async def comparison_data(platforms: str = ""):
+async def comparison_data(platforms: str = "", run_id: str | None = None):
     """Return data needed for the comparison page."""
-    data = load_results_raw()
+    data = load_results_raw(run_id)
     pids = get_platform_ids(data)
 
     if platforms:

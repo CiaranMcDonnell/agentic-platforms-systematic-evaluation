@@ -9,3 +9,6 @@ export const selectedRunId = writable<string | null>(null)
 
 // Pre-select platform+story when navigating from Story Detail to Scoring
 export const scoringTarget = writable<{ platform_id: string; story_id: string } | null>(null)
+
+/** Selected run for Results section — null = latest */
+export const selectedResultsRunId = writable<string | null>(null)

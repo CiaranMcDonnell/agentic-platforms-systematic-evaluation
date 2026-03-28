@@ -1,21 +1,21 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { fetchOverview, fetchFrameworkMetrics } from '../api';
   import type { OverviewData, FrameworkMetricsPlatform } from '../api';
   import EChart from '../components/EChart.svelte';
   import DimScorePills from '../components/DimScorePills.svelte';
+  import RunSelector from '../components/RunSelector.svelte';
+  import { selectedResultsRunId } from '../stores';
 
   let data = $state<OverviewData | null>(null);
   let fmPlatforms = $state<FrameworkMetricsPlatform[]>([]);
 
-  onMount(async () => {
-    data = await fetchOverview();
-    try {
-      const fm = await fetchFrameworkMetrics();
-      fmPlatforms = fm.platforms;
-    } catch {
-      fmPlatforms = [];
-    }
+  let currentRunId = $state<string | null>(null);
+  selectedResultsRunId.subscribe((v) => (currentRunId = v));
+
+  $effect(() => {
+    const rid = currentRunId;
+    fetchOverview(rid).then((d) => (data = d));
+    fetchFrameworkMetrics().then((fm) => (fmPlatforms = fm.platforms)).catch(() => (fmPlatforms = []));
   });
 
   function hasAnyScore(dimScores: Record<string, number | null | undefined> | undefined): boolean {
@@ -55,6 +55,7 @@
 </script>
 
 <div>
+  <RunSelector />
   <h1 style="margin-bottom: 28px;">Results Overview</h1>
 
   {#if !data}

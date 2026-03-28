@@ -36,6 +36,7 @@ from desmet.stages.stage1_stories.loader import prepare_stage_context
 from .adapter import BasePlatformAdapter
 from .metrics import MetricsCollector, SetupMetrics, StageMetrics, StoryMetrics
 from .results import CodeResult, StageResult, TestResult
+from .store import ResultStore
 from .story import DifficultyLevel, StoryResult, StoryStatus, UserStory
 
 logger = get_logger(__name__)
@@ -125,6 +126,9 @@ class EvaluationRunner:
         # Track execution state
         self.results: dict[str, dict[str, StoryResult]] = {}  # platform -> story -> result
 
+        # Persistent result store
+        self.store = ResultStore(db_path=self.config.results_dir / "desmet.duckdb")
+
     async def run_full_evaluation(self) -> dict[str, Any]:
         """
         Run the complete evaluation across all platforms and stories.
@@ -134,6 +138,14 @@ class EvaluationRunner:
         """
         logger.info("Starting DESMET Agentic Platforms Evaluation")
         start_time = datetime.now(timezone.utc)
+
+        # Create a persistent run record
+        self._current_run_id = self.store.create_run(
+            model=os.environ.get("DESMET_MODEL"),
+            temperature=float(os.environ.get("DESMET_TEMPERATURE", "0")),
+            platforms_filter=self.config.platforms,
+            stories_filter=self.config.stories,
+        )
 
         # Filter platforms and stories if configured
         platforms_to_run = self._filter_platforms()
@@ -196,6 +208,8 @@ class EvaluationRunner:
 
         logger.info("evaluation_completed", duration_seconds=round(duration, 1))
 
+        self.store.finish_run(self._current_run_id)
+
         return self._generate_summary()
 
     async def run_single_story(
@@ -212,6 +226,12 @@ class EvaluationRunner:
             raise ValueError(f"Unknown story: {story_id}")
 
         adapter = self.platforms[platform_id]
+        self._current_run_id = self.store.create_run(
+            model=os.environ.get("DESMET_MODEL"),
+            temperature=float(os.environ.get("DESMET_TEMPERATURE", "0")),
+            platforms_filter=[platform_id],
+            stories_filter=[story_id],
+        )
         await adapter.initialize()
 
         # Ensure metrics container exists for this platform
@@ -230,6 +250,7 @@ class EvaluationRunner:
                 self._record_story_metrics(platform_id, story, result)
                 self.metrics.finalize_platform(platform_id)
                 self._export_results()
+                self.store.finish_run(self._current_run_id)
                 return result
             finally:
                 await adapter.shutdown()
@@ -580,6 +601,8 @@ class EvaluationRunner:
             time_budget_seconds=story.time_budget_seconds,
         )
         self.metrics.record_story_metrics(platform_id, metrics)
+        if hasattr(self, "_current_run_id") and self._current_run_id:
+            self.store.save_execution(self._current_run_id, result, metrics)
 
     @staticmethod
     def _init_deploy_repo(workspace: Path, platform_id: str, story_id: str) -> None:
