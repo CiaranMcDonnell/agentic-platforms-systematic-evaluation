@@ -12,8 +12,10 @@ Provides REST endpoints and a WebSocket for:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import queue
 import shutil
 import uuid
 from contextlib import asynccontextmanager
@@ -379,6 +381,55 @@ async def image_status():
     }
 
 
+@app.get("/api/images/detail")
+async def image_details():
+    """Return image metadata for all SDK platforms."""
+    from desmet.harness.container_runner import PLATFORM_EXTRA_MAP, get_image_details
+
+    result = {}
+    for pid in PLATFORM_EXTRA_MAP:
+        details = get_image_details(pid)
+        if details:
+            result[pid] = details
+        else:
+            result[pid] = {"exists": False, "tag": None, "size_bytes": 0, "created_at": ""}
+    return result
+
+
+@app.delete("/api/images/{platform_id}")
+async def delete_platform_image(platform_id: str):
+    """Delete a platform's Docker image."""
+    from desmet.harness.container_runner import PLATFORM_EXTRA_MAP, delete_image
+
+    if platform_id not in PLATFORM_EXTRA_MAP:
+        raise HTTPException(status_code=404, detail="Not an SDK platform")
+    success = delete_image(platform_id)
+    return {"success": success, "message": "Deleted" if success else "Failed to delete image"}
+
+
+@app.post("/api/images/{platform_id}/rebuild")
+async def rebuild_platform_image(platform_id: str):
+    """Delete and rebuild a platform's Docker image."""
+    from desmet.harness.container_runner import (
+        PLATFORM_EXTRA_MAP,
+        build_image,
+        delete_image,
+    )
+
+    if platform_id not in PLATFORM_EXTRA_MAP:
+        raise HTTPException(status_code=404, detail="Not an SDK platform")
+
+    delete_image(platform_id)
+
+    log_lines: list[str] = []
+    success = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: build_image(platform_id, progress_callback=log_lines.append),
+    )
+    if success:
+        return {"status": "built"}
+    return {"status": "failed", "reason": log_lines[-1] if log_lines else "unknown error"}
+
+
 # ── Story endpoints ─────────────────────────────────────────────────────
 
 
@@ -483,6 +534,74 @@ async def cancel_run(run_id: str):
 
 
 # ── WebSocket for live logs ─────────────────────────────────────────────
+
+
+@app.websocket("/ws/images/build")
+async def ws_image_build(websocket: WebSocket):
+    """Stream Docker image build output over WebSocket.
+
+    Client sends: {"platforms": ["langgraph"]} or {} for all.
+    Server streams: {"platform": "...", "phase": "...", "line": "..."}
+    Ends with:      {"done": true, "summary": {...}}
+    """
+    await websocket.accept()
+    try:
+        raw = await websocket.receive_text()
+        request = json.loads(raw) if raw else {}
+    except (WebSocketDisconnect, json.JSONDecodeError):
+        return
+
+    from desmet.harness.container_runner import (
+        PLATFORM_EXTRA_MAP,
+        build_image_streaming,
+        has_image,
+    )
+
+    platforms = request.get("platforms", list(PLATFORM_EXTRA_MAP.keys()))
+    summary: dict[str, int] = {"built": 0, "exists": 0, "failed": 0}
+
+    for pid in platforms:
+        if pid not in PLATFORM_EXTRA_MAP:
+            continue
+        if has_image(pid):
+            summary["exists"] += 1
+            await websocket.send_json({"platform": pid, "status": "exists"})
+            continue
+
+        # Run the blocking generator in a thread, forwarding lines
+        q: queue.Queue[dict | None] = queue.Queue()
+
+        def _run_build():
+            gen = build_image_streaming(pid)
+            for msg in gen:
+                q.put(msg)
+            q.put(None)  # sentinel
+
+        loop = asyncio.get_event_loop()
+        fut = loop.run_in_executor(None, _run_build)
+
+        # Drain queue and forward to WebSocket
+        build_success = False
+        while True:
+            try:
+                msg = await asyncio.to_thread(q.get, timeout=0.5)
+            except Exception:
+                if fut.done():
+                    break
+                continue
+            if msg is None:
+                break
+            await websocket.send_json(msg)
+            if msg.get("status") == "built":
+                build_success = True
+            elif msg.get("status") == "failed":
+                build_success = False
+
+        await fut
+        summary["built" if build_success else "failed"] += 1
+
+    await websocket.send_json({"done": True, "summary": summary})
+    await websocket.close()
 
 
 @app.websocket("/ws/runs/{run_id}")
