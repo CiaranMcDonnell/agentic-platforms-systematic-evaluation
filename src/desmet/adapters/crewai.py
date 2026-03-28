@@ -14,13 +14,10 @@ from typing import Any
 from desmet.adapters._base import ToolAgentAdapter
 from desmet.adapters._planning import ImplementationPlan, format_plan_text, parse_plan_text
 from desmet.adapters._prompts import STAGE_EXPECTED_OUTPUTS, get_stage_persona, get_sub_persona
-from desmet.adapters._validation import validate_workspace
 from desmet.adapters._tools import ToolFormat, split_tools
 from desmet.adapters._observation import ObservationCollector
-from desmet.adapters._tracing import (
-    format_tool_detail,
-    record_node_event,
-)
+from desmet.adapters._retry import ProgressReporter, RetryPolicy
+from desmet.adapters._tracing import record_node_event
 from desmet.adapters.registry import load_platform_info
 from desmet.harness.context import StageContext
 from desmet.harness.models import PlatformInfo
@@ -28,8 +25,6 @@ from desmet.llm_config import Provider
 from desmet.llm_config import get_config as get_llm_config
 
 _log = logging.getLogger(__name__)
-
-MAX_RETRIES = 3
 
 
 def _compute_iter_budget(max_iterations: int, *, retry: bool = False) -> tuple[int, int, int]:
@@ -228,6 +223,7 @@ class CrewAIAdapter(ToolAgentAdapter):
         llm: Any,
         context: StageContext,
         collector: ObservationCollector,
+        progress: ProgressReporter,
         *,
         retry_attempt: int = 0,
         prior_plan: str = "",
@@ -361,7 +357,7 @@ class CrewAIAdapter(ToolAgentAdapter):
             # ── Retry: executor + reviewer only, plan carried forward ────
             retry_description = (
                 f"Previous attempt failed validation (attempt "
-                f"{retry_attempt}/{MAX_RETRIES}).\n"
+                f"{retry_attempt}).\n"
                 f"{feedback}\n\n"
                 f"## Plan from previous attempt\n{prior_plan}\n\n"
                 f"## Original task\n{prompt}\n\n"
@@ -392,8 +388,7 @@ class CrewAIAdapter(ToolAgentAdapter):
 
         step_cb, task_cb, counter = self._create_trace_callbacks(
             collector,
-            progress_callback=context.progress_callback,
-            max_iterations=context.max_iterations,
+            progress,
         )
 
         # planning=True disabled: redundant with our planner agent and
@@ -422,11 +417,11 @@ class CrewAIAdapter(ToolAgentAdapter):
         tools: list,
         collector: ObservationCollector,
         context: StageContext,
+        policy: RetryPolicy,
+        progress: ProgressReporter,
     ) -> tuple[int, bool]:
         """Run a CrewAI crew with retry loop. Returns (iterations, hit_limit)."""
         import asyncio
-
-        from desmet.adapters._tools import _check_completion
 
         llm = self._create_llm(context)
         cfg = get_llm_config(
@@ -443,9 +438,10 @@ class CrewAIAdapter(ToolAgentAdapter):
         feedback = ""
         structured_plan: ImplementationPlan | None = None
 
-        for attempt in range(MAX_RETRIES + 1):
+        for attempt in range(policy.total_attempts()):
             crew, counter = self._build_crew(
                 stage_name, prompt, system_msg, tools, llm, context, collector,
+                progress,
                 retry_attempt=attempt,
                 prior_plan=plan_text,
                 feedback=feedback,
@@ -480,26 +476,19 @@ class CrewAIAdapter(ToolAgentAdapter):
                     plan_text = str(first_output)
 
             # ── Validate workspace ───────────────────────────────────────
-            valid = validate_workspace(stage_name, str(context.workspace))
+            passed, feedback = policy.validate()
             record_node_event(
                 collector.trace, "validator",
-                validator_passed=valid,
+                validator_passed=passed,
                 retry_count=attempt + 1,
             )
 
-            if valid:
-                if context.progress_callback is not None:
-                    context.progress_callback("    validator: PASSED")
+            if passed:
+                progress.validation_passed()
                 break
 
             # ── Validation failed — prepare retry or exit ────────────────
-            _, feedback = _check_completion(context.workspace, stage_name)
-
-            if context.progress_callback is not None:
-                context.progress_callback(
-                    f"    validator: FAILED (attempt {attempt + 1}/"
-                    f"{MAX_RETRIES + 1}) — {feedback}"
-                )
+            progress.validation_failed(attempt + 1, policy.total_attempts(), feedback)
 
             if total_iterations >= context.max_iterations:
                 hit_limit = True
@@ -520,9 +509,7 @@ class CrewAIAdapter(ToolAgentAdapter):
     @staticmethod
     def _create_trace_callbacks(
         collector: ObservationCollector,
-        *,
-        progress_callback: Any | None = None,
-        max_iterations: int = 50,
+        progress: ProgressReporter,
     ) -> tuple[Any, Any, list[int]]:
         """Create ``step_callback`` and ``task_callback`` closures for a Crew.
 
@@ -532,8 +519,6 @@ class CrewAIAdapter(ToolAgentAdapter):
         iteration count after ``crew.kickoff()`` returns.
         """
         counter: list[int] = [0]
-        tool_counter: list[int] = [0]
-        t0 = time.monotonic()
 
         def step_callback(step_output: Any) -> None:
             """Called after every agent reasoning step."""
@@ -543,30 +528,15 @@ class CrewAIAdapter(ToolAgentAdapter):
             # to extract tool-call information when present.
             tool_name = getattr(step_output, "tool", None)
             if tool_name:
-                tool_counter[0] += 1
                 tool_input = getattr(step_output, "tool_input", "")
                 tool_result = getattr(step_output, "result", "")
                 args = tool_input if isinstance(tool_input, dict) else {"input": str(tool_input)}
                 collector.record_tool_execution(str(tool_name), args, str(tool_result))
-
-            # Emit progress for tool calls and periodic heartbeats
-            if progress_callback is not None:
-                elapsed = time.monotonic() - t0
-                tokens = collector.trace.total_tokens_input + collector.trace.total_tokens_output
-                if tool_name:
-                    detail = format_tool_detail(str(tool_name), tool_input)
-                    progress_callback(
-                        f"    tool {tool_counter[0]} — {detail}"
-                        f"  ({elapsed:.0f}s, {tokens:,} tokens)"
-                    )
-                elif counter[0] % 5 == 0:
-                    agent_role = getattr(step_output, "agent", None)
-                    role_str = getattr(agent_role, "role", "") if agent_role else ""
-                    role_label = f" [{role_str}]" if role_str else ""
-                    progress_callback(
-                        f"    step {counter[0]}/{max_iterations}{role_label} — reasoning"
-                        f"  ({elapsed:.0f}s, {tokens:,} tokens)"
-                    )
+                progress.tool_call(str(tool_name), tool_input)
+            elif counter[0] % 5 == 0:
+                agent_role = getattr(step_output, "agent", None)
+                role_str = getattr(agent_role, "role", "") if agent_role else ""
+                progress.heartbeat(counter[0], role_str)
 
             # Always record the step as a message so the full reasoning
             # chain is visible in the trace.
@@ -580,12 +550,8 @@ class CrewAIAdapter(ToolAgentAdapter):
                 "assistant", str(task_output),
                 metadata={"event": "task_complete"},
             )
-            if progress_callback is not None:
-                elapsed = time.monotonic() - t0
-                agent_name = getattr(task_output, "agent", "") or ""
-                progress_callback(
-                    f"    task complete — {agent_name}  ({elapsed:.0f}s)"
-                )
+            agent_name = getattr(task_output, "agent", "") or ""
+            progress.agent_status(agent_name or "agent", "task complete")
 
         return step_callback, task_callback, counter
 
