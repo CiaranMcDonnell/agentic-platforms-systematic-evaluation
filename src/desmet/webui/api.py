@@ -69,6 +69,7 @@ from desmet.infra import (
     PLATFORM_CONTAINERS,
     PLATFORM_NAMES,
     PLATFORM_PACKAGES,
+    cleanup_all_docker,
     compose_down,
     compose_up,
     get_config_status,
@@ -148,7 +149,9 @@ async def lifespan(app: FastAPI):
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────────
-    logger.info("DESMET Management Console shutting down")
+    logger.info("DESMET Management Console shutting down — cleaning up Docker resources")
+    cleanup_all_docker()
+    logger.info("Shutdown complete")
 
 
 app = FastAPI(
@@ -238,8 +241,9 @@ async def get_platforms():
                 status = "ready"
                 infra_type = "Docker (isolated)"
             else:
-                status = "ready" if is_package_importable(package) else "not installed"
-                infra_type = "Python SDK"
+                installed = is_package_importable(package)
+                status = "ready" if installed else "not built"
+                infra_type = "Docker (isolated)" if not installed else "Python SDK"
         else:
             status = "unknown"
             infra_type = "Docker"
@@ -344,17 +348,23 @@ async def build_platform_images(
     platforms = request.get("platforms", list(PLATFORM_EXTRA_MAP.keys()))
     results = {}
 
-    for pid in platforms:
-        if pid not in PLATFORM_EXTRA_MAP:
-            results[pid] = {"status": "skipped", "reason": "not an SDK platform"}
-            continue
-        if has_image(pid):
-            results[pid] = {"status": "exists"}
-            continue
+    def _build_all():
+        for pid in platforms:
+            if pid not in PLATFORM_EXTRA_MAP:
+                results[pid] = {"status": "skipped", "reason": "not an SDK platform"}
+                continue
+            if has_image(pid):
+                results[pid] = {"status": "exists"}
+                continue
 
-        success = build_image(pid)
-        results[pid] = {"status": "built" if success else "failed"}
+            log_lines: list[str] = []
+            success = build_image(pid, progress_callback=log_lines.append)
+            if success:
+                results[pid] = {"status": "built"}
+            else:
+                results[pid] = {"status": "failed", "reason": log_lines[-1] if log_lines else "unknown error"}
 
+    await asyncio.get_event_loop().run_in_executor(None, _build_all)
     return {"images": results}
 
 

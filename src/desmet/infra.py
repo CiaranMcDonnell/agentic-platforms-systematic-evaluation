@@ -154,8 +154,8 @@ def get_platform_statuses() -> list[PlatformStatus]:
                 statuses.append(PlatformStatus(
                     platform_id=pid,
                     name=name,
-                    infra_type="Python SDK",
-                    status="ready" if installed else "not installed",
+                    infra_type="Docker (isolated)" if not installed else "Python SDK",
+                    status="ready" if installed else "not built",
                 ))
         else:
             container_status = get_container_status(container) if container else "not started"
@@ -170,11 +170,22 @@ def get_platform_statuses() -> list[PlatformStatus]:
 
 
 def get_docker_platform_statuses() -> dict[str, str]:
-    """Return container status for docker-based platforms only."""
+    """Return container/image status for all docker-based platforms.
+
+    For visual platforms (Flowise, etc.) returns live container status.
+    For SDK platforms (LangGraph, etc.) returns 'ready' if the Docker
+    image is built, otherwise 'not built'.
+    """
+    from desmet.harness.container_runner import has_image
+
     result: dict[str, str] = {}
     for pid, container in PLATFORM_CONTAINERS.items():
         if container is not None:
+            # Visual platform — check running container
             result[pid] = get_container_status(container)
+        elif PLATFORM_PACKAGES.get(pid) is not None:
+            # SDK platform — check Docker image existence
+            result[pid] = "ready" if has_image(pid) else "not built"
     return result
 
 
@@ -257,3 +268,47 @@ def compose_down(target: str | None = None) -> subprocess.CompletedProcess:
     cmd.append("down")
 
     return subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+
+def cleanup_all_docker() -> None:
+    """Best-effort cleanup of all DESMET Docker resources.
+
+    Called on webui shutdown. Stops Compose services and removes
+    any lingering evaluation containers.
+    """
+    import logging
+
+    _log = logging.getLogger("desmet.infra")
+
+    # 1. Stop all Compose services
+    try:
+        result = compose_down("all")
+        if result.returncode == 0:
+            _log.info("Stopped all Docker Compose services")
+        else:
+            _log.warning(
+                "compose down returned %d: %s", result.returncode, result.stderr
+            )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        _log.warning("Could not stop Compose services: %s", e)
+
+    # 2. Remove eval containers (desmet-run-*)
+    try:
+        ps = subprocess.run(
+            ["docker", "ps", "-aq", "--filter", "name=desmet-run-"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        container_ids = ps.stdout.strip()
+        if container_ids:
+            subprocess.run(
+                ["docker", "rm", "-f"] + container_ids.split(),
+                capture_output=True,
+                timeout=30,
+            )
+            _log.info(
+                "Removed eval containers: %s", container_ids.replace("\n", ", ")
+            )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        _log.warning("Could not clean eval containers: %s", e)

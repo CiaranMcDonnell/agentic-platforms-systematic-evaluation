@@ -7,6 +7,7 @@ from desmet.infra import (
     PLATFORM_CONTAINERS,
     PLATFORM_PACKAGES,
     PROFILE_TARGETS,
+    cleanup_all_docker,
     get_config_status,
     get_container_status,
     get_platform_statuses,
@@ -149,3 +150,40 @@ class TestGetConfigStatus:
         assert status.model == "gpt-5.4-2026-03-05"
         assert status.api_keys_set == []
         assert status.langfuse_status == "not installed"
+
+
+class TestCleanupAllDocker:
+    @patch("desmet.infra.compose_down")
+    @patch("desmet.infra.subprocess.run")
+    def test_calls_compose_down_all(self, mock_run, mock_compose):
+        mock_compose.return_value = MagicMock(returncode=0)
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+        cleanup_all_docker()
+        mock_compose.assert_called_once_with("all")
+
+    @patch("desmet.infra.compose_down")
+    @patch("desmet.infra.subprocess.run")
+    def test_removes_eval_containers(self, mock_run, mock_compose):
+        mock_compose.return_value = MagicMock(returncode=0)
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="abc123\ndef456\n"),
+            MagicMock(returncode=0),
+        ]
+        cleanup_all_docker()
+        ps_call = mock_run.call_args_list[0]
+        assert "--filter" in ps_call.args[0]
+        assert "name=desmet-run-" in ps_call.args[0]
+
+    @patch("desmet.infra.compose_down")
+    @patch("desmet.infra.subprocess.run")
+    def test_survives_docker_not_found(self, mock_run, mock_compose):
+        mock_compose.side_effect = FileNotFoundError()
+        mock_run.side_effect = FileNotFoundError()
+        cleanup_all_docker()
+
+    @patch("desmet.infra.compose_down")
+    @patch("desmet.infra.subprocess.run")
+    def test_survives_compose_failure(self, mock_run, mock_compose):
+        mock_compose.return_value = MagicMock(returncode=1, stderr="error")
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+        cleanup_all_docker()
