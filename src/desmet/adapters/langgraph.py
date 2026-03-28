@@ -25,13 +25,10 @@ from desmet.adapters._base import ToolAgentAdapter
 from desmet.adapters._planning import ImplementationPlan, build_executor_instructions, format_plan_text, parse_plan_text
 from desmet.adapters._prompts import get_stage_persona, get_sub_persona
 from desmet.adapters._tools import ToolFormat, split_tools
+from desmet.adapters._observation import ObservationCollector
 from desmet.adapters._tracing import (
-    finish_trace,
     format_tool_detail,
-    record_message,
     record_node_event,
-    record_tool_call,
-    record_usage,
 )
 from desmet.adapters._validation import validate_workspace
 from desmet.adapters.registry import load_platform_info
@@ -95,6 +92,9 @@ class LangGraphAdapter(ToolAgentAdapter):
         self._llm = None
         self._model_name: str | None = None
         self._last_langsmith_run_id: str | None = None
+
+    def _get_model_name(self) -> str | None:
+        return self._model_name
 
     @property
     def platform_info(self) -> PlatformInfo:
@@ -253,7 +253,7 @@ class LangGraphAdapter(ToolAgentAdapter):
 
     # ── Parent graph builder ───────────────────────────────────────────────
 
-    def _build_graph(self, llm, tools: list, trace=None, progress_callback=None) -> Any:
+    def _build_graph(self, llm, tools: list, collector=None, progress_callback=None) -> Any:
         """Build and compile the parent StateGraph with three subgraph nodes.
 
         Returns a compiled StateGraph (not a tuple).
@@ -261,7 +261,6 @@ class LangGraphAdapter(ToolAgentAdapter):
         ``progress_callback`` is optional; if provided, subgraph wrappers emit
         per-tool-call progress during execution.
         """
-        model_name = self._model_name
         cb = progress_callback
         t0_ref: list[float] = [time.monotonic()]  # mutable ref for closures
         tool_count_ref: list[int] = [0]
@@ -273,19 +272,12 @@ class LangGraphAdapter(ToolAgentAdapter):
         reviewer_sg = self._build_reviewer_subgraph(llm, reviewer_tools)
 
         # ── Helper: extract token usage from a message ──────────────────
-        def _extract_and_record_usage(msg: BaseMessage) -> None:
-            if trace is None:
+        def _extract_and_record_usage(msg: BaseMessage, duration_ms: float = 0.0) -> None:
+            if collector is None:
                 return
             resp_meta = getattr(msg, "response_metadata", {})
-            usage = resp_meta.get("token_usage") or resp_meta.get("usage") or {}
-            if isinstance(usage, dict) and usage.get("total_tokens", 0) > 0:
-                record_usage(
-                    trace,
-                    input_tokens=usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0),
-                    output_tokens=usage.get("completion_tokens", 0) or usage.get("output_tokens", 0),
-                    cost_usd=float(usage.get("cost") or 0.0),
-                    model=model_name,
-                )
+            raw_usage = resp_meta.get("token_usage") or resp_meta.get("usage")
+            collector.record_llm_response(raw_usage=raw_usage, duration_ms=duration_ms)
 
         # ── Wrapper: planner ────────────────────────────────────────────
         async def planner_wrapper(state: ParentState) -> dict:
@@ -316,14 +308,15 @@ class LangGraphAdapter(ToolAgentAdapter):
                 )
 
             if last_msg:
-                _extract_and_record_usage(last_msg)
-                if trace is not None:
-                    record_message(trace, "assistant", plan_text, metadata={"node": "planner"})
+                planner_duration = (time.monotonic() - t0_ref[0]) * 1000
+                _extract_and_record_usage(last_msg, duration_ms=planner_duration)
+                if collector is not None:
+                    collector.record_message("assistant", plan_text, metadata={"node": "planner"})
 
             if cb is not None:
                 step_count = len(plan_obj.steps)
                 elapsed = time.monotonic() - t0_ref[0]
-                tokens = trace.total_tokens_input + trace.total_tokens_output if trace else 0
+                tokens = collector.trace.total_tokens_input + collector.trace.total_tokens_output if collector else 0
                 cb(f"    [planner] done — {step_count} steps planned  ({elapsed:.0f}s, {tokens:,} tokens)")
 
             return {
@@ -364,6 +357,7 @@ class LangGraphAdapter(ToolAgentAdapter):
 
             # Stream the executor subgraph so we can emit per-tool progress
             llm_call_count = 0
+            executor_t0 = time.monotonic()
             async for chunk in executor_sg.astream(
                 {"messages": messages}, stream_mode="updates",
             ):
@@ -375,9 +369,8 @@ class LangGraphAdapter(ToolAgentAdapter):
 
                         # Record messages in trace
                         content = getattr(msg, "content", "")
-                        if content and trace is not None:
-                            record_message(
-                                trace,
+                        if content and collector is not None:
+                            collector.record_message(
                                 getattr(msg, "type", "assistant"),
                                 str(content),
                                 metadata={"node": f"executor/{node_name}"},
@@ -392,12 +385,12 @@ class LangGraphAdapter(ToolAgentAdapter):
                             tool_count_ref[0] += 1
                             tc_name = tc.get("name", "unknown")
                             tc_args = tc.get("args", {})
-                            if trace is not None:
-                                record_tool_call(trace, tc_name, tc_args, "")
+                            if collector is not None:
+                                collector.record_tool_execution(tc_name, tc_args, "")
                             if cb is not None:
                                 elapsed = time.monotonic() - t0_ref[0]
                                 detail = format_tool_detail(tc_name, tc_args)
-                                tokens = trace.total_tokens_input + trace.total_tokens_output if trace else 0
+                                tokens = collector.trace.total_tokens_input + collector.trace.total_tokens_output if collector else 0
                                 cb(
                                     f"    tool {tool_count_ref[0]} — {detail}"
                                     f"  ({elapsed:.0f}s, {tokens:,} tokens)"
@@ -406,15 +399,19 @@ class LangGraphAdapter(ToolAgentAdapter):
                     # Heartbeat for long-running executor loops
                     if cb is not None and node_name == "executor_node":
                         elapsed = time.monotonic() - t0_ref[0]
-                        tokens = trace.total_tokens_input + trace.total_tokens_output if trace else 0
+                        tokens = collector.trace.total_tokens_input + collector.trace.total_tokens_output if collector else 0
                         cb(f"    [executor] step {llm_call_count}  ({elapsed:.0f}s, {tokens:,} tokens)")
+
+            executor_duration = (time.monotonic() - executor_t0) * 1000
+            if collector is not None:
+                collector.record_llm_response(raw_usage=None, duration_ms=executor_duration)
 
             passed = validate_workspace(stage, workspace)
             new_retry = retry_count + 1
 
-            if trace is not None:
+            if collector is not None:
                 record_node_event(
-                    trace,
+                    collector.trace,
                     "executor_node",
                     validator_passed=passed,
                     retry_count=new_retry,
@@ -447,23 +444,27 @@ class LangGraphAdapter(ToolAgentAdapter):
                 )
             ]
 
+            reviewer_t0 = time.monotonic()
             result = await reviewer_sg.ainvoke({"messages": messages})
+            reviewer_duration = (time.monotonic() - reviewer_t0) * 1000
 
             for msg in result.get("messages", []):
-                _extract_and_record_usage(msg)
+                _extract_and_record_usage(msg, duration_ms=0.0)
+            if collector is not None:
+                collector.record_llm_response(raw_usage=None, duration_ms=reviewer_duration)
 
             last_msg = result["messages"][-1] if result.get("messages") else None
-            if last_msg and trace is not None:
+            if last_msg and collector is not None:
                 content = getattr(last_msg, "content", None)
                 # Content may be empty when the LLM returns tool calls only;
                 # still record the message so the reviewer appears in the graph.
                 text = str(content) if content else "(reviewer tool call)"
-                record_message(trace, "assistant", text, metadata={"node": "reviewer"})
-                record_node_event(trace, "reviewer", validator_passed=state.get("validator_passed", False))
+                collector.record_message("assistant", text, metadata={"node": "reviewer"})
+                record_node_event(collector.trace, "reviewer", validator_passed=state.get("validator_passed", False))
 
             if cb is not None:
                 elapsed = time.monotonic() - t0_ref[0]
-                tokens = trace.total_tokens_input + trace.total_tokens_output if trace else 0
+                tokens = collector.trace.total_tokens_input + collector.trace.total_tokens_output if collector else 0
                 cb(f"    [reviewer] done  ({elapsed:.0f}s, {tokens:,} tokens)")
 
             return {
@@ -506,17 +507,17 @@ class LangGraphAdapter(ToolAgentAdapter):
         prompt: str,
         system_msg: str | None,
         tools: list,
-        trace,
+        collector: ObservationCollector,
         context: StageContext,
     ) -> tuple[int, bool]:
         """Stream the parent StateGraph (with three subgraph nodes) for one SDLC stage."""
         self._last_langsmith_run_id = None
 
-        # Build parent graph with trace closure for token recording
+        # Build parent graph with collector closure for token recording
         progress_cb = getattr(context, "progress_callback", None)
-        graph = self._build_graph(self._llm, tools, trace=trace, progress_callback=progress_cb)
+        graph = self._build_graph(self._llm, tools, collector=collector, progress_callback=progress_cb)
 
-        record_message(trace, "user", prompt)
+        collector.record_message("user", prompt)
 
         run_id = uuid.uuid4()
         lf_cb = get_langchain_callback()
@@ -569,8 +570,8 @@ class LangGraphAdapter(ToolAgentAdapter):
                 hit_limit = True
                 break
 
-        trace.total_iterations = final_state.get("iterations", iteration)
-        finish_trace(trace, final_state=final_state)
+        collector.mark_iterations(final_state.get("iterations", iteration))
+        collector.trace.final_state = final_state
         self._last_langsmith_run_id = str(run_id) if self._langsmith_enabled() else None
         return iteration, hit_limit
 
