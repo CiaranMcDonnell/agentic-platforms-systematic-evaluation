@@ -66,6 +66,7 @@ RUN mkdir -p /home/agent/.config \
 
 COPY --chown=agent:agent pyproject.toml uv.lock README.md /app/
 COPY --chown=agent:agent src/ /app/src/
+COPY --chown=agent:agent config/ /app/config/
 WORKDIR /app
 RUN uv sync --no-dev
 
