@@ -11,31 +11,29 @@
   } from '@xyflow/svelte';
   import '@xyflow/svelte/dist/style.css';
   import ELK from 'elkjs/lib/elk.bundled.js';
-  import { fetchAgentGraph } from '../api';
-  import type { CommunicationGraph, TimelineEvent, GraphNode as ApiGraphNode } from '../api';
+  import { fetchAgentGraph, fetchLangfuseTrace } from '../api';
+  import type {
+    CommunicationGraph, TimelineEvent, GraphNode as ApiGraphNode,
+    LangfuseObservation, LangfuseTraceDetail,
+  } from '../api';
   import AgentNode from './AgentNode.svelte';
+  import ObservationNode from './ObservationNode.svelte';
   import TransitionEdge from './TransitionEdge.svelte';
   import TimelineCard from './TimelineCard.svelte';
+  import ObservationDrawer from './ObservationDrawer.svelte';
 
-  let { platformId, storyId }: { platformId: string; storyId: string } = $props();
+  let { platformId, storyId, langfuseTraceId = null }: {
+    platformId: string;
+    storyId: string;
+    langfuseTraceId?: string | null;
+  } = $props();
 
-  let graphData: CommunicationGraph | null = $state(null);
+  // ── Shared state ──────────────────────────────────────────────
   let loading = $state(true);
   let error: string | null = $state(null);
-  let activeAgentId: string | null = $state(null);
-  let filterAgentId: string | null = $state(null);
-  let selectedEventIndex: number | null = $state(null);
-  let listContainer: HTMLDivElement | undefined = $state();
-  let cardElements: Map<number, HTMLDivElement> = new Map();
+  let mode: 'langfuse' | 'fallback' = $state('fallback');
 
-  // Svelte Flow state
   let baseNodes: Node[] = $state([]);
-  let nodes = $derived(
-    baseNodes.map(n => ({
-      ...n,
-      data: { ...n.data, active: n.id === activeAgentId },
-    }))
-  );
   let edges: Edge[] = $state([]);
 
   const ROLE_COLORS: Record<string, string> = {
@@ -49,10 +47,39 @@
     return ROLE_COLORS[id] ?? '#888888';
   }
 
-  const nodeTypes: NodeTypes = { agent: AgentNode as any };
+  const nodeTypes: NodeTypes = {
+    agent: AgentNode as any,
+    observation: ObservationNode as any,
+  };
   const edgeTypes: EdgeTypes = { transition: TransitionEdge as any };
 
-  // Visible edges tracking
+  // ── Langfuse mode state ───────────────────────────────────────
+  let langfuseData: LangfuseTraceDetail | null = $state(null);
+  let allObservations: Map<string, LangfuseObservation> = new Map();
+  let selectedObsId: string | null = $state(null);
+  let selectedObservation = $derived(
+    selectedObsId ? allObservations.get(selectedObsId) ?? null : null
+  );
+  let topologyStats = $state({ agents: 0, tokens: 0, observations: 0, transitions: 0 });
+
+  // Derive nodes with selected state
+  let nodes = $derived(
+    baseNodes.map(n => {
+      if (n.type === 'observation') {
+        return { ...n, data: { ...n.data, selected: n.id === selectedObsId } };
+      }
+      return n;
+    })
+  );
+
+  // ── Fallback mode state ───────────────────────────────────────
+  let graphData: CommunicationGraph | null = $state(null);
+  let activeAgentId: string | null = $state(null);
+  let filterAgentId: string | null = $state(null);
+  let selectedEventIndex: number | null = $state(null);
+  let listContainer: HTMLDivElement | undefined = $state();
+  let cardElements: Map<number, HTMLDivElement> = new Map();
+
   let visibleEdgeKeys = $state(new Set<string>());
   let activeEdgeKey: string | null = $state(null);
   let edgeDotCounts = $state(new Map<string, number>());
@@ -60,6 +87,221 @@
   function edgeKey(source: string, target: string): string {
     return `${source}->${target}`;
   }
+
+  // ── Langfuse layout ───────────────────────────────────────────
+
+  function flattenObservations(obs: LangfuseObservation): LangfuseObservation[] {
+    const result: LangfuseObservation[] = [obs];
+    for (const child of obs.children) {
+      result.push(...flattenObservations(child));
+    }
+    return result;
+  }
+
+  function obsStat(obs: LangfuseObservation): string {
+    if (obs.type === 'generation' && obs.tokens.total > 0) {
+      return `${obs.tokens.input.toLocaleString()}↑ ${obs.tokens.output.toLocaleString()}↓`;
+    }
+    return `${(obs.latency_ms / 1000).toFixed(2)}s`;
+  }
+
+  async function loadLangfuseGraph(traceId: string) {
+    loading = true;
+    error = null;
+    mode = 'langfuse';
+    selectedObsId = null;
+    allObservations = new Map();
+
+    try {
+      langfuseData = await fetchLangfuseTrace(traceId);
+      const rootObs = langfuseData.observations;
+
+      if (rootObs.length === 0) {
+        error = 'No observations found in trace.';
+        return;
+      }
+
+      // Root's direct children are the agent clusters.
+      // If there's only one root observation (the harness wrapper), use its children instead.
+      let agentObs: LangfuseObservation[];
+      if (rootObs.length === 1 && rootObs[0].children.length > 0) {
+        agentObs = rootObs[0].children;
+      } else {
+        agentObs = rootObs;
+      }
+
+      // Build observation index
+      for (const agent of agentObs) {
+        for (const obs of flattenObservations(agent)) {
+          allObservations.set(obs.id, obs);
+        }
+      }
+
+      // Build ELK compound graph
+      const elk = new ELK();
+      const elkChildren: any[] = [];
+      const elkEdges: any[] = [];
+      let edgeIdx = 0;
+
+      for (const agent of agentObs) {
+        const flatObs = flattenObservations(agent);
+        const agentNode: any = {
+          id: `agent-${agent.name}`,
+          layoutOptions: {
+            'elk.algorithm': 'layered',
+            'elk.direction': 'DOWN',
+            'elk.spacing.nodeNode': '20',
+            'elk.layered.spacing.nodeNodeBetweenLayers': '30',
+            'elk.padding': '[top=40,left=15,bottom=15,right=15]',
+          },
+          children: flatObs.map(obs => ({
+            id: obs.id,
+            width: 160,
+            height: obs.model ? 52 : 40,
+          })),
+          edges: [] as any[],
+        };
+
+        // Sequential edges within cluster
+        for (let i = 0; i < flatObs.length - 1; i++) {
+          agentNode.edges.push({
+            id: `inner-${edgeIdx++}`,
+            sources: [flatObs[i].id],
+            targets: [flatObs[i + 1].id],
+          });
+        }
+
+        elkChildren.push(agentNode);
+      }
+
+      // Cross-cluster edges (last obs of agent[i] → first obs of agent[i+1])
+      const crossClusterEdges: { source: string; target: string; sourceAgent: string }[] = [];
+      for (let i = 0; i < agentObs.length - 1; i++) {
+        const fromFlat = flattenObservations(agentObs[i]);
+        const toFlat = flattenObservations(agentObs[i + 1]);
+        if (fromFlat.length > 0 && toFlat.length > 0) {
+          crossClusterEdges.push({
+            source: fromFlat[fromFlat.length - 1].id,
+            target: toFlat[0].id,
+            sourceAgent: agentObs[i].name,
+          });
+          elkEdges.push({
+            id: `cross-${edgeIdx++}`,
+            sources: [fromFlat[fromFlat.length - 1].id],
+            targets: [toFlat[0].id],
+          });
+        }
+      }
+
+      const elkGraph = {
+        id: 'root',
+        layoutOptions: {
+          'elk.algorithm': 'layered',
+          'elk.direction': 'RIGHT',
+          'elk.spacing.nodeNode': '40',
+          'elk.layered.spacing.nodeNodeBetweenLayers': '60',
+        },
+        children: elkChildren,
+        edges: elkEdges,
+      };
+
+      const layout = await elk.layout(elkGraph);
+
+      // Convert ELK layout to Svelte Flow nodes
+      const flowNodes: Node[] = [];
+
+      for (const agentLayout of layout.children ?? []) {
+        const agentName = agentLayout.id.replace('agent-', '');
+        const agentColor = roleColor(agentName);
+        const agentData = agentObs.find(a => a.name === agentName);
+        const agentTotalTokens = agentData
+          ? flattenObservations(agentData).reduce((s, o) => s + o.tokens.total, 0)
+          : 0;
+
+        // Agent container as a group node
+        flowNodes.push({
+          id: agentLayout.id,
+          type: 'group',
+          position: { x: agentLayout.x ?? 0, y: agentLayout.y ?? 0 },
+          style: `width: ${agentLayout.width}px; height: ${agentLayout.height}px; background: rgba(255,255,255,0.02); border: 2px solid ${agentColor}; border-radius: 12px;`,
+          data: {
+            label: agentName.charAt(0).toUpperCase() + agentName.slice(1),
+            color: agentColor,
+            tokens: agentTotalTokens,
+          },
+        });
+
+        // Observation nodes inside the container
+        for (const obsLayout of agentLayout.children ?? []) {
+          const obs = allObservations.get(obsLayout.id);
+          if (!obs) continue;
+          flowNodes.push({
+            id: obs.id,
+            type: 'observation',
+            position: { x: obsLayout.x ?? 0, y: obsLayout.y ?? 0 },
+            parentId: agentLayout.id,
+            extent: 'parent' as const,
+            data: {
+              name: obs.name,
+              obsType: obs.type,
+              stat: obsStat(obs),
+              model: obs.model,
+              isError: obs.level === 'ERROR',
+              selected: false,
+            },
+          });
+        }
+      }
+
+      baseNodes = flowNodes;
+
+      // Build edges
+      const flowEdges: Edge[] = [];
+
+      // Inner edges (sequential within clusters)
+      for (const agentLayout of layout.children ?? []) {
+        const children = agentLayout.children ?? [];
+        for (let i = 0; i < children.length - 1; i++) {
+          flowEdges.push({
+            id: `inner-${children[i].id}-${children[i + 1].id}`,
+            source: children[i].id,
+            target: children[i + 1].id,
+            style: 'stroke: #444; stroke-width: 1; opacity: 0.5;',
+          });
+        }
+      }
+
+      // Cross-cluster edges with transition dots
+      for (const ce of crossClusterEdges) {
+        flowEdges.push({
+          id: `cross-${ce.source}-${ce.target}`,
+          source: ce.source,
+          target: ce.target,
+          type: 'transition',
+          data: { dots: 1, sourceColor: roleColor(ce.sourceAgent) },
+          style: `stroke: ${roleColor(ce.sourceAgent)}; stroke-width: 2; opacity: 0.8;`,
+        });
+      }
+
+      edges = flowEdges;
+
+      topologyStats = {
+        agents: agentObs.length,
+        tokens: langfuseData.trace.total_tokens,
+        observations: allObservations.size,
+        transitions: crossClusterEdges.length,
+      };
+
+    } catch (e: any) {
+      console.warn('Langfuse trace failed, falling back:', e);
+      mode = 'fallback';
+      await loadFallbackGraph();
+    } finally {
+      loading = false;
+    }
+  }
+
+  // ── Fallback layout (existing logic) ──────────────────────────
 
   function updateVisibleEdges(upToIndex: number) {
     const timeline = graphData?.timeline ?? [];
@@ -97,9 +339,8 @@
       : null
   );
 
-  // Update edges when visibility changes
   $effect(() => {
-    if (!graphData) return;
+    if (mode !== 'fallback' || !graphData) return;
     edges = graphData.edges.map(e => {
       const key = edgeKey(e.source, e.target);
       const visible = visibleEdgeKeys.has(key);
@@ -121,9 +362,8 @@
     });
   });
 
-  async function layoutWithELK(apiNodes: ApiGraphNode[], apiEdges: typeof graphData.edges) {
+  async function layoutFallbackWithELK(apiNodes: ApiGraphNode[], apiEdges: typeof graphData.edges) {
     const elk = new ELK();
-
     const elkGraph = {
       id: 'root',
       layoutOptions: {
@@ -132,20 +372,14 @@
         'elk.spacing.nodeNode': '80',
         'elk.layered.spacing.nodeNodeBetweenLayers': '100',
       },
-      children: apiNodes.map(n => ({
-        id: n.id,
-        width: 120,
-        height: 80,
-      })),
+      children: apiNodes.map(n => ({ id: n.id, width: 120, height: 80 })),
       edges: apiEdges.map((e, i) => ({
         id: `elk-edge-${i}`,
         sources: [e.source],
         targets: [e.target],
       })),
     };
-
     const layout = await elk.layout(elkGraph);
-
     return (layout.children ?? []).map(child => ({
       id: child.id,
       type: 'agent',
@@ -162,9 +396,10 @@
     }));
   }
 
-  async function loadGraph() {
+  async function loadFallbackGraph() {
     loading = true;
     error = null;
+    mode = 'fallback';
     activeAgentId = null;
     filterAgentId = null;
     selectedEventIndex = null;
@@ -178,7 +413,7 @@
         error = 'No agent data available for this run.';
         return;
       }
-      baseNodes = await layoutWithELK(graphData.nodes, graphData.edges);
+      baseNodes = await layoutFallbackWithELK(graphData.nodes, graphData.edges);
       edges = graphData.edges.map(e => ({
         id: edgeKey(e.source, e.target),
         source: e.source,
@@ -198,11 +433,18 @@
     }
   }
 
-  // onnodeclick receives { node, event } destructured object
+  // ── Interaction handlers ──────────────────────────────────────
+
   function handleNodeClick({ node }: { node: Node; event: MouseEvent | TouchEvent }) {
-    const nodeId = node?.id;
-    if (!nodeId) return;
-    filterAgentId = filterAgentId === nodeId ? null : nodeId;
+    if (mode === 'langfuse') {
+      if (node.type === 'observation') {
+        selectedObsId = selectedObsId === node.id ? null : node.id;
+      }
+    } else {
+      const nodeId = node?.id;
+      if (!nodeId) return;
+      filterAgentId = filterAgentId === nodeId ? null : nodeId;
+    }
   }
 
   function handleCardClick(evt: TimelineEvent) {
@@ -211,10 +453,8 @@
     updateVisibleEdges(evt.index);
   }
 
-  // Scroll-driven tracking
   let observer: IntersectionObserver | null = null;
 
-  // Svelte action for registering cards with IntersectionObserver
   function registerCard(el: HTMLDivElement, index: number) {
     cardElements.set(index, el);
     observer?.observe(el);
@@ -255,41 +495,63 @@
     return () => { observer?.disconnect(); };
   });
 
-  function handleListKeydown(e: KeyboardEvent) {
-    if (!graphData?.timeline) return;
-    const filtered = displayTimeline;
-    if (!filtered.length) return;
-
+  function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
-      filterAgentId = null;
+      if (mode === 'langfuse') {
+        selectedObsId = null;
+      } else {
+        filterAgentId = null;
+      }
       return;
     }
 
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault();
-      const currentIdx = filtered.findIndex(ev => ev.index === selectedEventIndex);
-      let nextIdx: number;
-      if (e.key === 'ArrowDown') {
-        nextIdx = currentIdx < filtered.length - 1 ? currentIdx + 1 : currentIdx;
-      } else {
-        nextIdx = currentIdx > 0 ? currentIdx - 1 : 0;
+    if (mode === 'fallback') {
+      if (!graphData?.timeline) return;
+      const filtered = displayTimeline;
+      if (!filtered.length) return;
+
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        const currentIdx = filtered.findIndex(ev => ev.index === selectedEventIndex);
+        let nextIdx: number;
+        if (e.key === 'ArrowDown') {
+          nextIdx = currentIdx < filtered.length - 1 ? currentIdx + 1 : currentIdx;
+        } else {
+          nextIdx = currentIdx > 0 ? currentIdx - 1 : 0;
+        }
+        const nextEvent = filtered[nextIdx];
+        handleCardClick(nextEvent);
+        const el = cardElements.get(nextEvent.index);
+        el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
       }
-      const nextEvent = filtered[nextIdx];
-      handleCardClick(nextEvent);
-      const el = cardElements.get(nextEvent.index);
-      el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     }
   }
 
+  // ── Load on prop change ───────────────────────────────────────
+
   $effect(() => {
     if (platformId && storyId) {
-      loadGraph();
+      if (langfuseTraceId) {
+        loadLangfuseGraph(langfuseTraceId);
+      } else {
+        loadFallbackGraph();
+      }
     }
   });
 </script>
 
-<div class="agent-graph-container">
-  {#if graphData && !error}
+<div class="agent-graph-container" onkeydown={handleKeydown} tabindex="0" role="application">
+  {#if mode === 'langfuse' && langfuseData && !error}
+    <div class="topology-badge">
+      <span class="topology-label">TRACE</span>
+      <span class="topology-stats">
+        {topologyStats.agents} agents &middot;
+        {topologyStats.tokens.toLocaleString()} tokens &middot;
+        {topologyStats.transitions} transitions &middot;
+        {topologyStats.observations} observations
+      </span>
+    </div>
+  {:else if mode === 'fallback' && graphData && !error}
     <div class="topology-badge">
       <span class="topology-label">{graphData.topology}</span>
       <span class="topology-stats">
@@ -303,7 +565,7 @@
     </div>
   {/if}
 
-  <div class="graph-layout">
+  <div class="graph-layout" class:has-drawer={mode === 'langfuse' && !!selectedObsId}>
     <div class="graph-panel">
       {#if loading}
         <div class="graph-status">Loading graph...</div>
@@ -329,36 +591,42 @@
       {/if}
     </div>
 
-    <div
-      class="timeline-panel"
-      bind:this={listContainer}
-      onkeydown={handleListKeydown}
-      tabindex="0"
-      role="listbox"
-    >
-      {#if filterAgentId}
-        <div class="filter-bar">
-          <span>Showing: <strong style="color: {roleColor(filterAgentId)}">{filterAgentName}</strong> ({displayTimeline.length} messages)</span>
-          <button class="filter-clear" onclick={() => filterAgentId = null}>&times;</button>
-        </div>
-      {/if}
-      {#each displayTimeline as evt (evt.index)}
-        <div
-          data-event-index={evt.index}
-          use:registerCard={evt.index}
-        >
-          <TimelineCard
-            event={evt}
-            agentColor={roleColor(evt.agent_id)}
-            selected={selectedEventIndex === evt.index}
-            onclick={() => handleCardClick(evt)}
-          />
-        </div>
-      {/each}
-      {#if displayTimeline.length === 0 && !loading}
-        <div class="timeline-empty">No events to display</div>
-      {/if}
-    </div>
+    {#if mode === 'langfuse'}
+      <ObservationDrawer
+        observation={selectedObservation}
+        onclose={() => selectedObsId = null}
+      />
+    {:else}
+      <div
+        class="timeline-panel"
+        bind:this={listContainer}
+        tabindex="0"
+        role="listbox"
+      >
+        {#if filterAgentId}
+          <div class="filter-bar">
+            <span>Showing: <strong style="color: {roleColor(filterAgentId)}">{filterAgentName}</strong> ({displayTimeline.length} messages)</span>
+            <button class="filter-clear" onclick={() => filterAgentId = null}>&times;</button>
+          </div>
+        {/if}
+        {#each displayTimeline as evt (evt.index)}
+          <div
+            data-event-index={evt.index}
+            use:registerCard={evt.index}
+          >
+            <TimelineCard
+              event={evt}
+              agentColor={roleColor(evt.agent_id)}
+              selected={selectedEventIndex === evt.index}
+              onclick={() => handleCardClick(evt)}
+            />
+          </div>
+        {/each}
+        {#if displayTimeline.length === 0 && !loading}
+          <div class="timeline-empty">No events to display</div>
+        {/if}
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -367,6 +635,7 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+    outline: none;
   }
 
   .topology-badge {
@@ -389,18 +658,16 @@
     font-size: 11px;
   }
 
-  .topology-stats {
-    color: #888;
-  }
+  .topology-stats { color: #888; }
 
   .graph-layout {
     display: flex;
-    gap: 12px;
-    height: 500px;
+    gap: 0;
+    height: 600px;
   }
 
   .graph-panel {
-    flex: 3;
+    flex: 1;
     position: relative;
     background: rgba(255, 255, 255, 0.03);
     border-radius: 8px;
@@ -419,7 +686,8 @@
   }
 
   .timeline-panel {
-    flex: 2;
+    width: 350px;
+    flex-shrink: 0;
     display: flex;
     flex-direction: column;
     gap: 4px;
@@ -457,9 +725,7 @@
     padding: 0 4px;
   }
 
-  .filter-clear:hover {
-    color: #ccc;
-  }
+  .filter-clear:hover { color: #ccc; }
 
   .timeline-empty {
     display: flex;
