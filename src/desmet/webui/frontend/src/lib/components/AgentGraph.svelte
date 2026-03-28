@@ -27,7 +27,13 @@
   let cardElements: Map<number, HTMLDivElement> = new Map();
 
   // Svelte Flow state
-  let nodes: Node[] = $state([]);
+  let baseNodes: Node[] = $state([]);
+  let nodes = $derived(
+    baseNodes.map(n => ({
+      ...n,
+      data: { ...n.data, active: n.id === activeAgentId },
+    }))
+  );
   let edges: Edge[] = $state([]);
 
   const ROLE_COLORS: Record<string, string> = {
@@ -84,8 +90,6 @@
       : null
   );
 
-  let filterCount = $derived(displayTimeline.length);
-
   // Update edges when visibility changes
   $effect(() => {
     if (!graphData) return;
@@ -106,15 +110,6 @@
         labelStyle: 'fill: #888; font-size: 10px;',
       };
     });
-  });
-
-  // Update node active state
-  $effect(() => {
-    if (!graphData) return;
-    nodes = nodes.map(n => ({
-      ...n,
-      data: { ...n.data, active: n.id === activeAgentId },
-    }));
   });
 
   async function layoutWithELK(apiNodes: ApiGraphNode[], apiEdges: typeof graphData.edges) {
@@ -173,7 +168,7 @@
         error = 'No agent data available for this run.';
         return;
       }
-      nodes = await layoutWithELK(graphData.nodes, graphData.edges);
+      baseNodes = await layoutWithELK(graphData.nodes, graphData.edges);
       edges = graphData.edges.map(e => ({
         id: edgeKey(e.source, e.target),
         source: e.source,
@@ -245,9 +240,6 @@
         },
         { root: listContainer, threshold: 0.5 }
       );
-      for (const el of cardElements.values()) {
-        observer.observe(el);
-      }
     }
   });
 
@@ -333,7 +325,7 @@
     >
       {#if filterAgentId}
         <div class="filter-bar">
-          <span>Showing: <strong style="color: {roleColor(filterAgentId)}">{filterAgentName}</strong> ({filterCount} messages)</span>
+          <span>Showing: <strong style="color: {roleColor(filterAgentId)}">{filterAgentName}</strong> ({displayTimeline.length} messages)</span>
           <button class="filter-clear" onclick={() => filterAgentId = null}>&times;</button>
         </div>
       {/if}
