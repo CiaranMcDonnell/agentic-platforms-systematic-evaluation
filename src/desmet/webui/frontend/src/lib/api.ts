@@ -146,12 +146,30 @@ export interface GraphEdge {
   sequence: number[];
 }
 
+export interface TimelineEvent {
+  index: number;
+  type: 'llm' | 'tool' | 'agent' | 'routing';
+  raw_type: string;
+  agent_id: string;
+  role: string;
+  content: string;
+  timestamp: string;
+  duration_ms: number | null;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  model: string | null;
+  tool_name: string | null;
+  tool_success: boolean | null;
+  target_agent_id: string | null;
+}
+
 export interface CommunicationGraph {
   nodes: GraphNode[];
   edges: GraphEdge[];
   topology: string;
   platform: string;
   story_id: string;
+  timeline: TimelineEvent[];
 }
 
 export interface TraceData {
