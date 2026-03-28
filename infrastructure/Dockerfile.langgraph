@@ -1,0 +1,4 @@
+FROM desmet-eval-base:1.0
+WORKDIR /app
+RUN uv sync --extra langgraph --no-dev
+WORKDIR /workspace

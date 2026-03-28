@@ -1,0 +1,130 @@
+# =============================================================================
+# DESMET Agent Evaluation Environment
+# =============================================================================
+# Consistent Linux environment for all 9 agentic frameworks to execute the
+# full software lifecycle (requirements -> code -> test -> build -> deploy).
+#
+# Build:
+#   docker build -f infrastructure/Dockerfile.eval -t desmet-eval-env:1.0 infrastructure/
+#
+# Run (per story):
+#   docker run --rm \
+#     -v ./results/langgraph/api_service/workspace:/workspace \
+#     --env-file .env \
+#     desmet-eval-env:1.0
+#
+# Exec (from harness):
+#   docker exec <container_id> bash -c "uv run pytest --rootdir=."
+# =============================================================================
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# ---------------------------------------------------------------------------
+# System packages
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Core
+    curl wget git jq unzip zip \
+    build-essential make rsync ca-certificates gnupg \
+    software-properties-common \
+    # UTF-8 locale (prevents encoding errors in Python/git)
+    locales \
+    # SQLite CLI (baseline app uses aiosqlite)
+    sqlite3 \
+    # Puppeteer/Chromium system deps (for mermaid-cli SVG rendering)
+    libasound2t64 libatk-bridge2.0-0 libatk1.0-0 libcups2 \
+    libdbus-1-3 libdrm2 libgbm1 libgtk-3-0t64 libnspr4 libnss3 \
+    libpango-1.0-0 libx11-xcb1 libxcomposite1 libxdamage1 \
+    libxfixes3 libxrandr2 libxshmfence1 \
+    fonts-liberation xdg-utils \
+    && rm -rf /var/lib/apt/lists/* \
+    && locale-gen en_US.UTF-8
+
+ENV LANG=en_US.UTF-8 \
+    LC_ALL=en_US.UTF-8
+
+# ---------------------------------------------------------------------------
+# Python 3.11 via deadsnakes (Ubuntu 24.04 ships 3.12)
+# ---------------------------------------------------------------------------
+RUN add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+       python3.11 python3.11-venv python3.11-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/python  python  /usr/bin/python3.11 1
+
+# ---------------------------------------------------------------------------
+# uv — Python package manager (never pip)
+# ---------------------------------------------------------------------------
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+# ---------------------------------------------------------------------------
+# Non-root user
+# ---------------------------------------------------------------------------
+RUN useradd -m -s /bin/bash agent \
+    && mkdir -p /workspace \
+    && chown agent:agent /workspace
+
+# Git identity — agents will git init/commit in workspaces
+RUN git config --system user.name "desmet-agent" \
+    && git config --system user.email "agent@desmet.local"
+
+USER agent
+ENV HOME=/home/agent \
+    PATH="/home/agent/.bun/bin:/home/agent/.local/bin:$PATH"
+
+# ---------------------------------------------------------------------------
+# Bun — JS/TS runtime (never npm/npx)
+# ---------------------------------------------------------------------------
+RUN curl -fsSL https://bun.sh/install | bash
+
+# ---------------------------------------------------------------------------
+# Node symlink — many npm packages (including mermaid-cli) use
+# #!/usr/bin/env node shebangs.  Bun is Node-compatible, so symlinking
+# works for all practical purposes.
+# ---------------------------------------------------------------------------
+RUN mkdir -p /home/agent/.local/bin \
+    && ln -s /home/agent/.bun/bin/bun /home/agent/.local/bin/node
+
+# ---------------------------------------------------------------------------
+# Mermaid CLI — diagram rendering (mmdc -p ~/.config/puppeteer.json ...)
+# Pre-installed so agents don't wait for download during evaluation.
+# Puppeteer downloads its own Chromium binary here.
+# ---------------------------------------------------------------------------
+ENV PUPPETEER_CACHE_DIR=/home/agent/.cache/puppeteer
+RUN bun install --global @mermaid-js/mermaid-cli
+
+# Puppeteer config: --no-sandbox required for non-root in containers.
+# Agents call `bunx mmdc -p ~/.config/puppeteer.json -i in.mmd -o out.svg`
+RUN mkdir -p /home/agent/.config \
+    && echo '{"args":["--no-sandbox","--disable-setuid-sandbox"]}' \
+       > /home/agent/.config/puppeteer.json
+
+# ---------------------------------------------------------------------------
+# Install DESMET package (core deps only, no platform extras)
+# ---------------------------------------------------------------------------
+COPY --chown=agent:agent pyproject.toml uv.lock /app/
+COPY --chown=agent:agent src/ /app/src/
+WORKDIR /app
+RUN uv sync --no-dev
+
+# ---------------------------------------------------------------------------
+# Workspace mount point
+# ---------------------------------------------------------------------------
+WORKDIR /workspace
+
+# Smoke test: verify all tools are reachable
+RUN echo "=== Smoke test ===" \
+    && python --version \
+    && uv --version \
+    && bun --version \
+    && git --version \
+    && python -c "from desmet.harness.entrypoint import run_entrypoint" \
+    && echo "All tools verified"
+
+CMD ["bash"]
