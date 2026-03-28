@@ -120,7 +120,7 @@ def get_adapter(
 # Platforms whose adapters are fully implemented (i.e. do not raise
 # NotImplementedError on their stage methods).  Update this set as more
 # adapters are completed.
-_IMPLEMENTED_PLATFORMS: frozenset[str] = frozenset({"langgraph", "crewai", "openai_agents_sdk"})
+_IMPLEMENTED_PLATFORMS: frozenset[str] = frozenset({"langgraph", "crewai", "openai_agents_sdk", "microsoft_agent_framework"})
 
 
 def list_available_platforms() -> list[str]:

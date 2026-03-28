@@ -183,3 +183,21 @@ class TestUsageTrackingMiddleware:
         trace = AgentTrace()
         mw = UsageTrackingMiddleware(trace, model_name="gpt-5.2")
         assert hasattr(mw, "_lock")
+
+
+class TestRegistryIntegration:
+    def test_agent_framework_in_implemented_platforms(self):
+        from desmet.adapters.registry import list_available_platforms
+        platforms = list_available_platforms()
+        assert "microsoft_agent_framework" in platforms
+
+    def test_registry_returns_correct_adapter(self):
+        from desmet.adapters.registry import get_adapter
+        adapter = get_adapter("microsoft_agent_framework")
+        assert isinstance(adapter, AgentFrameworkAdapter)
+
+    def test_registry_adapter_has_correct_tool_format(self):
+        from desmet.adapters.registry import get_adapter
+        from desmet.adapters._tools import ToolFormat
+        adapter = get_adapter("microsoft_agent_framework")
+        assert adapter.TOOL_FORMAT == ToolFormat.AGENT_FRAMEWORK
