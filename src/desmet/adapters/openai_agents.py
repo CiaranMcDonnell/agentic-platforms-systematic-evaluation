@@ -8,7 +8,7 @@ the executor retries with conversation carry-forward.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from desmet.adapters._base import ToolAgentAdapter
@@ -16,15 +16,13 @@ from desmet.adapters._planning import ImplementationPlan, build_executor_instruc
 from desmet.adapters._prompts import get_stage_persona, get_sub_persona
 from desmet.adapters._tools import ToolFormat
 from desmet.adapters._observation import ObservationCollector
-from desmet.adapters._tracing import format_tool_detail
+from desmet.adapters._retry import ProgressReporter, RetryPolicy
 from desmet.adapters._validation import validate_workspace
 from desmet.adapters.registry import load_platform_info
 from desmet.harness.context import StageContext
 from desmet.harness.models import PlatformInfo
 from desmet.llm_config import Provider
 from desmet.llm_config import get_config as get_llm_config
-
-MAX_RETRIES = 3
 
 
 # ── Data models ───────────────────────────────────────────────────────────────
@@ -159,6 +157,8 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
         tools: list,
         collector: ObservationCollector,
         context: StageContext,
+        policy: RetryPolicy,
+        progress: ProgressReporter,
     ) -> tuple[int, bool]:
         """Run a 3-agent handoff chain: planner → executor → reviewer.
 
@@ -174,8 +174,6 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
         total_iterations = 0
         tool_call_count = 0
         hit_limit = False
-        t0 = time.monotonic()
-        cb = context.progress_callback
 
         collector.record_message("user", prompt)
 
@@ -215,13 +213,12 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
             plan = parse_plan_text(text)
 
         iters, tool_call_count = self._extract_trace(
-            collector, planner_result, cb=cb, t0=t0,
+            collector, planner_result, progress=progress,
             tool_call_count=tool_call_count,
         )
         total_iterations += iters
 
-        if cb:
-            cb(f"    planner: {len(plan.steps)} steps planned")
+        progress.agent_status("planner", f"{len(plan.steps)} steps planned")
 
         # ── Step 2: Build executor + reviewer agents ───────────────────────
         guardrail = _make_workspace_guardrail(stage_name, str(context.workspace))
@@ -252,10 +249,10 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
         # ── Step 3: Retry loop ─────────────────────────────────────────────
         # Give each attempt a generous turn budget. The planner used ~3 turns,
         # so the remaining budget is split across retry attempts.
-        max_turns = max(10, (context.max_iterations - 3) // MAX_RETRIES)
+        max_turns = max(10, (context.max_iterations - 3) // policy.max_retries)
         result = None
 
-        for attempt in range(MAX_RETRIES):
+        for attempt in range(policy.total_attempts()):
             try:
                 if result is None:
                     input_msg = prompt
@@ -264,7 +261,7 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
                     input_msg = result.to_input_list() + [
                         {
                             "role": "user",
-                            "content": f"Validation failed (attempt {attempt}/{MAX_RETRIES}). Fix issues.",
+                            "content": f"Validation failed (attempt {attempt}/{policy.total_attempts()}). Fix issues.",
                         }
                     ]
 
@@ -274,7 +271,7 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
                 run_duration_ms = (time.monotonic() - run_t0) * 1000
 
                 iters, tool_call_count = self._extract_trace(
-                    collector, result, cb=cb, t0=t0,
+                    collector, result, progress=progress,
                     tool_call_count=tool_call_count,
                 )
                 total_iterations += iters
@@ -289,17 +286,13 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
                     break
 
                 # If we got here without guardrail tripping, validation passed
-                if cb:
-                    cb("    reviewer: PASSED")
+                progress.validation_passed()
                 break
 
             except OutputGuardrailTripwireTriggered:
                 total_iterations += 1
-                if cb:
-                    from desmet.adapters._tools import _check_completion
-                    _, hint = _check_completion(context.workspace, stage_name)
-                    elapsed = time.monotonic() - t0
-                    cb(f"    reviewer: FAILED (attempt {attempt + 1}/{MAX_RETRIES}) — {hint}  ({elapsed:.0f}s)")
+                _, feedback = policy.validate()
+                progress.validation_failed(attempt + 1, policy.total_attempts(), feedback)
                 if total_iterations >= context.max_iterations:
                     hit_limit = True
                     break
@@ -308,9 +301,7 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
             except MaxTurnsExceeded:
                 # Executor/reviewer exhausted their turn budget — treat as retry
                 total_iterations += max_turns
-                if cb:
-                    elapsed = time.monotonic() - t0
-                    cb(f"    max turns exceeded (attempt {attempt + 1}/{MAX_RETRIES})  ({elapsed:.0f}s)")
+                progress.agent_status("executor", f"max turns exceeded (attempt {attempt + 1}/{policy.total_attempts()})")
                 if total_iterations >= context.max_iterations:
                     hit_limit = True
                     break
@@ -324,8 +315,7 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
         collector: ObservationCollector,
         result,
         *,
-        cb=None,
-        t0: float = 0.0,
+        progress: ProgressReporter,
         tool_call_count: int = 0,
     ) -> tuple[int, int]:
         """Extract messages, tool calls, and usage from a RunResult.
@@ -347,14 +337,7 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
                 call = item.raw_item
                 args = call.arguments if isinstance(call.arguments, dict) else {"raw": call.arguments}
                 collector.record_tool_execution(name=call.name, args=args, result="")
-                if cb is not None:
-                    elapsed = time.monotonic() - t0
-                    detail = format_tool_detail(call.name, call.arguments)
-                    tokens = collector.trace.total_tokens_input + collector.trace.total_tokens_output
-                    cb(
-                        f"    tool {tool_call_count} — {detail}"
-                        f"  ({elapsed:.0f}s, {tokens:,} tokens)"
-                    )
+                progress.tool_call(call.name, call.arguments)
             elif isinstance(item, ToolCallOutputItem):
                 collector.record_message(
                     "tool", str(item.output),
