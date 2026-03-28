@@ -26,19 +26,14 @@ from desmet.adapters._planning import ImplementationPlan, build_executor_instruc
 from desmet.adapters._prompts import get_stage_persona, get_sub_persona
 from desmet.adapters._tools import ToolFormat, split_tools
 from desmet.adapters._observation import ObservationCollector
-from desmet.adapters._tracing import (
-    format_tool_detail,
-    record_node_event,
-)
-from desmet.adapters._validation import validate_workspace
+from desmet.adapters._retry import ProgressReporter, RetryPolicy
+from desmet.adapters._tracing import record_node_event
 from desmet.adapters.registry import load_platform_info
 from desmet.harness.context import StageContext
 from desmet.harness.models import PlatformInfo
 from desmet.llm_config import Provider
 from desmet.llm_config import get_config as get_llm_config
 from desmet.observability import get_langchain_callback
-
-MAX_RETRIES = 3
 
 
 # ── State schemas ──────────────────────────────────────────────────────────
@@ -253,17 +248,15 @@ class LangGraphAdapter(ToolAgentAdapter):
 
     # ── Parent graph builder ───────────────────────────────────────────────
 
-    def _build_graph(self, llm, tools: list, collector=None, progress_callback=None) -> Any:
+    def _build_graph(self, llm, tools: list, collector=None, policy=None, progress=None) -> Any:
         """Build and compile the parent StateGraph with three subgraph nodes.
 
         Returns a compiled StateGraph (not a tuple).
-        ``trace`` is optional; if provided, token usage is recorded during streaming.
-        ``progress_callback`` is optional; if provided, subgraph wrappers emit
+        ``collector`` is optional; if provided, token usage is recorded during streaming.
+        ``progress`` is a :class:`ProgressReporter`; if provided, subgraph wrappers emit
         per-tool-call progress during execution.
+        ``policy`` is a :class:`RetryPolicy`; if provided, workspace validation uses it.
         """
-        cb = progress_callback
-        t0_ref: list[float] = [time.monotonic()]  # mutable ref for closures
-        tool_count_ref: list[int] = [0]
 
         executor_tools, reviewer_tools = split_tools(tools, self.TOOL_FORMAT)
 
@@ -286,9 +279,8 @@ class LangGraphAdapter(ToolAgentAdapter):
                 messages.append(SystemMessage(content=state["system_msg"]))
             messages.append(HumanMessage(content=state["prompt"]))
 
-            if cb is not None:
-                elapsed = time.monotonic() - t0_ref[0]
-                cb(f"    [planner] generating plan...  ({elapsed:.0f}s)")
+            if progress is not None:
+                progress.agent_status("planner", "generating plan...")
 
             result = await planner_sg.ainvoke({"messages": messages})
             last_msg = result["messages"][-1] if result["messages"] else None
@@ -308,16 +300,13 @@ class LangGraphAdapter(ToolAgentAdapter):
                 )
 
             if last_msg:
-                planner_duration = (time.monotonic() - t0_ref[0]) * 1000
-                _extract_and_record_usage(last_msg, duration_ms=planner_duration)
+                _extract_and_record_usage(last_msg)
                 if collector is not None:
                     collector.record_message("assistant", plan_text, metadata={"node": "planner"})
 
-            if cb is not None:
+            if progress is not None:
                 step_count = len(plan_obj.steps)
-                elapsed = time.monotonic() - t0_ref[0]
-                tokens = collector.trace.total_tokens_input + collector.trace.total_tokens_output if collector else 0
-                cb(f"    [planner] done — {step_count} steps planned  ({elapsed:.0f}s, {tokens:,} tokens)")
+                progress.agent_status("planner", f"done — {step_count} steps planned")
 
             return {
                 "plan": plan_text,
@@ -347,8 +336,9 @@ class LangGraphAdapter(ToolAgentAdapter):
                     f"{executor_persona.backstory}\n\n{plan}\n"
                     f"\nStage: {stage}\nWorking directory: {workspace}"
                 )
+            max_retries = policy.max_retries if policy else 3
             if retry_count > 0:
-                sys_content += f"\n\nThis is retry attempt {retry_count}/{MAX_RETRIES}. Address any issues from the previous attempt."
+                sys_content += f"\n\nThis is retry attempt {retry_count}/{max_retries}. Address any issues from the previous attempt."
 
             messages: list[BaseMessage] = [
                 SystemMessage(content=sys_content),
@@ -382,31 +372,22 @@ class LangGraphAdapter(ToolAgentAdapter):
 
                         # Record and report tool calls
                         for tc in getattr(msg, "tool_calls", []):
-                            tool_count_ref[0] += 1
                             tc_name = tc.get("name", "unknown")
                             tc_args = tc.get("args", {})
                             if collector is not None:
                                 collector.record_tool_execution(tc_name, tc_args, "")
-                            if cb is not None:
-                                elapsed = time.monotonic() - t0_ref[0]
-                                detail = format_tool_detail(tc_name, tc_args)
-                                tokens = collector.trace.total_tokens_input + collector.trace.total_tokens_output if collector else 0
-                                cb(
-                                    f"    tool {tool_count_ref[0]} — {detail}"
-                                    f"  ({elapsed:.0f}s, {tokens:,} tokens)"
-                                )
+                            if progress is not None:
+                                progress.tool_call(tc_name, tc_args)
 
                     # Heartbeat for long-running executor loops
-                    if cb is not None and node_name == "executor_node":
-                        elapsed = time.monotonic() - t0_ref[0]
-                        tokens = collector.trace.total_tokens_input + collector.trace.total_tokens_output if collector else 0
-                        cb(f"    [executor] step {llm_call_count}  ({elapsed:.0f}s, {tokens:,} tokens)")
+                    if progress is not None and node_name == "executor_node":
+                        progress.heartbeat(llm_call_count, "executor")
 
             executor_duration = (time.monotonic() - executor_t0) * 1000
             if collector is not None:
                 collector.record_llm_response(raw_usage=None, duration_ms=executor_duration)
 
-            passed = validate_workspace(stage, workspace)
+            passed, feedback = policy.validate() if policy else (False, "")
             new_retry = retry_count + 1
 
             if collector is not None:
@@ -429,9 +410,8 @@ class LangGraphAdapter(ToolAgentAdapter):
             plan = state.get("plan", "")
             workspace = state.get("workspace", "")
 
-            if cb is not None:
-                elapsed = time.monotonic() - t0_ref[0]
-                cb(f"    [reviewer] reviewing workspace...  ({elapsed:.0f}s)")
+            if progress is not None:
+                progress.agent_status("reviewer", "reviewing workspace...")
 
             messages: list[BaseMessage] = [
                 HumanMessage(
@@ -462,20 +442,20 @@ class LangGraphAdapter(ToolAgentAdapter):
                 collector.record_message("assistant", text, metadata={"node": "reviewer"})
                 record_node_event(collector.trace, "reviewer", validator_passed=state.get("validator_passed", False))
 
-            if cb is not None:
-                elapsed = time.monotonic() - t0_ref[0]
-                tokens = collector.trace.total_tokens_input + collector.trace.total_tokens_output if collector else 0
-                cb(f"    [reviewer] done  ({elapsed:.0f}s, {tokens:,} tokens)")
+            if progress is not None:
+                progress.agent_status("reviewer", "done")
 
             return {
                 "iterations": state.get("iterations", 0) + 1,
             }
 
         # ── Conditional edge after reviewer ─────────────────────────────
+        _max_retries = policy.max_retries if policy else 3
+
         def route_after_reviewer(state: ParentState) -> str:
             if state.get("validator_passed"):
                 return END
-            if state.get("retry_count", 0) >= MAX_RETRIES:
+            if state.get("retry_count", 0) >= _max_retries:
                 return END
             return "executor"
 
@@ -509,13 +489,14 @@ class LangGraphAdapter(ToolAgentAdapter):
         tools: list,
         collector: ObservationCollector,
         context: StageContext,
+        policy: RetryPolicy,
+        progress: ProgressReporter,
     ) -> tuple[int, bool]:
         """Stream the parent StateGraph (with three subgraph nodes) for one SDLC stage."""
         self._last_langsmith_run_id = None
 
         # Build parent graph with collector closure for token recording
-        progress_cb = getattr(context, "progress_callback", None)
-        graph = self._build_graph(self._llm, tools, collector=collector, progress_callback=progress_cb)
+        graph = self._build_graph(self._llm, tools, collector=collector, policy=policy, progress=progress)
 
         collector.record_message("user", prompt)
 
@@ -545,8 +526,6 @@ class LangGraphAdapter(ToolAgentAdapter):
         hit_limit = False
         final_state: dict[str, Any] = {}
 
-        cb = progress_cb
-
         async for chunk in graph.astream(initial_state, config=config, stream_mode="updates"):
             iteration += 1
 
@@ -558,13 +537,11 @@ class LangGraphAdapter(ToolAgentAdapter):
                 if node_name == "executor" and isinstance(node_update, dict):
                     passed = node_update.get("validator_passed", False)
                     retry = node_update.get("retry_count", 0)
-                    if cb is not None:
-                        if passed:
-                            cb("    validator: PASSED")
-                        else:
-                            from desmet.adapters._tools import _check_completion
-                            _, hint = _check_completion(context.workspace, stage_name)
-                            cb(f"    validator: FAILED (attempt {retry}/{MAX_RETRIES}) — {hint}")
+                    if passed:
+                        progress.validation_passed()
+                    else:
+                        _, feedback = policy.validate()
+                        progress.validation_failed(retry, policy.total_attempts(), feedback)
 
             if final_state.get("iterations", 0) >= context.max_iterations:
                 hit_limit = True
