@@ -7,6 +7,7 @@ Handles Docker Compose interaction and platform readiness checks.
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 import subprocess
 from dataclasses import dataclass, field
@@ -276,8 +277,6 @@ def cleanup_all_docker() -> None:
     Called on webui shutdown. Stops Compose services and removes
     any lingering evaluation containers.
     """
-    import logging
-
     _log = logging.getLogger("desmet.infra")
 
     # 1. Stop all Compose services
@@ -305,6 +304,7 @@ def cleanup_all_docker() -> None:
             subprocess.run(
                 ["docker", "rm", "-f"] + container_ids.split(),
                 capture_output=True,
+                text=True,
                 timeout=30,
             )
             _log.info(
