@@ -16,18 +16,22 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import threading
 import time
 from typing import Any
 
-from pydantic import BaseModel
-
 from desmet.adapters._base import ToolAgentAdapter
+from desmet.adapters._planning import (
+    ImplementationPlan,
+    build_executor_instructions,
+    parse_plan_text,
+)
 from desmet.adapters._prompts import get_stage_persona, get_sub_persona
-from desmet.adapters._tools import ToolFormat
+from desmet.adapters._tools import ToolFormat, split_tools
 from desmet.adapters._tracing import (
     finish_trace,
+    format_tool_detail,
+    normalize_usage,
     record_llm_duration,
     record_message,
     record_tool_call,
@@ -45,17 +49,6 @@ _log = logging.getLogger(__name__)
 
 MAX_STALL_COUNT = 3
 MAX_RESET_COUNT = 2
-
-
-# -- Data models -------------------------------------------------------------
-
-
-class ImplementationPlan(BaseModel):
-    """Structured output from the planner agent."""
-
-    steps: list[str]
-    files_to_create: list[str]
-    files_to_modify: list[str]
 
 
 # -- Usage tracking middleware ------------------------------------------------
@@ -79,20 +72,8 @@ class UsageTrackingMiddleware:
         response = await next_handler(context)
         duration_ms = (time.monotonic() - t0) * 1000
 
-        input_tokens = 0
-        output_tokens = 0
         usage = getattr(response, "usage", None)
-        if usage is not None:
-            input_tokens = (
-                getattr(usage, "prompt_tokens", 0)
-                or getattr(usage, "input_tokens", 0)
-                or 0
-            )
-            output_tokens = (
-                getattr(usage, "completion_tokens", 0)
-                or getattr(usage, "output_tokens", 0)
-                or 0
-            )
+        input_tokens, output_tokens = normalize_usage(usage)
 
         with self._lock:
             if input_tokens or output_tokens:
@@ -105,32 +86,6 @@ class UsageTrackingMiddleware:
             record_llm_duration(self._trace, duration_ms)
 
         return response
-
-
-# -- Helper -------------------------------------------------------------------
-
-
-def _format_tool_detail(name: str, raw_args: Any) -> str:
-    """Format a tool call for human-readable progress logging."""
-    args = raw_args if isinstance(raw_args, dict) else {}
-    if not args and isinstance(raw_args, str):
-        try:
-            args = json.loads(raw_args)
-        except (json.JSONDecodeError, TypeError):
-            pass
-    if name in ("read_file", "write_file") and "path" in args:
-        return f"{name} \u2192 {args['path']}"
-    if name == "execute_shell" and "command" in args:
-        cmd = args["command"]
-        ellipsis = "\u2026" if len(cmd) > 60 else ""
-        return f"{name} \u2192 {cmd[:60]}{ellipsis}"
-    if name == "search_code" and "pattern" in args:
-        return f"{name} \u2192 /{args['pattern']}/"
-    if name == "list_directory":
-        return f"{name} \u2192 {args.get('path', '.')}"
-    if name == "deploy_remote" and "action" in args:
-        return f"{name} \u2192 {args['action']}"
-    return name
 
 
 # -- Adapter ------------------------------------------------------------------
@@ -299,15 +254,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                 )
                 planner_result = await planner.run(prompt)
                 text = getattr(planner_result, "text", "") or ""
-                steps = [
-                    m.group(1).strip()
-                    for m in re.finditer(r"^\d+\.\s+(.*)", text, re.MULTILINE)
-                ]
-                plan = ImplementationPlan(
-                    steps=steps or [text],
-                    files_to_create=[],
-                    files_to_modify=[],
-                )
+                plan = parse_plan_text(text)
             except Exception:
                 plan = ImplementationPlan(
                     steps=["Execute the task as described"],
@@ -334,28 +281,11 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
             cb(f"    planner: {len(plan.steps)} steps planned")
 
         # -- Step 2: Build executor and reviewer agents -----------------------
-        plan_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(plan.steps))
-        all_files = plan.files_to_create + plan.files_to_modify
-        files_text = ", ".join(all_files) if all_files else "(none specified)"
-        executor_instructions = (
-            f"{executor_persona.backstory}\n\n"
-            f"## Implementation Plan\n{plan_text}\n\n"
-            f"## Files\n{files_text}\n"
+        executor_instructions = build_executor_instructions(
+            executor_persona, plan, system_msg,
         )
-        if system_msg:
-            executor_instructions += f"\n## Additional Context\n{system_msg}\n"
 
-        # Separate tools: executor gets all except check_completion,
-        # reviewer gets read_file, list_directory, search_code, check_completion
-        executor_tools = [
-            t for t in tools
-            if getattr(t, "__name__", "") != "check_completion"
-        ]
-        reviewer_tool_names = {"read_file", "list_directory", "search_code", "check_completion"}
-        reviewer_tools = [
-            t for t in tools
-            if getattr(t, "__name__", "") in reviewer_tool_names
-        ]
+        executor_tools, reviewer_tools = split_tools(tools, self.TOOL_FORMAT)
 
         executor_agent = Agent(
             name=f"desmet_{stage_name}_executor",
@@ -488,27 +418,13 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                         # Keys vary by provider: input_token_count (Gemini/OpenRouter),
                         # input_tokens (OpenAI), prompt_tokens (legacy)
                         usage = getattr(agent_resp, "usage_details", None)
-                        if usage and isinstance(usage, dict):
-                            in_tok = (
-                                usage.get("input_token_count", 0)
-                                or usage.get("input_tokens", 0)
-                                or usage.get("prompt_tokens", 0)
-                                or 0
-                            )
-                            out_tok = (
-                                usage.get("output_token_count", 0)
-                                or usage.get("output_tokens", 0)
-                                or usage.get("completion_tokens", 0)
-                                or 0
-                            )
+                        in_tok, out_tok = normalize_usage(usage)
 
-                        # Source 2: raw_representation (original OpenAI response)
+                        # Source 2: raw_representation
                         if not (in_tok or out_tok):
                             raw = getattr(agent_resp, "raw_representation", None)
                             raw_usage = getattr(raw, "usage", None)
-                            if raw_usage is not None:
-                                in_tok = getattr(raw_usage, "prompt_tokens", 0) or getattr(raw_usage, "input_tokens", 0) or 0
-                                out_tok = getattr(raw_usage, "completion_tokens", 0) or getattr(raw_usage, "output_tokens", 0) or 0
+                            in_tok, out_tok = normalize_usage(raw_usage)
 
                         # Source 3: usage Content items in messages
                         if not (in_tok or out_tok):
@@ -582,7 +498,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                                     record_tool_call(trace, name=tc_name, args=tc_args, result=str(result_text))
                                     if cb:
                                         elapsed = time.monotonic() - t0
-                                        detail = _format_tool_detail(tc_name, tc_args)
+                                        detail = format_tool_detail(tc_name, tc_args)
                                         tokens = trace.total_tokens_input + trace.total_tokens_output
                                         cb(f"    tool {tool_call_count} \u2014 {detail}  ({elapsed:.0f}s, {tokens:,} tokens)")
 
@@ -592,7 +508,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                             record_tool_call(trace, name=tc_name, args=tc_args, result="(no result)")
                             if cb:
                                 elapsed = time.monotonic() - t0
-                                detail = _format_tool_detail(tc_name, tc_args)
+                                detail = format_tool_detail(tc_name, tc_args)
                                 tokens = trace.total_tokens_input + trace.total_tokens_output
                                 cb(f"    tool {tool_call_count} \u2014 {detail}  ({elapsed:.0f}s, {tokens:,} tokens)")
 
