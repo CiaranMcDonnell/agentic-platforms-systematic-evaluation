@@ -80,3 +80,111 @@ class TestGoogleADKAdapterInterface:
                 for child in ast.walk(node):
                     if isinstance(child, ast.Name) and child.id == "NotImplementedError":
                         pytest.fail("Adapter still contains NotImplementedError stubs")
+
+
+class TestGoogleADKAdapterStructure:
+    def test_platform_info(self):
+        from desmet.adapters.google_adk import GoogleADKAdapter
+        adapter = GoogleADKAdapter()
+        info = adapter.platform_info
+        assert info.id == "google_adk"
+        assert info.name == "Google ADK"
+
+    def test_resolve_model_google(self):
+        from desmet.adapters.google_adk import GoogleADKAdapter
+        from desmet.llm_config import LLMConfig, Provider
+        adapter = GoogleADKAdapter()
+        cfg = LLMConfig(
+            model="gemini-2.5-flash", temperature=0.0,
+            provider=Provider.GOOGLE, api_key="test",
+        )
+        assert adapter._resolve_model_id(cfg) == "gemini-2.5-flash"
+
+    def test_resolve_model_openai(self):
+        from desmet.adapters.google_adk import GoogleADKAdapter
+        from desmet.llm_config import LLMConfig, Provider
+        adapter = GoogleADKAdapter()
+        cfg = LLMConfig(
+            model="gpt-5.4-2026-03-05", temperature=0.0,
+            provider=Provider.OPENAI, api_key="test",
+        )
+        assert adapter._resolve_model_id(cfg) == "openai/gpt-5.4-2026-03-05"
+
+    def test_resolve_model_anthropic(self):
+        from desmet.adapters.google_adk import GoogleADKAdapter
+        from desmet.llm_config import LLMConfig, Provider
+        adapter = GoogleADKAdapter()
+        cfg = LLMConfig(
+            model="claude-sonnet-4-20250514", temperature=0.0,
+            provider=Provider.ANTHROPIC, api_key="test",
+        )
+        assert adapter._resolve_model_id(cfg) == "anthropic/claude-sonnet-4-20250514"
+
+    def test_resolve_model_openrouter(self):
+        from desmet.adapters.google_adk import GoogleADKAdapter
+        from desmet.llm_config import LLMConfig, Provider
+        adapter = GoogleADKAdapter()
+        cfg = LLMConfig(
+            model="anthropic/claude-sonnet-4", temperature=0.0,
+            provider=Provider.OPENROUTER, api_key="test",
+        )
+        assert adapter._resolve_model_id(cfg) == "openrouter/anthropic/claude-sonnet-4"
+
+
+class TestObservabilityMetadata:
+    def test_observability_reports_replay(self):
+        from desmet.adapters.google_adk import GoogleADKAdapter
+        info = GoogleADKAdapter().get_observability_info()
+        assert info["has_replay"] is True
+
+    def test_observability_reports_state_inspection(self):
+        from desmet.adapters.google_adk import GoogleADKAdapter
+        info = GoogleADKAdapter().get_observability_info()
+        assert info["has_state_inspection"] is True
+
+    def test_observability_trace_format(self):
+        from desmet.adapters.google_adk import GoogleADKAdapter
+        info = GoogleADKAdapter().get_observability_info()
+        assert info["trace_format"] == "Event stream"
+
+    def test_observability_mentions_sequential(self):
+        from desmet.adapters.google_adk import GoogleADKAdapter
+        info = GoogleADKAdapter().get_observability_info()
+        assert "sequential" in info.get("notes", "").lower()
+
+    def test_failure_handling_reports_auto_recovery(self):
+        from desmet.adapters.google_adk import GoogleADKAdapter
+        info = GoogleADKAdapter().get_failure_handling_info()
+        assert info["has_auto_recovery"] is True
+
+    def test_failure_handling_mentions_loop(self):
+        from desmet.adapters.google_adk import GoogleADKAdapter
+        info = GoogleADKAdapter().get_failure_handling_info()
+        assert "loop" in info.get("notes", "").lower()
+
+    def test_failure_handling_mentions_exit_loop(self):
+        from desmet.adapters.google_adk import GoogleADKAdapter
+        info = GoogleADKAdapter().get_failure_handling_info()
+        assert "exit_loop" in info.get("notes", "").lower()
+
+
+class TestLifecycle:
+    def test_initialize_is_coroutine(self):
+        from desmet.adapters.google_adk import GoogleADKAdapter
+        assert inspect.iscoroutinefunction(GoogleADKAdapter().initialize)
+
+    def test_shutdown_is_coroutine(self):
+        from desmet.adapters.google_adk import GoogleADKAdapter
+        assert inspect.iscoroutinefunction(GoogleADKAdapter().shutdown)
+
+    def test_health_check_is_coroutine(self):
+        from desmet.adapters.google_adk import GoogleADKAdapter
+        assert inspect.iscoroutinefunction(GoogleADKAdapter().health_check)
+
+    @pytest.mark.asyncio
+    async def test_shutdown_clears_state(self):
+        from desmet.adapters.google_adk import GoogleADKAdapter
+        adapter = GoogleADKAdapter()
+        await adapter.shutdown()
+        assert adapter._model_id is None
+        assert adapter._initialized is False
