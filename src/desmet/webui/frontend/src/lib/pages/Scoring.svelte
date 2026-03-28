@@ -10,6 +10,7 @@
   import { store } from '../data.svelte';
   import TraceViewer from '../components/TraceViewer.svelte';
   import LangSmithTraceViewer from '../components/LangSmithTraceViewer.svelte';
+  import AgentGraph from '../components/AgentGraph.svelte';
 
   let rubric = $state<ScoringRubric | null>(null);
 
@@ -21,7 +22,7 @@
   let saving = $state(false);
   let saveMsg = $state('');
   let loadingScore = $state(false);
-  let activeTab = $state<'langfuse' | 'langsmith'>('langfuse');
+  let activeTab = $state<'langfuse' | 'langsmith' | 'graph'>('langfuse');
   let langsmithAvailable = $state<boolean | null>(null);
 
   onMount(async () => {
@@ -63,6 +64,12 @@
         scores[dim] = 0;
         notes[dim] = '';
       }
+    }
+    // Default tab: use langfuse if trace data exists, otherwise fall back to graph
+    if (scoreData && !scoreData.langfuse_trace_id && !scoreData.trace?.messages?.length) {
+      activeTab = 'graph';
+    } else {
+      activeTab = 'langfuse';
     }
   }
 
@@ -241,40 +248,43 @@
       </div>
     </div>
 
-    <!-- Trace -->
-    {#if scoreData.langfuse_trace_id || scoreData.trace?.messages?.length}
-      {@const showLangSmithTab =
-        selectedPlatform === 'langgraph' &&
-        !!scoreData.langsmith_run_id &&
-        langsmithAvailable === true}
-      <div>
-        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
-          <h2 style="font-size: 14px; font-weight: 600;">Execution Trace</h2>
-          {#if showLangSmithTab}
-            <div class="trace-tabs">
-              <button
-                class="trace-tab"
-                class:active={activeTab === 'langfuse'}
-                onclick={() => activeTab = 'langfuse'}
-              >Langfuse Trace</button>
-              <button
-                class="trace-tab"
-                class:active={activeTab === 'langsmith'}
-                onclick={() => activeTab = 'langsmith'}
-              >LangSmith Graph</button>
-            </div>
+    <!-- Trace / Agent Graph -->
+    {@const showLangSmithTab =
+      selectedPlatform === 'langgraph' &&
+      !!scoreData.langsmith_run_id &&
+      langsmithAvailable === true}
+    {@const hasLangfuseData = !!(scoreData.langfuse_trace_id || scoreData.trace?.messages?.length)}
+    <div>
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+        <h2 style="font-size: 14px; font-weight: 600;">Execution Trace</h2>
+        <div class="trace-tabs">
+          {#if hasLangfuseData}
+            <button class="trace-tab" class:active={activeTab === 'langfuse'}
+              onclick={() => activeTab = 'langfuse'}>Langfuse Trace</button>
           {/if}
+          {#if showLangSmithTab}
+            <button class="trace-tab" class:active={activeTab === 'langsmith'}
+              onclick={() => activeTab = 'langsmith'}>LangSmith Graph</button>
+          {/if}
+          <button class="trace-tab" class:active={activeTab === 'graph'}
+            onclick={() => activeTab = 'graph'}>Agent Graph</button>
         </div>
-
-        {#if showLangSmithTab && activeTab === 'langsmith'}
-          <LangSmithTraceViewer runId={scoreData.langsmith_run_id!} />
-        {:else if scoreData.langfuse_trace_id}
-          <TraceViewer langfuseTraceId={scoreData.langfuse_trace_id} />
-        {:else if scoreData.trace?.messages?.length}
-          <TraceViewer messages={scoreData.trace.messages} />
-        {/if}
       </div>
-    {/if}
+
+      {#if activeTab === 'graph'}
+        <AgentGraph platformId={selectedPlatform} storyId={selectedStory} />
+      {:else if showLangSmithTab && activeTab === 'langsmith'}
+        <LangSmithTraceViewer runId={scoreData.langsmith_run_id!} />
+      {:else if scoreData.langfuse_trace_id}
+        <TraceViewer langfuseTraceId={scoreData.langfuse_trace_id} />
+      {:else if scoreData.trace?.messages?.length}
+        <TraceViewer messages={scoreData.trace.messages} />
+      {:else}
+        <div class="card" style="padding: 32px; color: var(--text-2); text-align: center; font-size: 13px;">
+          No trace data available. Select the Agent Graph tab to view agent interactions.
+        </div>
+      {/if}
+    </div>
   {:else if loadingScore}
     <div class="card" style="padding: 48px; color: var(--text-2); text-align: center;">Loading score data…</div>
   {:else if selectedPlatform && selectedStory && scoreData && !scoreData.found}

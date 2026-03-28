@@ -60,6 +60,7 @@ from desmet.dashboard.data import (
     save_results,
     update_story_scores,
 )
+from desmet.harness.graph import build_graph
 from desmet.harness.loader import StoryLoadError, load_all_stories, resolve_baseline_dir
 from desmet.harness.runner import EvaluationRunner, RunnerConfig
 from desmet.harness.story import DifficultyLevel
@@ -850,6 +851,17 @@ async def get_story_score(platform_id: str, story_id: str):
         "langsmith_run_id": langsmith_run_id,
         "framework_metrics": story_metric.get("framework_metrics") or None,
     }
+
+
+@app.get("/api/dashboard/graph/{platform_id}/{story_id}")
+async def get_agent_graph(platform_id: str, story_id: str):
+    """Build and return the agent communication graph for a run."""
+    trace_files = list_trace_files(platform_id, story_id)
+    if not trace_files:
+        raise HTTPException(status_code=404, detail="No trace files found")
+    raw_trace = load_trace(trace_files[-1])
+    graph = build_graph(raw_trace)
+    return graph.to_dict()
 
 
 @app.post("/api/dashboard/scoring/submit")

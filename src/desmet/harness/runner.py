@@ -42,13 +42,22 @@ logger = get_logger(__name__)
 
 
 def _force_remove_readonly(func, path, _exc_info):
-    """Handle read-only files during shutil.rmtree on Windows.
+    """Handle stubborn files during shutil.rmtree on Windows.
 
-    Git marks .git/objects/* as read-only; rmtree fails on these unless
-    we clear the flag first.
+    Covers two cases:
+    - Git marks .git/objects/* as read-only → clear the flag and retry.
+    - Docker bind-mounts create Linux symlinks (e.g. .venv/lib64 → lib)
+      that Windows cannot access ([WinError 1920]) → delete via os.remove.
     """
-    os.chmod(path, stat.S_IWRITE)
-    func(path)
+    try:
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    except OSError:
+        # Last resort: try os.remove (works for dangling symlinks on Windows)
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 @dataclass
@@ -331,6 +340,11 @@ class EvaluationRunner:
                 result.langfuse_trace_id = lf_client.get_current_trace_id()
 
             try:
+                # Stop any leftover eval container before cleaning workspace
+                # (Docker bind-mounts create Linux symlinks Windows can't delete)
+                from desmet.adapters._tools import stop_eval_container
+                stop_eval_container(platform_id=platform_id, story_id=story.id)
+
                 # Create isolated workspace: copy baseline into per-platform directory
                 workspace = (
                     self.config.results_dir / platform_id / story.id / "workspace"
@@ -427,6 +441,12 @@ class EvaluationRunner:
                         if self.progress_callback is not None:
                             self.progress_callback(f"  [{stage_key.upper()}] ERROR — {e}")
                         # Continue -- do NOT block later stages
+
+                # Stop eval container before post-processing — Docker
+                # bind-mounts create Linux symlinks (e.g. .venv/lib64) that
+                # Windows cannot access while the container holds them.
+                from desmet.adapters._tools import stop_eval_container
+                stop_eval_container(platform_id=platform_id, story_id=story.id)
 
                 # ----- Aggregate results into StoryResult -----
                 result.status = StoryStatus.COMPLETED
@@ -546,6 +566,10 @@ class EvaluationRunner:
                 result.finalize_timing()
                 logger.error("story_error", error=str(e))
 
+        # Clean up eval container (if one was started for this story)
+        from desmet.adapters._tools import stop_eval_container
+        stop_eval_container(platform_id=platform_id, story_id=story.id)
+
         structlog.contextvars.unbind_contextvars("story_id", "execution_id")
         return result
 
@@ -632,6 +656,7 @@ class EvaluationRunner:
                             else msg.content
                         ),
                         "timestamp": msg.timestamp.isoformat(),
+                        "metadata": msg.metadata if msg.metadata else {},
                     }
                     for msg in sr.trace.messages
                 ]
@@ -647,6 +672,8 @@ class EvaluationRunner:
                     }
                     for tc in sr.trace.tool_calls
                 ]
+            if sr.trace and sr.trace.node_events:
+                stage_entry["node_events"] = sr.trace.node_events
             stages_data[stage_key] = stage_entry
 
         trace_data = {
