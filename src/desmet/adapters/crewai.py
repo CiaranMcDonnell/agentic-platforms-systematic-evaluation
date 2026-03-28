@@ -12,14 +12,15 @@ import threading
 import time
 from typing import Any
 
-from pydantic import BaseModel
-
 from desmet.adapters._base import ToolAgentAdapter
+from desmet.adapters._planning import ImplementationPlan, format_plan_text, parse_plan_text
 from desmet.adapters._prompts import STAGE_EXPECTED_OUTPUTS, get_stage_persona, get_sub_persona
 from desmet.adapters._validation import validate_workspace
-from desmet.adapters._tools import ToolFormat
+from desmet.adapters._tools import ToolFormat, split_tools
 from desmet.adapters._tracing import (
     finish_trace,
+    format_tool_detail,
+    normalize_usage,
     record_message,
     record_tool_call,
     record_usage,
@@ -34,13 +35,6 @@ from desmet.llm_config import get_config as get_llm_config
 _log = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
-
-
-class ImplementationPlan(BaseModel):
-    """Structured output for the planner agent (parity with OpenAI/AF adapters)."""
-    steps: list[str]
-    files_to_create: list[str]
-    files_to_modify: list[str]
 
 
 def _compute_iter_budget(max_iterations: int, *, retry: bool = False) -> tuple[int, int, int]:
@@ -59,30 +53,6 @@ def _compute_iter_budget(max_iterations: int, *, retry: bool = False) -> tuple[i
     reviewer = max(1, int(max_iterations * 0.2))
     executor = max(1, max_iterations - planner - reviewer)
     return planner, executor, reviewer
-
-
-def _format_crewai_tool_detail(name: str, tool_input: Any) -> str:
-    """Format a CrewAI tool call for human-readable progress logging."""
-    args = tool_input if isinstance(tool_input, dict) else {}
-    # CrewAI sometimes passes tool_input as a JSON string
-    if not args and isinstance(tool_input, str):
-        try:
-            import json
-            args = json.loads(tool_input)
-        except (json.JSONDecodeError, TypeError):
-            pass
-    if name in ("read_file", "write_file") and "path" in args:
-        return f"{name} → {args['path']}"
-    if name == "execute_shell" and "command" in args:
-        cmd = args["command"]
-        return f"{name} → {cmd[:60]}{'…' if len(cmd) > 60 else ''}"
-    if name == "search_code" and "pattern" in args:
-        return f"{name} → /{args['pattern']}/"
-    if name == "list_directory":
-        return f"{name} → {args.get('path', '.')}"
-    if name == "deploy_remote" and "action" in args:
-        return f"{name} → {args['action']}"
-    return name
 
 
 def _summarise_step(step_output: Any) -> str:
@@ -198,16 +168,9 @@ class CrewAIAdapter(ToolAgentAdapter):
                 resp = event.response
                 usage = getattr(resp, "usage", None)
                 if usage is not None:
-                    call_data["input_tokens"] = (
-                        getattr(usage, "prompt_tokens", 0)
-                        or getattr(usage, "input_tokens", 0)
-                        or 0
-                    )
-                    call_data["output_tokens"] = (
-                        getattr(usage, "completion_tokens", 0)
-                        or getattr(usage, "output_tokens", 0)
-                        or 0
-                    )
+                    in_tok, out_tok = normalize_usage(usage)
+                    call_data["input_tokens"] = in_tok
+                    call_data["output_tokens"] = out_tok
                 if self._last_llm_start > 0:
                     call_data["duration_ms"] = (time.monotonic() - self._last_llm_start) * 1000
                     self._last_llm_start = 0.0
@@ -321,15 +284,11 @@ class CrewAIAdapter(ToolAgentAdapter):
             return persona_backstory
 
         # ── Asymmetric tool distribution ─────────────────────────────────
-        executor_tools = [t for t in tools if t.name != "check_completion"]
-        reviewer_tool_names = {"read_file", "list_directory", "search_code", "check_completion"}
-        reviewer_tools = [t for t in tools if t.name in reviewer_tool_names]
+        executor_tools, reviewer_tools = split_tools(tools, self.TOOL_FORMAT)
 
         # ── Enriched executor context from structured plan ───────────────
         if plan is not None:
-            plan_text_fmt = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(plan.steps))
-            all_files = plan.files_to_create + plan.files_to_modify
-            files_text = ", ".join(all_files) if all_files else "(none specified)"
+            plan_text_fmt, files_text = format_plan_text(plan)
             executor_context = (
                 f"\n\n## Implementation Plan\n{plan_text_fmt}\n\n"
                 f"## Files\n{files_text}\n"
@@ -553,18 +512,8 @@ class CrewAIAdapter(ToolAgentAdapter):
             else:
                 usage = getattr(result, "token_usage", None)
                 if usage is not None:
-                    record_usage(
-                        trace,
-                        input_tokens=(
-                            getattr(usage, "prompt_tokens", 0)
-                            or getattr(usage, "input_tokens", 0) or 0
-                        ),
-                        output_tokens=(
-                            getattr(usage, "completion_tokens", 0)
-                            or getattr(usage, "output_tokens", 0) or 0
-                        ),
-                        model=model_name,
-                    )
+                    in_tok, out_tok = normalize_usage(usage)
+                    record_usage(trace, input_tokens=in_tok, output_tokens=out_tok, model=model_name)
 
             total_iterations += counter[0]
 
@@ -578,17 +527,7 @@ class CrewAIAdapter(ToolAgentAdapter):
                     if isinstance(pydantic_out, ImplementationPlan):
                         structured_plan = pydantic_out
                     else:
-                        # Parse from text as fallback
-                        raw_plan = str(first_output)
-                        steps = [
-                            m.group(1).strip()
-                            for m in re.finditer(r"^\d+\.\s+(.*)", raw_plan, re.MULTILINE)
-                        ]
-                        structured_plan = ImplementationPlan(
-                            steps=steps or [raw_plan],
-                            files_to_create=[],
-                            files_to_modify=[],
-                        )
+                        structured_plan = parse_plan_text(str(first_output))
                     plan_text = str(first_output)
 
             # ── Validate workspace ───────────────────────────────────────
@@ -667,7 +606,7 @@ class CrewAIAdapter(ToolAgentAdapter):
                 elapsed = time.monotonic() - t0
                 tokens = trace.total_tokens_input + trace.total_tokens_output
                 if tool_name:
-                    detail = _format_crewai_tool_detail(str(tool_name), tool_input)
+                    detail = format_tool_detail(str(tool_name), tool_input)
                     progress_callback(
                         f"    tool {tool_counter[0]} — {detail}"
                         f"  ({elapsed:.0f}s, {tokens:,} tokens)"
