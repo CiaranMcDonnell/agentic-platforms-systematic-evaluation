@@ -16,6 +16,8 @@
     "vite": "^8.0.0"
   },
   "dependencies": {
-    "echarts": "^6.0.0"
+    "@xyflow/svelte": "^1.5.2",
+    "echarts": "^6.0.0",
+    "elkjs": "^0.11.1"
   }
 }
