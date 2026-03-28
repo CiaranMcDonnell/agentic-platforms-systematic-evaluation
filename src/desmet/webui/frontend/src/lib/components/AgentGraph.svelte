@@ -25,6 +25,10 @@
     return ROLE_COLORS[id] ?? '#888888';
   }
 
+  function esc(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
   function buildChartOption(data: CommunicationGraph): echarts.EChartsOption {
     const maxTokens = Math.max(...data.nodes.map(n => n.tokens_in + n.tokens_out), 1);
 
@@ -41,6 +45,7 @@
     const links = data.edges.map(e => ({
       source: e.source,
       target: e.target,
+      message_count: e.message_count,
       lineStyle: { width: 1 + 4 * (e.message_count / maxMsgCount), curveness: 0.2 },
       label: { show: true, formatter: `${e.message_count}`, fontSize: 10, color: '#888' },
     }));
@@ -52,10 +57,10 @@
           if (params.dataType === 'node') {
             const n = data.nodes.find(n => n.id === params.data.id);
             if (!n) return '';
-            return `<b>${n.role}</b><br/>Tokens: ${(n.tokens_in + n.tokens_out).toLocaleString()}<br/>Iterations: ${n.iterations}`;
+            return `<b>${esc(n.role)}</b><br/>Tokens: ${(n.tokens_in + n.tokens_out).toLocaleString()}<br/>Iterations: ${n.iterations}`;
           }
           if (params.dataType === 'edge') {
-            return `${params.data.source} → ${params.data.target}<br/>Messages: ${data.edges.find(e => e.source === params.data.source && e.target === params.data.target)?.message_count ?? 0}`;
+            return `${esc(params.data.source)} → ${esc(params.data.target)}<br/>Messages: ${params.data.message_count ?? 0}`;
           }
           return '';
         },
@@ -97,11 +102,6 @@
       }
       if (chart && container) {
         chart.setOption(buildChartOption(graphData), true);
-        chart.on('click', (params: any) => {
-          if (params.dataType === 'node' && graphData) {
-            selectedNode = graphData.nodes.find(n => n.id === params.data.id) ?? null;
-          }
-        });
       }
     } catch (e: any) {
       error = e.status === 404 ? 'No trace data found.' : `Failed to load graph: ${e.message}`;
@@ -115,6 +115,11 @@
       chart = echarts.init(container, 'dark', { renderer: 'canvas' });
       resizeObserver = new ResizeObserver(() => chart?.resize());
       resizeObserver.observe(container);
+      chart.on('click', (params: any) => {
+        if (params.dataType === 'node' && graphData) {
+          selectedNode = graphData.nodes.find(n => n.id === params.data.id) ?? null;
+        }
+      });
     }
   });
 
