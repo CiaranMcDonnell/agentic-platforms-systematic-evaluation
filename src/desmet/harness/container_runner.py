@@ -349,8 +349,9 @@ async def run_stage_in_container(
                 progress_callback(text)
 
     stderr_task = asyncio.create_task(_stream_stderr())
-    stdout_data, _ = await proc.communicate()
+    stdout_data = await proc.stdout.read()
     await stderr_task
+    await proc.wait()
 
     # Clean up context file
     try:
