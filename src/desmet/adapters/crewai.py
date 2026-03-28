@@ -7,9 +7,12 @@ Implements the evaluation interface for CrewAI.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from typing import Any
+
+from pydantic import BaseModel
 
 from desmet.adapters._base import ToolAgentAdapter
 from desmet.adapters._prompts import STAGE_EXPECTED_OUTPUTS, get_stage_persona, get_sub_persona
@@ -30,11 +33,28 @@ from desmet.llm_config import get_config as get_llm_config
 
 _log = logging.getLogger(__name__)
 
+MAX_RETRIES = 3
 
-def _compute_iter_budget(max_iterations: int) -> tuple[int, int, int]:
-    """Compute per-agent max_iter from total budget (20%/60%/20%).
+
+class ImplementationPlan(BaseModel):
+    """Structured output for the planner agent (parity with OpenAI/AF adapters)."""
+    steps: list[str]
+    files_to_create: list[str]
+    files_to_modify: list[str]
+
+
+def _compute_iter_budget(max_iterations: int, *, retry: bool = False) -> tuple[int, int, int]:
+    """Compute per-agent max_iter from total budget.
+
+    First attempt: 20%/60%/20% (planner/executor/reviewer).
+    Retry: 0%/80%/20% (no planner, more executor budget).
+
     Returns (planner, executor, reviewer).
     """
+    if retry:
+        reviewer = max(1, int(max_iterations * 0.2))
+        executor = max(1, max_iterations - reviewer)
+        return 0, executor, reviewer
     planner = max(1, int(max_iterations * 0.2))
     reviewer = max(1, int(max_iterations * 0.2))
     executor = max(1, max_iterations - planner - reviewer)
@@ -44,6 +64,13 @@ def _compute_iter_budget(max_iterations: int) -> tuple[int, int, int]:
 def _format_crewai_tool_detail(name: str, tool_input: Any) -> str:
     """Format a CrewAI tool call for human-readable progress logging."""
     args = tool_input if isinstance(tool_input, dict) else {}
+    # CrewAI sometimes passes tool_input as a JSON string
+    if not args and isinstance(tool_input, str):
+        try:
+            import json
+            args = json.loads(tool_input)
+        except (json.JSONDecodeError, TypeError):
+            pass
     if name in ("read_file", "write_file") and "path" in args:
         return f"{name} → {args['path']}"
     if name == "execute_shell" and "command" in args:
@@ -65,8 +92,6 @@ def _summarise_step(step_output: Any) -> str:
     compact summary when ``str()`` would produce a multi-kilobyte Agent/Crew
     repr that obscures the actual reasoning content.
     """
-    import re
-
     content = getattr(step_output, "log", "") or getattr(step_output, "text", "")
     if content:
         return content
@@ -154,13 +179,13 @@ class CrewAIAdapter(ToolAgentAdapter):
             from crewai.events.types.llm_events import LLMCallStartedEvent
 
             @crewai_event_bus.on(LLMCallStartedEvent)
-            def _on_llm_started(event) -> None:
+            def _on_llm_started(source, event) -> None:
                 if not self._collecting_llm:
                     return
                 self._last_llm_start = time.monotonic()
 
             @crewai_event_bus.on(LLMCallCompletedEvent)
-            def _on_llm_completed(event: LLMCallCompletedEvent) -> None:
+            def _on_llm_completed(source, event: LLMCallCompletedEvent) -> None:
                 if not self._collecting_llm:
                     return
                 call_data: dict[str, Any] = {
@@ -251,6 +276,205 @@ class CrewAIAdapter(ToolAgentAdapter):
         )
 
     # =========================================================================
+    # Crew Builder
+    # =========================================================================
+
+    def _build_crew(
+        self,
+        stage_name: str,
+        prompt: str,
+        system_msg: str | None,
+        tools: list,
+        llm: Any,
+        context: StageContext,
+        trace: AgentTrace,
+        *,
+        retry_attempt: int = 0,
+        prior_plan: str = "",
+        feedback: str = "",
+        plan: ImplementationPlan | None = None,
+    ) -> tuple[Any, list[int]]:
+        """Build a CrewAI crew for one execution attempt.
+
+        First attempt (``retry_attempt == 0``): 3-agent crew (planner +
+        executor + reviewer) with context chaining.
+
+        Retry (``retry_attempt > 0``): 2-agent crew (executor + reviewer)
+        with the prior plan and validation feedback injected.
+
+        Returns ``(crew, step_counter)`` where *step_counter* is a
+        single-element list whose ``[0]`` value tracks iterations.
+        """
+        from crewai import Agent, Crew, Process, Task
+
+        is_retry = retry_attempt > 0
+        planner_budget, executor_budget, reviewer_budget = _compute_iter_budget(
+            context.max_iterations, retry=is_retry,
+        )
+        # Distribute time budget proportionally (same ratio as iterations)
+        total_budget = planner_budget + executor_budget + reviewer_budget
+        time_budget = context.time_budget_seconds or 0
+
+        def _make_backstory(persona_backstory: str) -> str:
+            if system_msg:
+                return f"{persona_backstory}\n\n{system_msg}"
+            return persona_backstory
+
+        # ── Asymmetric tool distribution ─────────────────────────────────
+        executor_tools = [t for t in tools if t.name != "check_completion"]
+        reviewer_tool_names = {"read_file", "list_directory", "search_code", "check_completion"}
+        reviewer_tools = [t for t in tools if t.name in reviewer_tool_names]
+
+        # ── Enriched executor context from structured plan ───────────────
+        if plan is not None:
+            plan_text_fmt = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(plan.steps))
+            all_files = plan.files_to_create + plan.files_to_modify
+            files_text = ", ".join(all_files) if all_files else "(none specified)"
+            executor_context = (
+                f"\n\n## Implementation Plan\n{plan_text_fmt}\n\n"
+                f"## Files\n{files_text}\n"
+            )
+        else:
+            executor_context = ""
+
+        # ── Executor — stage-specific persona ────────────────────────────
+        executor_persona = get_stage_persona(stage_name)
+        executor_time = int(time_budget * executor_budget / total_budget) if time_budget else None
+        executor_backstory = _make_backstory(executor_persona.backstory) + executor_context
+        executor_agent = Agent(
+            role=executor_persona.role,
+            goal=executor_persona.goal,
+            backstory=executor_backstory,
+            verbose=False,
+            allow_delegation=False,
+            llm=llm,
+            tools=executor_tools,
+            max_iter=executor_budget,
+            max_execution_time=executor_time,
+        )
+
+        # ── Reviewer — Code Reviewer ─────────────────────────────────────
+        reviewer_persona = get_sub_persona("reviewer")
+        reviewer_time = int(time_budget * reviewer_budget / total_budget) if time_budget else None
+        reviewer_agent = Agent(
+            role=reviewer_persona.role,
+            goal=reviewer_persona.goal,
+            backstory=_make_backstory(reviewer_persona.backstory),
+            verbose=False,
+            allow_delegation=False,
+            llm=llm,
+            tools=reviewer_tools,
+            max_iter=reviewer_budget,
+            max_execution_time=reviewer_time,
+        )
+
+        agents: list = []
+        tasks: list = []
+
+        if not is_retry:
+            # ── Planner — Technical Lead ─────────────────────────────────
+            planner_persona = get_sub_persona("planner")
+            planner_time = int(time_budget * planner_budget / total_budget) if time_budget else None
+            planner_agent = Agent(
+                role=planner_persona.role,
+                goal=planner_persona.goal,
+                backstory=_make_backstory(planner_persona.backstory),
+                verbose=False,
+                allow_delegation=False,
+                llm=llm,
+                tools=tools,
+                max_iter=planner_budget,
+                max_execution_time=planner_time,
+            )
+            analyse_task = Task(
+                description=(
+                    f"Analyse the following task and produce a numbered "
+                    f"implementation plan identifying all files to create "
+                    f"or modify.\n\n{prompt}"
+                ),
+                expected_output=(
+                    "A numbered implementation plan with files to create/modify"
+                ),
+                agent=planner_agent,
+                output_pydantic=ImplementationPlan,
+            )
+            implement_task = Task(
+                description=prompt,
+                expected_output=STAGE_EXPECTED_OUTPUTS.get(
+                    stage_name, "Complete the task as described."
+                ),
+                agent=executor_agent,
+                context=[analyse_task],
+            )
+            review_task = Task(
+                description=(
+                    "Review the implementation against the plan. Verify all "
+                    "required artefacts are present in the workspace and "
+                    "outputs are complete and correct."
+                ),
+                expected_output=(
+                    "Validation report confirming all artefacts are present "
+                    "and correct"
+                ),
+                agent=reviewer_agent,
+                context=[analyse_task, implement_task],
+            )
+            agents = [planner_agent, executor_agent, reviewer_agent]
+            tasks = [analyse_task, implement_task, review_task]
+        else:
+            # ── Retry: executor + reviewer only, plan carried forward ────
+            retry_description = (
+                f"Previous attempt failed validation (attempt "
+                f"{retry_attempt}/{MAX_RETRIES}).\n"
+                f"{feedback}\n\n"
+                f"## Plan from previous attempt\n{prior_plan}\n\n"
+                f"## Original task\n{prompt}\n\n"
+                f"Fix the issues and complete the task."
+            )
+            implement_task = Task(
+                description=retry_description,
+                expected_output=STAGE_EXPECTED_OUTPUTS.get(
+                    stage_name, "Complete the task as described."
+                ),
+                agent=executor_agent,
+            )
+            review_task = Task(
+                description=(
+                    "Review the implementation against the plan. Verify all "
+                    "required artefacts are present in the workspace and "
+                    "outputs are complete and correct."
+                ),
+                expected_output=(
+                    "Validation report confirming all artefacts are present "
+                    "and correct"
+                ),
+                agent=reviewer_agent,
+                context=[implement_task],
+            )
+            agents = [executor_agent, reviewer_agent]
+            tasks = [implement_task, review_task]
+
+        step_cb, task_cb, counter = self._create_trace_callbacks(
+            trace,
+            progress_callback=context.progress_callback,
+            max_iterations=context.max_iterations,
+        )
+
+        # planning=True disabled: redundant with our planner agent and
+        # defaults to gpt-4o-mini which would introduce a second model.
+        # Note: max_iter and max_execution_time are per-Agent fields in
+        # crewai >=1.7; the per-agent max_iter is already set above.
+        crew = Crew(
+            agents=agents,
+            tasks=tasks,
+            process=Process.sequential,
+            verbose=False,
+            step_callback=step_cb,
+            task_callback=task_cb,
+        )
+        return crew, counter
+
+    # =========================================================================
     # Core Agent Runner
     # =========================================================================
 
@@ -263,10 +487,11 @@ class CrewAIAdapter(ToolAgentAdapter):
         trace: AgentTrace,
         context: StageContext,
     ) -> tuple[int, bool]:
-        """Run a 3-agent sequential CrewAI crew. Returns (iterations, hit_limit)."""
+        """Run a CrewAI crew with retry loop. Returns (iterations, hit_limit)."""
         import asyncio
 
-        from crewai import Agent, Crew, Process, Task
+        from desmet.adapters._tools import _check_completion
+        from desmet.adapters._tracing import record_llm_duration, record_node_event
 
         llm = self._create_llm(context)
         cfg = get_llm_config(
@@ -275,178 +500,129 @@ class CrewAIAdapter(ToolAgentAdapter):
         )
         model_name = cfg.model
 
-        planner_budget, executor_budget, reviewer_budget = _compute_iter_budget(
-            context.max_iterations
-        )
-
-        # ── Helper: inject system_msg into backstory ──────────────────────
-        def _make_backstory(persona_backstory: str) -> str:
-            if system_msg:
-                return f"{persona_backstory}\n\n{system_msg}"
-            return persona_backstory
-
-        # ── 1. Planner — Technical Lead ───────────────────────────────────
-        planner_persona = get_sub_persona("planner")
-        planner_agent = Agent(
-            role=planner_persona.role,
-            goal=planner_persona.goal,
-            backstory=_make_backstory(planner_persona.backstory),
-            verbose=False,
-            allow_delegation=False,
-            llm=llm,
-            tools=tools,
-            max_iter=planner_budget,
-        )
-
-        # ── 2. Executor — stage-specific persona ─────────────────────────
-        executor_persona = get_stage_persona(stage_name)
-        executor_agent = Agent(
-            role=executor_persona.role,
-            goal=executor_persona.goal,
-            backstory=_make_backstory(executor_persona.backstory),
-            verbose=False,
-            allow_delegation=False,
-            llm=llm,
-            tools=tools,
-            max_iter=executor_budget,
-        )
-
-        # ── 3. Reviewer — Code Reviewer ───────────────────────────────────
-        reviewer_persona = get_sub_persona("reviewer")
-        reviewer_agent = Agent(
-            role=reviewer_persona.role,
-            goal=reviewer_persona.goal,
-            backstory=_make_backstory(reviewer_persona.backstory),
-            verbose=False,
-            allow_delegation=False,
-            llm=llm,
-            tools=tools,
-            max_iter=reviewer_budget,
-        )
-
-        # ── Tasks with context chaining ───────────────────────────────────
-        analyse_task = Task(
-            description=(
-                f"Analyse the following task and produce a numbered implementation "
-                f"plan identifying all files to create or modify.\n\n{prompt}"
-            ),
-            expected_output="A numbered implementation plan with files to create/modify",
-            agent=planner_agent,
-        )
-
-        implement_task = Task(
-            description=prompt,
-            expected_output=STAGE_EXPECTED_OUTPUTS.get(
-                stage_name, "Complete the task as described."
-            ),
-            agent=executor_agent,
-            context=[analyse_task],
-        )
-
-        review_task = Task(
-            description=(
-                "Review the implementation against the plan. Verify all required "
-                "artefacts are present in the workspace and outputs are complete "
-                "and correct."
-            ),
-            expected_output=(
-                "Validation report confirming all artefacts are present and correct"
-            ),
-            agent=reviewer_agent,
-            context=[analyse_task, implement_task],
-        )
-
-        step_cb, task_cb, counter = self._create_trace_callbacks(
-            trace, progress_callback=context.progress_callback,
-            max_iterations=context.max_iterations,
-        )
-
-        crew = Crew(
-            agents=[planner_agent, executor_agent, reviewer_agent],
-            tasks=[analyse_task, implement_task, review_task],
-            process=Process.sequential,
-            planning=True,
-            planning_llm=llm,
-            verbose=False,
-            step_callback=step_cb,
-            task_callback=task_cb,
-            max_iter=context.max_iterations,
-        )
-
         record_message(trace, "user", prompt)
 
-        self._start_llm_collection()
+        total_iterations = 0
+        hit_limit = False
+        plan_text = ""
+        feedback = ""
+        structured_plan: ImplementationPlan | None = None
 
-        result = await asyncio.to_thread(crew.kickoff)
-        record_message(trace, "assistant", str(result))
+        for attempt in range(MAX_RETRIES + 1):
+            crew, counter = self._build_crew(
+                stage_name, prompt, system_msg, tools, llm, context, trace,
+                retry_attempt=attempt,
+                prior_plan=plan_text,
+                feedback=feedback,
+                plan=structured_plan,
+            )
 
-        # Collect per-LLM-call data from the event bus
-        llm_calls = self._stop_llm_collection()
+            self._start_llm_collection()
+            result = await asyncio.to_thread(crew.kickoff)
+            record_message(trace, "assistant", str(result))
+            llm_calls = self._stop_llm_collection()
 
-        from desmet.adapters._tracing import record_llm_duration
-        for call in llm_calls:
-            if call.get("duration_ms", 0) > 0:
-                record_llm_duration(trace, call["duration_ms"])
-
-        if llm_calls:
-            # Per-call token usage + cost estimation via cost_calculator
+            # ── Record LLM call durations and token usage ────────────────
             for call in llm_calls:
-                record_usage(
-                    trace,
-                    input_tokens=call.get("input_tokens", 0),
-                    output_tokens=call.get("output_tokens", 0),
-                    model=call.get("model") or model_name,
+                if call.get("duration_ms", 0) > 0:
+                    record_llm_duration(trace, call["duration_ms"])
+
+            if llm_calls:
+                for call in llm_calls:
+                    record_usage(
+                        trace,
+                        input_tokens=call.get("input_tokens", 0),
+                        output_tokens=call.get("output_tokens", 0),
+                        model=call.get("model") or model_name,
+                    )
+                from desmet.observability import get_langfuse
+                lf = get_langfuse()
+                if lf is not None:
+                    for i, call in enumerate(llm_calls):
+                        with lf.start_as_current_observation(
+                            name=f"llm-{call.get('call_type', 'call')}-{i + 1}",
+                            as_type="generation",
+                            model=call.get("model"),
+                            usage_details={
+                                "input": call.get("input_tokens", 0),
+                                "output": call.get("output_tokens", 0),
+                            },
+                            metadata={"agent_role": call.get("agent_role")},
+                        ):
+                            pass
+            else:
+                usage = getattr(result, "token_usage", None)
+                if usage is not None:
+                    record_usage(
+                        trace,
+                        input_tokens=(
+                            getattr(usage, "prompt_tokens", 0)
+                            or getattr(usage, "input_tokens", 0) or 0
+                        ),
+                        output_tokens=(
+                            getattr(usage, "completion_tokens", 0)
+                            or getattr(usage, "output_tokens", 0) or 0
+                        ),
+                        model=model_name,
+                    )
+
+            total_iterations += counter[0]
+
+            # ── Extract plan from first attempt ──────────────────────────
+            if attempt == 0:
+                tasks_output = getattr(result, "tasks_output", None)
+                if tasks_output:
+                    first_output = tasks_output[0]
+                    # Try pydantic output first (structured output from CrewAI)
+                    pydantic_out = getattr(first_output, "pydantic", None)
+                    if isinstance(pydantic_out, ImplementationPlan):
+                        structured_plan = pydantic_out
+                    else:
+                        # Parse from text as fallback
+                        raw_plan = str(first_output)
+                        steps = [
+                            m.group(1).strip()
+                            for m in re.finditer(r"^\d+\.\s+(.*)", raw_plan, re.MULTILINE)
+                        ]
+                        structured_plan = ImplementationPlan(
+                            steps=steps or [raw_plan],
+                            files_to_create=[],
+                            files_to_modify=[],
+                        )
+                    plan_text = str(first_output)
+
+            # ── Validate workspace ───────────────────────────────────────
+            valid = validate_workspace(stage_name, str(context.workspace))
+            record_node_event(
+                trace, "validator",
+                validator_passed=valid,
+                retry_count=attempt + 1,
+            )
+
+            if valid:
+                if context.progress_callback is not None:
+                    context.progress_callback("    validator: PASSED")
+                break
+
+            # ── Validation failed — prepare retry or exit ────────────────
+            _, feedback = _check_completion(context.workspace, stage_name)
+
+            if context.progress_callback is not None:
+                context.progress_callback(
+                    f"    validator: FAILED (attempt {attempt + 1}/"
+                    f"{MAX_RETRIES + 1}) — {feedback}"
                 )
 
-            # Create per-call Langfuse generation spans
-            from desmet.observability import get_langfuse
-            lf = get_langfuse()
-            if lf is not None:
-                for i, call in enumerate(llm_calls):
-                    with lf.start_as_current_observation(
-                        name=f"llm-{call.get('call_type', 'call')}-{i + 1}",
-                        as_type="generation",
-                        model=call.get("model"),
-                        usage_details={
-                            "input": call.get("input_tokens", 0),
-                            "output": call.get("output_tokens", 0),
-                        },
-                        metadata={"agent_role": call.get("agent_role")},
-                    ):
-                        pass
-        else:
-            # Fallback: aggregate usage from CrewOutput when event bus
-            # collection is unavailable.
-            usage = getattr(result, "token_usage", None)
-            if usage is not None:
-                prompt_tokens = (
-                    getattr(usage, "prompt_tokens", 0)
-                    or getattr(usage, "input_tokens", 0)
-                    or 0
-                )
-                completion_tokens = (
-                    getattr(usage, "completion_tokens", 0)
-                    or getattr(usage, "output_tokens", 0)
-                    or 0
-                )
-                record_usage(
-                    trace,
-                    input_tokens=prompt_tokens,
-                    output_tokens=completion_tokens,
-                    model=model_name,
-                )
+            if total_iterations >= context.max_iterations:
+                hit_limit = True
+                break
 
-        # ── Deterministic workspace validation ────────────────────────────
-        valid = validate_workspace(stage_name, str(context.workspace))
-        if context.progress_callback is not None:
-            status = "passed" if valid else "failed"
-            context.progress_callback(f"    workspace validation: {status}")
+        if not hit_limit:
+            hit_limit = total_iterations >= context.max_iterations
 
-        iterations = counter[0]
-        hit_limit = iterations >= context.max_iterations
-        trace.total_iterations = iterations
+        trace.total_iterations = total_iterations
         finish_trace(trace)
-        return iterations, hit_limit
+        return total_iterations, hit_limit
 
     # Stage methods inherited from ToolAgentAdapter
 
@@ -496,9 +672,12 @@ class CrewAIAdapter(ToolAgentAdapter):
                         f"    tool {tool_counter[0]} — {detail}"
                         f"  ({elapsed:.0f}s, {tokens:,} tokens)"
                     )
-                elif counter[0] % 10 == 0:
+                elif counter[0] % 5 == 0:
+                    agent_role = getattr(step_output, "agent", None)
+                    role_str = getattr(agent_role, "role", "") if agent_role else ""
+                    role_label = f" [{role_str}]" if role_str else ""
                     progress_callback(
-                        f"    step {counter[0]}/{max_iterations} — reasoning"
+                        f"    step {counter[0]}/{max_iterations}{role_label} — reasoning"
                         f"  ({elapsed:.0f}s, {tokens:,} tokens)"
                     )
 
@@ -514,6 +693,12 @@ class CrewAIAdapter(ToolAgentAdapter):
                 trace, "assistant", str(task_output),
                 metadata={"event": "task_complete"},
             )
+            if progress_callback is not None:
+                elapsed = time.monotonic() - t0
+                agent_name = getattr(task_output, "agent", "") or ""
+                progress_callback(
+                    f"    task complete — {agent_name}  ({elapsed:.0f}s)"
+                )
 
         return step_callback, task_callback, counter
 
@@ -531,7 +716,8 @@ class CrewAIAdapter(ToolAgentAdapter):
             "trace_format": "Custom logs",
             "notes": (
                 "Multi-agent sequential crew (planner/executor/reviewer) with "
-                "planning=True. Per-agent step callbacks + event bus for LLM call tracing."
+                "up to 3 retries. Per-agent step callbacks + event bus for "
+                "LLM call tracing. Native function calling via provider SDKs."
             ),
         }
 
@@ -541,9 +727,10 @@ class CrewAIAdapter(ToolAgentAdapter):
             "has_auto_recovery": True,
             "has_graceful_degradation": True,
             "supports_human_handoff": True,
-            "is_idempotent": False,
+            "is_idempotent": True,
             "notes": (
-                "Post-crew validate_workspace() gate. Per-agent max_iter limits. "
-                "Crew planning mode aligns agents before execution."
+                "Post-crew validate_workspace() with up to 3 retries. Plan "
+                "carried forward on retry (executor + reviewer only, no "
+                "re-planning). Per-agent max_iter limits."
             ),
         }
