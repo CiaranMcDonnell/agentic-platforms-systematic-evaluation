@@ -539,6 +539,11 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                             for content_item in (getattr(msg, "contents", None) or []):
                                 cd = content_item.to_dict() if hasattr(content_item, "to_dict") else {}
                                 ctype = cd.get("type", "")
+                                # Debug: log all content types we see
+                                if ctype and ctype not in ("text", "text_reasoning"):
+                                    _log.debug("Content type=%s keys=%s", ctype, list(cd.keys()))
+                                    if cb:
+                                        cb(f"    [content] {ctype}: {list(cd.keys())}")
 
                                 if ctype == "function_call":
                                     tc_name = cd.get("name", "unknown")
