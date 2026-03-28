@@ -132,6 +132,147 @@ class GoogleADKAdapter(ToolAgentAdapter):
         except Exception:
             return False
 
+    async def _run_planner(
+        self,
+        stage_name: str,
+        prompt: str,
+        collector: ObservationCollector,
+        progress: ProgressReporter,
+        temperature: float = 0.0,
+    ) -> ImplementationPlan:
+        """Run planner agent with structured output, falling back to text parsing.
+
+        Returns an ImplementationPlan. Records planner messages and usage
+        via the collector.
+        """
+        from google.adk.agents import Agent
+        from google.adk.runners import Runner
+        from google.adk.sessions import InMemorySessionService
+        from google.genai import types
+
+        planner_persona = get_sub_persona("planner")
+
+        # Try structured output first
+        plan: ImplementationPlan | None = None
+        try:
+            planner = Agent(
+                name=f"desmet_{stage_name}_planner",
+                model=self._model_id,
+                instruction=planner_persona.backstory,
+                output_schema=ImplementationPlan,
+                output_key="plan",
+                generate_content_config=types.GenerateContentConfig(
+                    temperature=temperature,
+                ),
+            )
+            session_svc = InMemorySessionService()
+            runner = Runner(
+                app_name="desmet_planner",
+                agent=planner,
+                session_service=session_svc,
+            )
+            session = await session_svc.create_session(
+                app_name="desmet_planner", user_id="eval",
+            )
+
+            t0 = time.monotonic()
+            async for event in runner.run_async(
+                user_id="eval",
+                session_id=session.id,
+                new_message=types.Content(
+                    role="user", parts=[types.Part(text=prompt)],
+                ),
+            ):
+                if event.content and event.content.parts:
+                    text = "".join(
+                        p.text for p in event.content.parts if hasattr(p, "text") and p.text
+                    )
+                    if text:
+                        collector.record_message(
+                            "assistant", text,
+                            metadata={"agent": "planner"},
+                        )
+                # Extract usage from event
+                usage = getattr(event, "usage_metadata", None)
+                if usage:
+                    collector.record_llm_response(raw_usage=usage)
+
+            duration_ms = (time.monotonic() - t0) * 1000
+            collector.record_llm_response(raw_usage=None, duration_ms=duration_ms)
+
+            # Extract plan from session state
+            plan_data = session.state.get("plan")
+            if isinstance(plan_data, ImplementationPlan):
+                plan = plan_data
+            elif isinstance(plan_data, dict):
+                plan = ImplementationPlan.model_validate(plan_data)
+            elif isinstance(plan_data, str):
+                try:
+                    plan = ImplementationPlan.model_validate_json(plan_data)
+                except Exception:
+                    plan = parse_plan_text(plan_data)
+        except Exception as e:
+            _log.debug("Structured planner failed: %s — falling back to text", e)
+
+        # Fallback: free-text planning
+        if plan is None:
+            try:
+                planner = Agent(
+                    name=f"desmet_{stage_name}_planner_fallback",
+                    model=self._model_id,
+                    instruction=(
+                        f"{planner_persona.backstory}\n\n"
+                        "Produce a numbered implementation plan listing steps, "
+                        "files to create, and files to modify."
+                    ),
+                    generate_content_config=types.GenerateContentConfig(
+                        temperature=temperature,
+                    ),
+                )
+                session_svc = InMemorySessionService()
+                runner = Runner(
+                    app_name="desmet_planner_fallback",
+                    agent=planner,
+                    session_service=session_svc,
+                )
+                session = await session_svc.create_session(
+                    app_name="desmet_planner_fallback", user_id="eval",
+                )
+
+                plan_text = ""
+                t0 = time.monotonic()
+                async for event in runner.run_async(
+                    user_id="eval",
+                    session_id=session.id,
+                    new_message=types.Content(
+                        role="user", parts=[types.Part(text=prompt)],
+                    ),
+                ):
+                    if event.content and event.content.parts:
+                        text = "".join(
+                            p.text for p in event.content.parts
+                            if hasattr(p, "text") and p.text
+                        )
+                        if text:
+                            plan_text += text
+                            collector.record_message(
+                                "assistant", text,
+                                metadata={"agent": "planner"},
+                            )
+
+                duration_ms = (time.monotonic() - t0) * 1000
+                collector.record_llm_response(raw_usage=None, duration_ms=duration_ms)
+                plan = parse_plan_text(plan_text)
+            except Exception:
+                plan = ImplementationPlan(
+                    steps=["Execute the task as described"],
+                    files_to_create=[],
+                    files_to_modify=[],
+                )
+
+        progress.agent_status("planner", f"{len(plan.steps)} steps planned")
+        return plan
+
     # ── Core agent runner ─────────────────────────────────────────────
 
     async def _run_agent(
