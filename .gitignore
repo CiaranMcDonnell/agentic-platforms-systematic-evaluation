@@ -1,9 +1,7 @@
-# ── Ignore everything by default ─────────────────────────────────────────────
-# Then explicitly allow directories/files you want tracked.
-# This keeps the repo clean — only opted-in content gets committed.
+# ── Ignore everything, then allowlist ────────────────────────────────────────
 *
 
-# ── Allow these top-level files ──────────────────────────────────────────────
+# ── Top-level files ─────────────────────────────────────────────────────────
 !.gitignore
 !.python-version
 !.env.example
@@ -11,30 +9,38 @@
 !uv.lock
 !README.md
 
-# ── Allow these directories (and everything inside them) ─────────────────────
+# ── Source code ─────────────────────────────────────────────────────────────
 !src/
 !src/**
-!config/
-!config/**
-!data/
-!data/**
-!docs/
-!docs/**
-docs/presentations/
-!infrastructure/
-!infrastructure/**
+
+# ── Tests ───────────────────────────────────────────────────────────────────
 !tests/
 !tests/**
 
-# ── Directories NOT allowed (ignored) ───────────────────────────────────────
-# results/        — generated evaluation outputs
-# notebooks/      — local analysis notebooks
-# platforms/      — deep-dive explorations
-# oldcustom/      — legacy files
+# ── Config ──────────────────────────────────────────────────────────────────
+!config/
+!config/**
 
-# ── Always ignore these regardless of above rules ───────────────────────────
+# ── Data (stories, baselines) ──────────────────────────────────────────────
+!data/
+!data/**
 
-# Python
+# ── Report (Typst source only) ─────────────────────────────────────────────
+!docs/
+!docs/report/
+!docs/report/**
+!docs/spec/
+!docs/spec/**
+!docs/superpowers/
+!docs/superpowers/**
+
+# ── Infrastructure ─────────────────────────────────────────────────────────
+!infrastructure/
+!infrastructure/**
+
+# ── Always ignore (override allowlists) ────────────────────────────────────
+
+# Build artifacts
 __pycache__/
 *.py[cod]
 *.pyo
@@ -71,7 +77,9 @@ Thumbs.db
 Desktop.ini
 nul
 
-# DuckDB result store
+# Generated files
+*.pdf
+*.png
 *.duckdb
 *.duckdb.wal
 
@@ -80,18 +88,9 @@ nul
 *.pem
 *.key
 
-# Typst build artifacts
-*.pdf
+# Nested project artifacts
+data/baseline/uv.lock
+data/baseline/docs/design/diagrams/
 
-# LaTeX build artifacts
-*.aux
-*.bbl
-*.blg
-*.fdb_latexmk
-*.fls
-*.log
-*.nav
-*.out
-*.snm
-*.synctex.gz
-*.toc
+# Internal notes
+docs/report/papers-to-add.md
