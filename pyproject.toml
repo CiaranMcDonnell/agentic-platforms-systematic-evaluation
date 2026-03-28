@@ -54,7 +54,7 @@ export = [
     "kaleido>=1.0.0",
 ]
 google-adk = [
-    "google-adk>=1.0.0",
+    "google-adk[extensions]>=1.0.0",
 ]
 
 # ── Visual/workflow platforms ──
