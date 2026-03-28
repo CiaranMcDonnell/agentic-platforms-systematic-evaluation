@@ -450,6 +450,17 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                                     metadata={"event": "final_output"},
                                 )
 
+                else:
+                    # Log unhandled event types so we can capture tool calls etc.
+                    _log.debug(
+                        "Unhandled event type=%s executor=%s data_type=%s",
+                        event.type,
+                        getattr(event, "executor_id", ""),
+                        type(event.data).__name__,
+                    )
+                    if cb:
+                        cb(f"    [event] {event.type} ({type(event.data).__name__})")
+
                 # Check iteration limit
                 if total_iterations >= context.max_iterations:
                     hit_limit = True
