@@ -331,8 +331,8 @@ async def run_stage_in_container(
     # Run entrypoint via docker exec, streaming stderr
     env = {**os.environ, "MSYS_NO_PATHCONV": "1"}
     proc = await asyncio.create_subprocess_exec(
-        "docker", "exec", container,
-        "python", "-m", "desmet.harness.entrypoint", "/workspace/.desmet-context.json",
+        "docker", "exec", "-w", "/app", container,
+        "uv", "run", "python", "-m", "desmet.harness.entrypoint", "/workspace/.desmet-context.json",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=env,
