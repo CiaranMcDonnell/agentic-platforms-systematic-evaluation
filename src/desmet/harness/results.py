@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from .trace import AgentTrace
 
@@ -61,6 +61,86 @@ class StageResult:
 
     # LangSmith run ID (LangGraph only; None for all other adapters)
     langsmith_run_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-compatible dict for container IPC.
+
+        Includes a ``_type`` field so ``from_dict`` can reconstruct
+        the correct subclass.
+        """
+        d: dict[str, Any] = {
+            "_type": type(self).__name__,
+            "platform_id": self.platform_id,
+            "stage_name": self.stage_name,
+            "success": self.success,
+            "completed": self.completed,
+            "error_message": self.error_message,
+            "trace": self.trace.to_dict(),
+            "wall_clock_seconds": self.wall_clock_seconds,
+            "iterations": self.iterations,
+            "tool_calls_count": self.tool_calls_count,
+            "tokens_input": self.tokens_input,
+            "tokens_output": self.tokens_output,
+            "cost_usd": self.cost_usd,
+            "human_interventions": self.human_interventions,
+            "framework_metrics": self.framework_metrics,
+            "start_time": self.start_time.isoformat() if self.start_time else None,
+            "end_time": self.end_time.isoformat() if self.end_time else None,
+            "langsmith_run_id": self.langsmith_run_id,
+        }
+        # Append subclass-specific fields (serialize nested dataclasses to dicts)
+        import dataclasses
+        base_fields = {f.name for f in dataclasses.fields(StageResult)}
+        for f in dataclasses.fields(self):
+            if f.name not in base_fields and f.name != "raw_output":
+                val = getattr(self, f.name)
+                if isinstance(val, list) and val and dataclasses.is_dataclass(val[0]):
+                    val = [dataclasses.asdict(item) for item in val]
+                elif dataclasses.is_dataclass(val):
+                    val = dataclasses.asdict(val)
+                d[f.name] = val
+        return d
+
+    _SUBCLASS_MAP: ClassVar[dict[str, type]] = {}
+
+    @classmethod
+    def _register_subclasses(cls) -> None:
+        if cls._SUBCLASS_MAP:
+            return
+        for sub in [RequirementsResult, CodeResult, TestResult, DeployResult]:
+            cls._SUBCLASS_MAP[sub.__name__] = sub
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> StageResult:
+        """Deserialize from a dict produced by ``to_dict()``.
+
+        Reconstructs the correct subclass based on ``_type``.
+        """
+        from datetime import datetime as _dt
+
+        cls._register_subclasses()
+
+        data = dict(data)  # shallow copy to avoid mutating caller's dict
+        type_name = data.pop("_type", "StageResult")
+        target_cls = cls._SUBCLASS_MAP.get(type_name, StageResult)
+
+        trace = AgentTrace.from_dict(data.pop("trace", {}))
+        start_time_raw = data.pop("start_time", None)
+        start_time = _dt.fromisoformat(start_time_raw) if start_time_raw else None
+        end_time_raw = data.pop("end_time", None)
+        end_time = _dt.fromisoformat(end_time_raw) if end_time_raw else None
+
+        # Remove fields not in the target dataclass
+        import dataclasses
+        valid_fields = {f.name for f in dataclasses.fields(target_cls)}
+        filtered = {k: v for k, v in data.items() if k in valid_fields}
+
+        return target_cls(
+            trace=trace,
+            start_time=start_time,
+            end_time=end_time,
+            **filtered,
+        )
 
 
 @dataclass

@@ -59,3 +59,80 @@ class AgentTrace:
     def total_tokens(self) -> int:
         """Total tokens consumed."""
         return self.total_tokens_input + self.total_tokens_output
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-compatible dict."""
+        return {
+            "messages": [
+                {
+                    "role": m.role,
+                    "content": m.content,
+                    "timestamp": m.timestamp.isoformat(),
+                    "metadata": m.metadata,
+                }
+                for m in self.messages
+            ],
+            "tool_calls": [
+                {
+                    "tool_name": tc.tool_name,
+                    "arguments": tc.arguments,
+                    "result": str(tc.result) if tc.result is not None else None,
+                    "timestamp": tc.timestamp.isoformat(),
+                    "duration_ms": tc.duration_ms,
+                    "success": tc.success,
+                    "error": tc.error,
+                }
+                for tc in self.tool_calls
+            ],
+            "total_iterations": self.total_iterations,
+            "total_tokens_input": self.total_tokens_input,
+            "total_tokens_output": self.total_tokens_output,
+            "total_cost_usd": self.total_cost_usd,
+            "total_llm_duration_ms": self.total_llm_duration_ms,
+            "start_time": self.start_time.isoformat() if self.start_time else None,
+            "end_time": self.end_time.isoformat() if self.end_time else None,
+            "final_state": self.final_state,
+            "errors": self.errors,
+            "node_events": self.node_events,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AgentTrace:
+        """Deserialize from a dict produced by ``to_dict()``."""
+        from datetime import datetime as _dt
+
+        messages = [
+            AgentMessage(
+                role=m["role"],
+                content=m["content"],
+                timestamp=_dt.fromisoformat(m["timestamp"]),
+                metadata=m.get("metadata", {}),
+            )
+            for m in data.get("messages", [])
+        ]
+        tool_calls = [
+            ToolCall(
+                tool_name=tc["tool_name"],
+                arguments=tc["arguments"],
+                result=tc.get("result"),
+                timestamp=_dt.fromisoformat(tc["timestamp"]),
+                duration_ms=tc["duration_ms"],
+                success=tc["success"],
+                error=tc.get("error"),
+            )
+            for tc in data.get("tool_calls", [])
+        ]
+        return cls(
+            messages=messages,
+            tool_calls=tool_calls,
+            total_iterations=data.get("total_iterations", 0),
+            total_tokens_input=data.get("total_tokens_input", 0),
+            total_tokens_output=data.get("total_tokens_output", 0),
+            total_cost_usd=data.get("total_cost_usd", 0.0),
+            total_llm_duration_ms=data.get("total_llm_duration_ms", 0.0),
+            start_time=_dt.fromisoformat(data["start_time"]) if data.get("start_time") else None,
+            end_time=_dt.fromisoformat(data["end_time"]) if data.get("end_time") else None,
+            final_state=data.get("final_state", {}),
+            errors=data.get("errors", []),
+            node_events=data.get("node_events", []),
+        )
