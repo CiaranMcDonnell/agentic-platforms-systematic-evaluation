@@ -98,10 +98,14 @@ class TestGetAdapter:
             get_adapter("nonexistent_platform")
 
     def test_stub_adapters_are_base_platform_adapter(self):
-        stub_ids = ["microsoft_agent_framework", "google_adk"]
+        stub_ids = ["google_adk"]
         for pid in stub_ids:
             adapter = get_adapter(pid)
             assert isinstance(adapter, BasePlatformAdapter)
+
+    def test_agent_framework_adapter_is_base_platform_adapter(self):
+        adapter = get_adapter("microsoft_agent_framework")
+        assert isinstance(adapter, BasePlatformAdapter)
 
     def test_visual_stubs_are_visual_platform_adapter(self):
         visual_ids = ["flowise", "langflow", "dify", "n8n"]
@@ -112,8 +116,15 @@ class TestGetAdapter:
     def test_stub_initialize_raises(self):
         import asyncio
 
-        adapter = get_adapter("microsoft_agent_framework")
+        adapter = get_adapter("google_adk")
         with pytest.raises(NotImplementedError, match="not yet implemented"):
+            asyncio.run(adapter.initialize())
+
+    def test_agent_framework_initialize_raises_without_package(self):
+        import asyncio
+
+        adapter = get_adapter("microsoft_agent_framework")
+        with pytest.raises(RuntimeError, match="Failed to import"):
             asyncio.run(adapter.initialize())
 
     def test_stub_health_check_returns_false(self):
