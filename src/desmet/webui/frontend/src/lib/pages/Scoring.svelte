@@ -272,7 +272,7 @@
       </div>
 
       {#if activeTab === 'graph'}
-        <AgentGraph platformId={selectedPlatform} storyId={selectedStory} />
+        <AgentGraph platformId={selectedPlatform} storyId={selectedStory} langfuseTraceId={scoreData.langfuse_trace_id} />
       {:else if showLangSmithTab && activeTab === 'langsmith'}
         <LangSmithTraceViewer runId={scoreData.langsmith_run_id!} />
       {:else if scoreData.langfuse_trace_id}
