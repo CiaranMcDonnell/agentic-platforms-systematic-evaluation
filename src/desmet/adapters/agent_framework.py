@@ -28,8 +28,7 @@ from desmet.adapters._planning import (
 )
 from desmet.adapters._prompts import get_stage_persona, get_sub_persona
 from desmet.adapters._tools import ToolFormat, split_tools
-from desmet.adapters._tracing import format_tool_detail
-from desmet.adapters._validation import validate_workspace
+from desmet.adapters._retry import ProgressReporter, RetryPolicy
 from desmet.adapters.registry import load_platform_info
 from desmet.observability import get_langfuse, record_generation
 from desmet.harness.context import StageContext
@@ -172,6 +171,8 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
         tools: list,
         collector: ObservationCollector,
         context: StageContext,
+        policy: RetryPolicy,
+        progress: ProgressReporter,
     ) -> tuple[int, bool]:
         """Run MagenticOne orchestration: manager + planner/executor/reviewer.
 
@@ -190,10 +191,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
         reviewer_persona = get_sub_persona("reviewer")
 
         total_iterations = 0
-        tool_call_count = 0
         hit_limit = False
-        t0 = time.monotonic()
-        cb = context.progress_callback
 
         collector.record_message("user", prompt)
 
@@ -260,8 +258,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
             output=plan_json[:2000],
             metadata={"steps": len(plan.steps), "stage": stage_name},
         )
-        if cb:
-            cb(f"    planner: {len(plan.steps)} steps planned")
+        progress.agent_status("planner", f"{len(plan.steps)} steps planned")
 
         # -- Step 2: Build executor and reviewer agents -----------------------
         executor_instructions = build_executor_instructions(
@@ -362,8 +359,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                             "system", content.text or "",
                             metadata={"event": f"orchestrator_{event_name}"},
                         )
-                    if cb:
-                        cb(f"    [manager] {event_name}")
+                    progress.agent_status("manager", event_name)
 
                 elif event.type == "output":
                     # Final output — list[Message]; counts as an iteration
@@ -449,26 +445,15 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                                         result_text = str(result_text)[:500] + "...(truncated)..." + str(result_text)[-300:]
                                     # Match with pending call
                                     tc_name, tc_args = pending_calls.pop(call_id, ("unknown", {}))
-                                    tool_call_count += 1
                                     collector.record_tool_execution(tc_name, tc_args, str(result_text))
-                                    if cb:
-                                        elapsed = time.monotonic() - t0
-                                        detail = format_tool_detail(tc_name, tc_args)
-                                        tokens = collector.trace.total_tokens_input + collector.trace.total_tokens_output
-                                        cb(f"    tool {tool_call_count} \u2014 {detail}  ({elapsed:.0f}s, {tokens:,} tokens)")
+                                    progress.tool_call(tc_name, tc_args)
 
                         # Record any unmatched calls (no result yet)
                         for call_id, (tc_name, tc_args) in pending_calls.items():
-                            tool_call_count += 1
                             collector.record_tool_execution(tc_name, tc_args, "(no result)")
-                            if cb:
-                                elapsed = time.monotonic() - t0
-                                detail = format_tool_detail(tc_name, tc_args)
-                                tokens = collector.trace.total_tokens_input + collector.trace.total_tokens_output
-                                cb(f"    tool {tool_call_count} \u2014 {detail}  ({elapsed:.0f}s, {tokens:,} tokens)")
+                            progress.tool_call(tc_name, tc_args)
 
-                    if cb:
-                        cb(f"    [completed] {executor_name}")
+                    progress.agent_status(executor_name, "completed")
 
                 else:
                     # Log unhandled event types for debugging
@@ -498,15 +483,11 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
         collector.record_llm_response(raw_usage=None, duration_ms=llm_time_estimate)
 
         # -- Step 5: Final validation -----------------------------------------
-        passed = validate_workspace(stage_name, str(context.workspace))
-        if cb:
-            if passed:
-                cb("    validator: PASSED")
-            else:
-                from desmet.adapters._tools import _check_completion
-                _, hint = _check_completion(context.workspace, stage_name)
-                elapsed = time.monotonic() - t0
-                cb(f"    validator: FAILED \u2014 {hint}  ({elapsed:.0f}s)")
+        passed, feedback = policy.validate()
+        if passed:
+            progress.validation_passed()
+        else:
+            progress.validation_failed(1, 1, feedback)
 
         collector.mark_iterations(total_iterations)
         return total_iterations, hit_limit
