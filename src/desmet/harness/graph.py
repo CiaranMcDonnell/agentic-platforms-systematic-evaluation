@@ -11,7 +11,47 @@ __all__ = [
     "GraphEdge",
     "CommunicationGraph",
     "build_graph",
+    "TimelineEvent",
+    "build_timeline",
 ]
+
+
+@dataclass
+class TimelineEvent:
+    """A single event in the agent execution timeline."""
+
+    index: int
+    type: str  # "llm", "tool", "agent", "routing"
+    raw_type: str  # framework-native name
+    agent_id: str  # normalized owner
+    role: str  # message role
+    content: str
+    timestamp: str
+    duration_ms: float | None = None
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    model: str | None = None
+    tool_name: str | None = None
+    tool_success: bool | None = None
+    target_agent_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "index": self.index,
+            "type": self.type,
+            "raw_type": self.raw_type,
+            "agent_id": self.agent_id,
+            "role": self.role,
+            "content": self.content,
+            "timestamp": self.timestamp,
+            "duration_ms": self.duration_ms,
+            "tokens_in": self.tokens_in,
+            "tokens_out": self.tokens_out,
+            "model": self.model,
+            "tool_name": self.tool_name,
+            "tool_success": self.tool_success,
+            "target_agent_id": self.target_agent_id,
+        }
 
 
 @dataclass
@@ -325,3 +365,81 @@ def build_graph(trace: dict[str, Any]) -> CommunicationGraph:
         platform=platform,
         story_id=story_id,
     )
+
+
+def _classify_event_type(role: str, raw_node: str) -> str:
+    """Classify a message into a normalized event type."""
+    if "route_" in raw_node or "route" == raw_node:
+        return "routing"
+    if role in ("tool",) or "tool_node" in raw_node:
+        return "tool"
+    if role in ("ai", "assistant"):
+        return "llm"
+    return "agent"
+
+
+def build_timeline(trace: dict[str, Any]) -> list[TimelineEvent]:
+    """Build an ordered timeline of events from a raw trace dict."""
+    all_messages: list[dict[str, Any]] = []
+    all_tool_calls: list[dict[str, Any]] = []
+
+    for stage in (trace.get("stages") or {}).values():
+        all_messages.extend(stage.get("messages", []))
+        all_tool_calls.extend(stage.get("tool_calls", []))
+
+    if not all_messages:
+        return []
+
+    # Build events list
+    events: list[TimelineEvent] = []
+    tool_call_idx = 0
+
+    for i, msg in enumerate(all_messages):
+        metadata = msg.get("metadata") or {}
+        raw_node = metadata.get("node") or metadata.get("agent") or metadata.get("agent_role") or ""
+        raw_node_str = str(raw_node)
+        agent_id = _normalize_agent_id(metadata) or ""
+        role = msg.get("role", "")
+        event_type = _classify_event_type(role, raw_node_str)
+
+        # Match tool calls to tool messages
+        tool_name: str | None = None
+        tool_success: bool | None = None
+        duration_ms: float | None = None
+        if event_type == "tool" and tool_call_idx < len(all_tool_calls):
+            tc = all_tool_calls[tool_call_idx]
+            tool_name = tc.get("tool_name")
+            tool_success = tc.get("success")
+            duration_ms = tc.get("duration_ms")
+            tool_call_idx += 1
+
+        events.append(TimelineEvent(
+            index=i,
+            type=event_type,
+            raw_type=raw_node_str,
+            agent_id=agent_id,
+            role=role,
+            content=msg.get("content", ""),
+            timestamp=msg.get("timestamp", ""),
+            duration_ms=duration_ms,
+            tokens_in=metadata.get("tokens_in"),
+            tokens_out=metadata.get("tokens_out"),
+            model=metadata.get("model"),
+            tool_name=tool_name,
+            tool_success=tool_success,
+        ))
+
+    # Infer target_agent_id from agent transitions
+    for i in range(len(events)):
+        if not events[i].agent_id:
+            continue
+        # Look ahead for next event with a different agent
+        for j in range(i + 1, len(events)):
+            next_agent = events[j].agent_id
+            if not next_agent:
+                continue
+            if next_agent != events[i].agent_id:
+                events[i].target_agent_id = next_agent
+            break  # stop at first event with any agent_id
+
+    return events

@@ -10,6 +10,8 @@ from desmet.harness.graph import (
     GraphNode,
     ToolCallSummary,
     build_graph,
+    build_timeline,
+    TimelineEvent,
 )
 
 
@@ -178,3 +180,138 @@ def test_graph_to_dict():
     assert d["nodes"][0]["tool_calls"][0]["name"] == "write_file"
     assert len(d["edges"]) == 1
     assert d["edges"][0]["message_count"] == 3
+
+
+# ── Timeline tests ────────────────────────────────────────────────────────────
+
+
+def test_build_timeline_basic():
+    """Timeline extracts ordered events from trace messages."""
+    trace = _make_trace_chain()  # existing helper
+    timeline = build_timeline(trace)
+    assert len(timeline) == 4  # user, planner, executor, reviewer
+    assert all(isinstance(e, TimelineEvent) for e in timeline)
+
+    # First event is the system prompt (user role, no agent)
+    assert timeline[0].type == "agent"
+    assert timeline[0].role == "user"
+    assert timeline[0].agent_id == ""
+
+    # Second event is the planner
+    assert timeline[1].type == "llm"
+    assert timeline[1].agent_id == "planner"
+    assert timeline[1].raw_type == "planner"
+
+    # Third is executor
+    assert timeline[2].type == "llm"
+    assert timeline[2].agent_id == "executor"
+    assert timeline[2].raw_type == "executor/write"
+
+    # Fourth is reviewer
+    assert timeline[3].type == "llm"
+    assert timeline[3].agent_id == "reviewer"
+    assert timeline[3].raw_type == "reviewer"
+
+
+def test_build_timeline_indices():
+    """Timeline events have sequential 0-based indices."""
+    trace = _make_trace_chain()
+    timeline = build_timeline(trace)
+    for i, event in enumerate(timeline):
+        assert event.index == i
+
+
+def test_build_timeline_target_agent():
+    """target_agent_id is set on the last message before an agent transition."""
+    trace = _make_trace_chain()
+    timeline = build_timeline(trace)
+    # planner (idx 1) → executor: target is executor
+    assert timeline[1].target_agent_id == "executor"
+    # executor (idx 2) → reviewer: target is reviewer
+    assert timeline[2].target_agent_id == "reviewer"
+    # reviewer (idx 3) is last: target is None
+    assert timeline[3].target_agent_id is None
+
+
+def test_build_timeline_tool_events():
+    """Tool messages get type='tool' and tool_name from matching tool_calls."""
+    trace = {
+        "platform_id": "langgraph",
+        "story_id": "US-001",
+        "stages": {
+            "requirements": {
+                "messages": [
+                    {"role": "assistant", "content": "Let me write the file",
+                     "timestamp": "2026-03-28T01:00:01Z",
+                     "metadata": {"node": "executor/executor_node"}},
+                    {"role": "tool", "content": "(no output)",
+                     "timestamp": "2026-03-28T01:00:02Z",
+                     "metadata": {"node": "executor/tool_node"}},
+                    {"role": "tool", "content": "total 0\ndrwx...",
+                     "timestamp": "2026-03-28T01:00:03Z",
+                     "metadata": {"node": "executor/tool_node"}},
+                ],
+                "tool_calls": [
+                    {"tool_name": "write_file", "arguments": {}, "success": True, "duration_ms": 10},
+                    {"tool_name": "execute_shell", "arguments": {}, "success": False, "duration_ms": 5},
+                ],
+                "node_events": [],
+                "tokens_input": 1000,
+                "tokens_output": 400,
+            }
+        },
+    }
+    timeline = build_timeline(trace)
+    tool_events = [e for e in timeline if e.type == "tool"]
+    assert len(tool_events) == 2
+    assert tool_events[0].tool_name == "write_file"
+    assert tool_events[0].tool_success is True
+    assert tool_events[1].tool_name == "execute_shell"
+    assert tool_events[1].tool_success is False
+
+
+def test_build_timeline_routing_events():
+    """Messages with 'route_' in node name get type='routing'."""
+    trace = {
+        "platform_id": "langgraph",
+        "story_id": "US-001",
+        "stages": {
+            "requirements": {
+                "messages": [
+                    {"role": "assistant", "content": "Plan done",
+                     "timestamp": "2026-03-28T01:00:01Z",
+                     "metadata": {"node": "executor/executor_node"}},
+                    {"role": "assistant", "content": "",
+                     "timestamp": "2026-03-28T01:00:02Z",
+                     "metadata": {"node": "route_executor"}},
+                ],
+                "tool_calls": [],
+                "node_events": [],
+                "tokens_input": 500,
+                "tokens_output": 200,
+            }
+        },
+    }
+    timeline = build_timeline(trace)
+    routing = [e for e in timeline if e.type == "routing"]
+    assert len(routing) == 1
+    assert routing[0].raw_type == "route_executor"
+
+
+def test_build_timeline_empty_trace():
+    """Empty trace returns empty timeline."""
+    trace = {"platform_id": "langgraph", "story_id": "US-001", "stages": {}}
+    timeline = build_timeline(trace)
+    assert timeline == []
+
+
+def test_build_timeline_serialization():
+    """TimelineEvent.to_dict() produces JSON-compatible dict."""
+    trace = _make_trace_chain()
+    timeline = build_timeline(trace)
+    d = timeline[1].to_dict()
+    assert d["index"] == 1
+    assert d["type"] == "llm"
+    assert d["agent_id"] == "planner"
+    assert isinstance(d["content"], str)
+    assert "timestamp" in d
