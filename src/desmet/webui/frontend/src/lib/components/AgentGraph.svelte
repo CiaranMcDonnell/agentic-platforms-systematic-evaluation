@@ -5,6 +5,7 @@
     type Node,
     type Edge,
     type NodeTypes,
+    type EdgeTypes,
     Background,
     BackgroundVariant,
   } from '@xyflow/svelte';
@@ -13,6 +14,7 @@
   import { fetchAgentGraph } from '../api';
   import type { CommunicationGraph, TimelineEvent, GraphNode as ApiGraphNode } from '../api';
   import AgentNode from './AgentNode.svelte';
+  import TransitionEdge from './TransitionEdge.svelte';
   import TimelineCard from './TimelineCard.svelte';
 
   let { platformId, storyId }: { platformId: string; storyId: string } = $props();
@@ -48,10 +50,12 @@
   }
 
   const nodeTypes: NodeTypes = { agent: AgentNode as any };
+  const edgeTypes: EdgeTypes = { transition: TransitionEdge as any };
 
   // Visible edges tracking
   let visibleEdgeKeys = $state(new Set<string>());
   let activeEdgeKey: string | null = $state(null);
+  let edgeDotCounts = $state(new Map<string, number>());
 
   function edgeKey(source: string, target: string): string {
     return `${source}->${target}`;
@@ -60,6 +64,7 @@
   function updateVisibleEdges(upToIndex: number) {
     const timeline = graphData?.timeline ?? [];
     const seen = new Set<string>();
+    const counts = new Map<string, number>();
     let currentAgent: string | null = null;
     let lastActiveKey: string | null = null;
 
@@ -69,6 +74,7 @@
       if (currentAgent && currentAgent !== evt.agent_id) {
         const key = edgeKey(currentAgent, evt.agent_id);
         seen.add(key);
+        counts.set(key, (counts.get(key) ?? 0) + 1);
         lastActiveKey = key;
       }
       currentAgent = evt.agent_id;
@@ -76,6 +82,7 @@
 
     visibleEdgeKeys = seen;
     activeEdgeKey = lastActiveKey;
+    edgeDotCounts = counts;
   }
 
   let displayTimeline = $derived(
@@ -97,16 +104,18 @@
       const key = edgeKey(e.source, e.target);
       const visible = visibleEdgeKeys.has(key);
       const active = key === activeEdgeKey;
+      const dots = edgeDotCounts.get(key) ?? 0;
       return {
         id: key,
         source: e.source,
         target: e.target,
-        type: 'default',
+        type: 'transition',
         animated: active,
+        data: { dots: visible ? dots : 0, sourceColor: roleColor(e.source) },
         style: visible
           ? `stroke: ${active ? '#4a9eff' : '#555'}; stroke-width: ${active ? 2.5 : 1.5}; opacity: ${active ? 1 : 0.5};`
           : 'stroke: transparent; stroke-width: 0;',
-        label: visible ? `${e.message_count}` : '',
+        label: visible ? `${dots}` : '',
         labelStyle: 'fill: #888; font-size: 10px;',
       };
     });
@@ -161,6 +170,7 @@
     selectedEventIndex = null;
     visibleEdgeKeys = new Set();
     activeEdgeKey = null;
+    edgeDotCounts = new Map();
 
     try {
       graphData = await fetchAgentGraph(platformId, storyId);
@@ -173,7 +183,8 @@
         id: edgeKey(e.source, e.target),
         source: e.source,
         target: e.target,
-        type: 'default',
+        type: 'transition',
+        data: { dots: 0, sourceColor: roleColor(e.source) },
         style: 'stroke: transparent; stroke-width: 0;',
         label: '',
       }));
@@ -303,6 +314,7 @@
           {nodes}
           {edges}
           {nodeTypes}
+          {edgeTypes}
           fitView
           nodesDraggable={false}
           nodesConnectable={false}
@@ -460,5 +472,9 @@
 
   :global(.svelte-flow) {
     background: transparent !important;
+  }
+
+  :global(.svelte-flow__attribution) {
+    display: none !important;
   }
 </style>
