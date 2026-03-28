@@ -473,34 +473,6 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                     lf = get_langfuse()
                     responses = event.data if isinstance(event.data, list) else [event.data]
 
-                    # Debug: log what we're getting
-                    if cb:
-                        cb(f"    [debug] executor_completed data_type={type(event.data).__name__} len={len(responses)}")
-                        for i, r in enumerate(responses):
-                            cb(f"    [debug]   [{i}] type={type(r).__name__}")
-                            if hasattr(r, "agent_response"):
-                                ar = r.agent_response
-                                cb(f"    [debug]   agent_response type={type(ar).__name__}")
-                                cb(f"    [debug]   usage_details={getattr(ar, 'usage_details', 'N/A')}")
-                                cb(f"    [debug]   raw_repr type={type(getattr(ar, 'raw_representation', None)).__name__}")
-                                msgs = getattr(ar, "messages", None)
-                                if msgs is None:
-                                    cb(f"    [debug]   messages=None")
-                                elif isinstance(msgs, list):
-                                    cb(f"    [debug]   messages count={len(msgs)}")
-                                    for j, m in enumerate(msgs[:3]):
-                                        contents = getattr(m, "contents", None)
-                                        cb(f"    [debug]   msg[{j}] role={getattr(m, 'role', '?')} text={bool(getattr(m, 'text', ''))} contents={len(contents) if contents else 0}")
-                                        if contents:
-                                            for k, c in enumerate(contents[:5]):
-                                                cd = c.to_dict() if hasattr(c, "to_dict") else {}
-                                                cb(f"    [debug]     content[{k}] type={cd.get('type', '?')} keys={list(cd.keys())[:6]}")
-                                else:
-                                    cb(f"    [debug]   messages type={type(msgs).__name__}")
-                            elif hasattr(r, "full_conversation"):
-                                fc = r.full_conversation
-                                cb(f"    [debug]   full_conversation len={len(fc) if fc else 0}")
-
                     for resp in responses:
                         if not isinstance(resp, AgentExecutorResponse):
                             continue
@@ -513,10 +485,22 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                         out_tok = 0
 
                         # Source 1: AgentResponse.usage_details
+                        # Keys vary by provider: input_token_count (Gemini/OpenRouter),
+                        # input_tokens (OpenAI), prompt_tokens (legacy)
                         usage = getattr(agent_resp, "usage_details", None)
                         if usage and isinstance(usage, dict):
-                            in_tok = usage.get("input_tokens", 0) or usage.get("prompt_tokens", 0) or 0
-                            out_tok = usage.get("output_tokens", 0) or usage.get("completion_tokens", 0) or 0
+                            in_tok = (
+                                usage.get("input_token_count", 0)
+                                or usage.get("input_tokens", 0)
+                                or usage.get("prompt_tokens", 0)
+                                or 0
+                            )
+                            out_tok = (
+                                usage.get("output_token_count", 0)
+                                or usage.get("output_tokens", 0)
+                                or usage.get("completion_tokens", 0)
+                                or 0
+                            )
 
                         # Source 2: raw_representation (original OpenAI response)
                         if not (in_tok or out_tok):
@@ -568,11 +552,6 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                             for content_item in (getattr(msg, "contents", None) or []):
                                 cd = content_item.to_dict() if hasattr(content_item, "to_dict") else {}
                                 ctype = cd.get("type", "")
-                                # Debug: log all content types we see
-                                if ctype and ctype not in ("text", "text_reasoning"):
-                                    _log.debug("Content type=%s keys=%s", ctype, list(cd.keys()))
-                                    if cb:
-                                        cb(f"    [content] {ctype}: {list(cd.keys())}")
 
                                 if ctype == "function_call":
                                     tc_name = cd.get("name", "unknown")
@@ -586,9 +565,14 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
 
                                 elif ctype == "function_result":
                                     call_id = cd.get("call_id", "")
-                                    result_text = cd.get("output", "") or cd.get("result", "") or ""
-                                    if isinstance(result_text, list):
-                                        result_text = str(result_text)
+                                    # Result may be in 'result', 'output', or 'items'
+                                    result_text = cd.get("result", "") or cd.get("output", "") or ""
+                                    if not result_text:
+                                        items = cd.get("items", [])
+                                        if items:
+                                            result_text = str(items)
+                                    if isinstance(result_text, (list, dict)):
+                                        result_text = json.dumps(result_text)
                                     # Truncate large results for trace storage
                                     if len(str(result_text)) > 1000:
                                         result_text = str(result_text)[:500] + "...(truncated)..." + str(result_text)[-300:]
