@@ -123,6 +123,37 @@ export interface StoryScoreData {
   framework_metrics?: Record<string, number | null>;
 }
 
+export interface ToolCallSummary {
+  name: string;
+  count: number;
+  success_rate: number;
+}
+
+export interface GraphNode {
+  id: string;
+  role: string;
+  tokens_in: number;
+  tokens_out: number;
+  tool_calls: ToolCallSummary[];
+  iterations: number;
+}
+
+export interface GraphEdge {
+  source: string;
+  target: string;
+  message_count: number;
+  token_volume: number;
+  sequence: number[];
+}
+
+export interface CommunicationGraph {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  topology: string;
+  platform: string;
+  story_id: string;
+}
+
 export interface TraceData {
   messages?: TraceMessage[];
   [key: string]: unknown;
@@ -311,6 +342,9 @@ export const fetchScoringMatrix = () =>
 
 export const fetchStoryScore = (pid: string, sid: string) =>
   request<StoryScoreData>(`/api/dashboard/scoring/${pid}/${sid}`);
+
+export const fetchAgentGraph = (pid: string, sid: string) =>
+  request<CommunicationGraph>(`/api/dashboard/graph/${pid}/${sid}`);
 
 export const submitScore = (data: { platform_id: string; story_id: string; scores: Record<string, number>; notes: Record<string, string> }) =>
   request<{ success: boolean }>('/api/dashboard/scoring/submit', { method: 'POST', body: JSON.stringify(data) });
