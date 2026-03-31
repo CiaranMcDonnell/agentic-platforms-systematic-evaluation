@@ -74,6 +74,9 @@ class RunnerConfig:
     retry_failed: bool = True
     max_retries: int = 2
 
+    # Repeated-run variance
+    repeats: int = 1  # Number of times to run each story for variance measurement
+
     # Timeouts
     setup_timeout_seconds: int = 300
     story_timeout_multiplier: float = 1.5  # Multiply story budget by this
@@ -184,11 +187,23 @@ class EvaluationRunner:
 
                 # Run each story
                 for story in stories_to_run:
-                    result = await self._run_story(platform_id, adapter, story, trace=trace)
-                    self.results[platform_id][story.id] = result
+                    repeat_results: list[StoryResult] = []
+                    for repeat_idx in range(self.config.repeats):
+                        result = await self._run_story(
+                            platform_id, adapter, story, trace=trace,
+                            repeat_index=repeat_idx,
+                        )
+                        repeat_results.append(result)
+                        self._record_story_metrics(platform_id, story, result)
 
-                    # Record metrics
-                    self._record_story_metrics(platform_id, story, result)
+                    self.results[platform_id][story.id] = repeat_results[-1]
+
+                    if len(repeat_results) > 1:
+                        from desmet.harness.metrics import compute_variance_metrics
+                        vm = compute_variance_metrics(repeat_results)
+                        self.metrics.record_variance_metrics(
+                            platform_id, story.id, vm,
+                        )
 
                 # Finalize platform metrics
                 self.metrics.finalize_platform(platform_id)
@@ -248,13 +263,27 @@ class EvaluationRunner:
             tags=["single-story"],
         ) as trace:
             try:
-                result = await self._run_story(platform_id, adapter, story, trace=trace)
-                self._record_story_metrics(platform_id, story, result)
+                repeat_results: list[StoryResult] = []
+                for repeat_idx in range(self.config.repeats):
+                    result = await self._run_story(
+                        platform_id, adapter, story, trace=trace,
+                        repeat_index=repeat_idx,
+                    )
+                    repeat_results.append(result)
+                    self._record_story_metrics(platform_id, story, result)
+
+                if len(repeat_results) > 1:
+                    from desmet.harness.metrics import compute_variance_metrics
+                    vm = compute_variance_metrics(repeat_results)
+                    self.metrics.record_variance_metrics(
+                        platform_id, story.id, vm,
+                    )
+
                 self.metrics.finalize_platform(platform_id)
                 self._persist_platform_scores(platform_id)
                 self._export_results()
                 self.store.finish_run(self._current_run_id)
-                return result
+                return repeat_results[-1]
             finally:
                 await adapter.shutdown()
 
@@ -330,6 +359,7 @@ class EvaluationRunner:
         adapter: BasePlatformAdapter,
         story: UserStory,
         trace: Any | None = None,
+        repeat_index: int = 0,
     ) -> StoryResult:
         """Run a single story through the four-stage SDLC pipeline.
 
@@ -343,10 +373,11 @@ class EvaluationRunner:
         """
         logger.info("running_story", story_id=story.id, title=story.title)
 
+        suffix = f"_r{repeat_index}" if repeat_index > 0 else ""
         result = StoryResult(
             story_id=story.id,
             platform_id=platform_id,
-            execution_id=f"{platform_id}_{story.id}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}",
+            execution_id=f"{platform_id}_{story.id}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}{suffix}",
             status=StoryStatus.RUNNING,
             start_time=datetime.now(timezone.utc),
         )

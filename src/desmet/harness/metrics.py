@@ -314,6 +314,9 @@ class EvaluationMetrics:
     # Stage metrics
     stage_metrics: list[StageMetrics] = field(default_factory=list)
 
+    # Variance metrics (populated when repeats > 1)
+    variance_metrics: dict[str, VarianceMetrics] = field(default_factory=dict)
+
     # Dimension scores
     dimension_scores: list[DimensionScore] = field(default_factory=list)
 
@@ -601,6 +604,16 @@ class MetricsCollector:
         """Record metrics from a story execution."""
         if platform_id in self.platform_metrics:
             self.platform_metrics[platform_id].add_story_metrics(metrics)
+
+    def record_variance_metrics(
+        self,
+        platform_id: str,
+        story_id: str,
+        metrics: VarianceMetrics,
+    ):
+        """Record variance metrics for repeated runs of a story."""
+        if platform_id in self.platform_metrics:
+            self.platform_metrics[platform_id].variance_metrics[story_id] = metrics
 
     def finalize_platform(self, platform_id: str):
         """Calculate final scores for a platform."""
