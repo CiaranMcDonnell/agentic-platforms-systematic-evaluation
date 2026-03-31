@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
+import time
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
 import pytest
 
 from desmet.harness.resource_monitor import (
+    ResourceMonitor,
     ResourceSample,
     ResourceSummary,
     _parse_docker_stats_json,
@@ -188,3 +193,74 @@ def test_parse_docker_stats_json_missing_keys_default_zero():
     assert sample.memory_bytes == 0
     assert sample.net_rx_bytes == 0
     assert sample.net_tx_bytes == 0
+
+
+# ---------------------------------------------------------------------------
+# ResourceMonitor
+# ---------------------------------------------------------------------------
+
+_FAKE_STATS = json.dumps({
+    "CPUPerc": "10.00%",
+    "MemUsage": "256MiB / 1GiB",
+    "NetIO": "1MB / 500kB",
+})
+
+
+def test_monitor_collects_samples(monkeypatch):
+    """Mock subprocess.run to return fake docker stats; verify samples collected."""
+    fake_result = MagicMock()
+    fake_result.returncode = 0
+    fake_result.stdout = _FAKE_STATS
+
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: fake_result)
+
+    monitor = ResourceMonitor("test-container", poll_interval=0.05)
+    monitor.start()
+    time.sleep(0.25)
+    summary = monitor.stop()
+
+    assert summary.samples >= 2
+    assert summary.peak_memory_bytes == int(256 * 1024 * 1024)
+    assert abs(summary.avg_cpu_percent - 10.0) < 0.01
+
+
+def test_monitor_handles_docker_failure(monkeypatch):
+    """When docker stats returns non-zero, summary has samples=0."""
+    fail_result = MagicMock()
+    fail_result.returncode = 1
+    fail_result.stdout = ""
+
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: fail_result)
+
+    monitor = ResourceMonitor("missing-container", poll_interval=0.05)
+    monitor.start()
+    time.sleep(0.2)
+    summary = monitor.stop()
+
+    assert summary.samples == 0
+
+
+def test_monitor_startup_to_ready(monkeypatch):
+    """First call returns 0% CPU; subsequent calls return 10% — startup_to_ready_ms > 0."""
+    call_count = {"n": 0}
+
+    def fake_run(*args, **kwargs):
+        result = MagicMock()
+        result.returncode = 0
+        cpu = "0.00%" if call_count["n"] == 0 else "10.00%"
+        call_count["n"] += 1
+        result.stdout = json.dumps({
+            "CPUPerc": cpu,
+            "MemUsage": "128MiB / 1GiB",
+            "NetIO": "0B / 0B",
+        })
+        return result
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    monitor = ResourceMonitor("test-container", poll_interval=0.05)
+    monitor.start()
+    time.sleep(0.3)
+    summary = monitor.stop()
+
+    assert summary.startup_to_ready_ms > 0
