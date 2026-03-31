@@ -17,6 +17,7 @@ import logging
 import os
 import queue
 import shutil
+import subprocess
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -112,6 +113,48 @@ def _get_result_store() -> ResultStore:
 
 logger = logging.getLogger("desmet.webui")
 
+_INFRA_DIR = Path(__file__).resolve().parents[3] / "infrastructure"
+
+
+def _start_langfuse(log: logging.Logger) -> None:
+    """Start Langfuse via docker-compose if not already running.
+
+    Raises ``RuntimeError`` if Langfuse cannot be started — it is a core
+    dependency for evaluation tracing.
+    """
+    try:
+        probe = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", "desmet-langfuse-web"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if probe.returncode == 0 and "true" in probe.stdout.lower():
+            log.info("Langfuse already running")
+            return
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    log.info("Starting Langfuse...")
+    try:
+        result = subprocess.run(
+            [
+                "docker", "compose",
+                "-f", str(_INFRA_DIR / "docker-compose.yaml"),
+                "--profile", "langfuse",
+                "up", "-d",
+            ],
+            capture_output=True, text=True, timeout=120,
+            env={**os.environ, "MSYS_NO_PATHCONV": "1"},
+        )
+        if result.returncode == 0:
+            log.info("Langfuse started")
+        else:
+            raise RuntimeError(f"Langfuse failed to start: {result.stderr[:300]}")
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError(
+            f"Could not start Langfuse: {e}. "
+            "Ensure Docker is installed and the Langfuse compose file exists."
+        ) from e
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -121,22 +164,25 @@ async def lifespan(app: FastAPI):
 
     # Check Docker availability
     docker_available = shutil.which("docker") is not None
-    if docker_available:
-        statuses = get_platform_statuses()
-        running = [s for s in statuses if s.status == "running"]
-        if running:
-            logger.info(
-                "Docker services already running: %s",
-                ", ".join(s.name for s in running),
-            )
-        else:
-            logger.info(
-                "Docker is available. Start infrastructure from the Management Console when needed."
-            )
+    if not docker_available:
+        raise RuntimeError(
+            "Docker not found on PATH. Docker is required for Langfuse "
+            "(core tracing dependency) and visual platforms."
+        )
+
+    # Start Langfuse — core dependency, must succeed
+    _start_langfuse(logger)
+
+    statuses = get_platform_statuses()
+    running = [s for s in statuses if s.status == "running"]
+    if running:
+        logger.info(
+            "Docker services already running: %s",
+            ", ".join(s.name for s in running),
+        )
     else:
-        logger.warning(
-            "Docker not found on PATH. Visual platforms (Flowise, "
-            "Langflow, Dify, n8n) will be unavailable."
+        logger.info(
+            "Docker is available. Start infrastructure from the Management Console when needed."
         )
 
     # Check API key configuration
@@ -165,7 +211,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -203,6 +249,7 @@ class RunRequest(BaseModel):
     dry_run: bool = False
     model: str | None = None
     results_dir: str | None = None
+    repeats: int = 1
 
 
 class DockerAction(BaseModel):
@@ -265,9 +312,21 @@ async def get_platforms():
 
 
 @app.get("/api/platforms/status")
-async def get_platform_statuses_endpoint():
+def get_platform_statuses_endpoint():
     """Return live container status for docker-based platforms (slow — docker inspect)."""
     return {"statuses": get_docker_platform_statuses()}
+
+
+@app.get("/api/platforms/dev-metrics")
+async def get_dev_metrics():
+    """Return static developer experience metrics for all platforms."""
+    from desmet.harness.dev_metrics import compute_all_dev_metrics, get_shared_loc
+
+    all_metrics = compute_all_dev_metrics()
+    return {
+        "platforms": {pid: dm.to_dict() for pid, dm in all_metrics.items()},
+        "shared_adapter_loc": get_shared_loc(),
+    }
 
 
 @app.get("/api/config")
@@ -299,7 +358,7 @@ async def get_config():
 
 
 @app.post("/api/docker/up")
-async def docker_up(action: DockerAction):
+def docker_up(action: DockerAction):
     try:
         result = compose_up(action.target)
         if result.returncode == 0:
@@ -312,7 +371,7 @@ async def docker_up(action: DockerAction):
 
 
 @app.post("/api/docker/down")
-async def docker_down(action: DockerAction):
+def docker_down(action: DockerAction):
     try:
         result = compose_down(action.target)
         if result.returncode == 0:
@@ -328,7 +387,7 @@ async def docker_down(action: DockerAction):
 
 
 @app.get("/api/infrastructure")
-async def get_infrastructure():
+def get_infrastructure():
     """Return status of infrastructure services (Langfuse, Postgres+Redis)."""
     return {"services": get_infra_statuses()}
 
@@ -366,12 +425,12 @@ async def build_platform_images(
             else:
                 results[pid] = {"status": "failed", "reason": log_lines[-1] if log_lines else "unknown error"}
 
-    await asyncio.get_event_loop().run_in_executor(None, _build_all)
+    await asyncio.get_running_loop().run_in_executor(None, _build_all)
     return {"images": results}
 
 
 @app.get("/api/images/status")
-async def image_status():
+def image_status():
     """Return Docker image availability for all SDK platforms."""
     from desmet.harness.container_runner import PLATFORM_EXTRA_MAP, has_image
 
@@ -382,7 +441,7 @@ async def image_status():
 
 
 @app.get("/api/images/detail")
-async def image_details():
+def image_details():
     """Return image metadata for all SDK platforms."""
     from desmet.harness.container_runner import PLATFORM_EXTRA_MAP, get_image_details
 
@@ -422,7 +481,7 @@ async def rebuild_platform_image(platform_id: str):
     delete_image(platform_id)
 
     log_lines: list[str] = []
-    success = await asyncio.get_event_loop().run_in_executor(
+    success = await asyncio.get_running_loop().run_in_executor(
         None, lambda: build_image(platform_id, progress_callback=log_lines.append),
     )
     if success:
@@ -577,7 +636,7 @@ async def ws_image_build(websocket: WebSocket):
                 q.put(msg)
             q.put(None)  # sentinel
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         fut = loop.run_in_executor(None, _run_build)
 
         # Drain queue and forward to WebSocket
@@ -614,7 +673,9 @@ async def ws_run_logs(websocket: WebSocket, run_id: str):
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        _ws_clients[run_id].remove(websocket)
+        clients = _ws_clients.get(run_id, [])
+        if websocket in clients:
+            clients.remove(websocket)
 
 
 async def _broadcast_log(run_id: str, message: str):
@@ -642,11 +703,13 @@ async def _execute_run(run: RunState, req: RunRequest):
     run.status = "running"
     run.started_at = datetime.now(timezone.utc)
 
-    # Initialize Langfuse tracing for this run
+    # Initialize Langfuse tracing for this run (core dependency — will raise
+    # RuntimeError if not configured)
     from desmet.observability import init_langfuse, start_session
 
     init_langfuse()
     start_session(label=run.run_id)
+
 
     await _broadcast_log(run.run_id, f"[START] Benchmark run {run.run_id} starting...")
     await _broadcast_log(run.run_id, f"  Platforms: {', '.join(req.platforms)}")
@@ -657,7 +720,10 @@ async def _execute_run(run: RunState, req: RunRequest):
         await _broadcast_log(run.run_id, f"  Difficulties: {', '.join(req.difficulties)}")
     if req.dry_run:
         await _broadcast_log(run.run_id, "  [DRY RUN]")
+    if req.repeats > 1:
+        await _broadcast_log(run.run_id, f"  Repeats: {req.repeats}")
 
+    _prev_model = os.environ.get("DESMET_MODEL")
     try:
         if req.model:
             os.environ["DESMET_MODEL"] = req.model
@@ -689,18 +755,18 @@ async def _execute_run(run: RunState, req: RunRequest):
         await _broadcast_log(run.run_id, "[INIT] Resolving platform adapters...")
         adapters = {}
         for pid in req.platforms:
-            try:
-                adapters[pid] = get_adapter(pid)
-                await _broadcast_log(run.run_id, f"  {pid}: adapter loaded")
-            except (KeyError, AdapterNotImplementedError, ImportError, ModuleNotFoundError) as exc:
-                # Fall back to container-only stub if Docker image exists
-                from desmet.harness.adapter import ContainerOnlyAdapter
-                from desmet.harness.container_runner import has_image
-                if has_image(pid):
-                    adapters[pid] = ContainerOnlyAdapter(pid)
-                    await _broadcast_log(run.run_id, f"  {pid}: container-only mode (SDK not installed locally)")
-                else:
-                    await _broadcast_log(run.run_id, f"  {pid}: FAILED — {exc}")
+            from desmet.harness.adapter import ContainerOnlyAdapter
+            from desmet.harness.container_runner import has_image, image_name
+            # Prefer container execution — avoids importing platform SDKs on the host
+            if has_image(pid):
+                adapters[pid] = ContainerOnlyAdapter(pid)
+                await _broadcast_log(run.run_id, f"  {pid}: ready (image {image_name(pid)})")
+            else:
+                try:
+                    adapters[pid] = get_adapter(pid)
+                    await _broadcast_log(run.run_id, f"  {pid}: ready")
+                except (KeyError, AdapterNotImplementedError, ImportError, ModuleNotFoundError):
+                    await _broadcast_log(run.run_id, f"  {pid}: FAILED — no Docker image found, run 'docker build' first")
 
         if not adapters:
             raise ValueError("No valid platform adapters found")
@@ -710,6 +776,7 @@ async def _execute_run(run: RunState, req: RunRequest):
         if req.stages and req.stages != ["all"]:
             resolved_stage = req.stages[0] if len(req.stages) == 1 else None
         config = RunnerConfig(dry_run=req.dry_run, verbose=True, stage=resolved_stage)
+        config.repeats = req.repeats
         if req.results_dir:
             config.results_dir = Path(req.results_dir)
             config.logs_dir = Path(req.results_dir) / "logs"
@@ -775,6 +842,11 @@ async def _execute_run(run: RunState, req: RunRequest):
     finally:
         run.finished_at = datetime.now(timezone.utc)
         _running_tasks.pop(run.run_id, None)
+        # Restore previous model env var
+        if _prev_model is not None:
+            os.environ["DESMET_MODEL"] = _prev_model
+        elif "DESMET_MODEL" in os.environ and req.model:
+            del os.environ["DESMET_MODEL"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -791,23 +863,27 @@ async def list_result_runs():
         return {"runs": []}
     runs = []
     for _, row in df.iterrows():
+        pf = row["platforms_filter"]
         runs.append({
             "run_id": row["run_id"],
             "started_at": str(row["started_at"]) if row["started_at"] else None,
             "finished_at": str(row["finished_at"]) if row["finished_at"] else None,
             "model": row["model"],
-            "platforms_filter": row["platforms_filter"],
+            "platforms_filter": list(pf) if isinstance(pf, (list, tuple)) else None,
             "note": row["note"],
         })
     return {"runs": runs}
 
 
 @app.post("/api/result-runs/{run_id}/export")
-async def export_result_run(run_id: str, format: str = "json"):
+async def export_result_run(run_id: str, fmt: str = "json"):
     """Export a run to JSON or CSV."""
+    import re as _re
+    if not _re.fullmatch(r"[A-Za-z0-9_\-]+", run_id):
+        raise HTTPException(status_code=400, detail="Invalid run_id")
     store = _get_result_store()
     from desmet.dashboard.data import RESULTS_DIR
-    if format == "csv":
+    if fmt == "csv":
         path = store.export_run_csv(run_id, RESULTS_DIR / f"export_{run_id}.csv")
     else:
         path = store.export_run_json(run_id, RESULTS_DIR / f"export_{run_id}.json")
@@ -1106,6 +1182,18 @@ async def submit_score(submission: ScoreSubmission, run_id: str | None = None):
         submission.notes,
     )
     save_results(data)
+
+    # Also persist rubric scores to DuckDB so they survive reload
+    store = _get_result_store()
+    target_run = run_id or store.latest_run_id()
+    if target_run:
+        store.update_rubric_scores_by_story(
+            target_run,
+            submission.platform_id,
+            submission.story_id,
+            submission.scores,
+        )
+
     return {"success": True}
 
 
@@ -1357,7 +1445,7 @@ async def serve_frontend():
 @app.get("/{full_path:path}")
 async def spa_fallback(full_path: str):
     if full_path.startswith("api/") or full_path.startswith("ws/"):
-        return {"error": "Not found"}
+        raise HTTPException(status_code=404, detail="Not found")
     index = FRONTEND_DIR / "index.html"
     if index.exists():
         return FileResponse(index)
