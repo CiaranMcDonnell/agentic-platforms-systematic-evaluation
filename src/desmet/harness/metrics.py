@@ -418,14 +418,35 @@ class EvaluationMetrics:
             1.0, 5.0 - (avg_tokens_per_story / token_budget - 1.0) * 2.0
         )
 
+        # Resource component (from container monitoring)
+        memory_budget_mb = 512.0
+        resource_values = [
+            m._result.resource_metrics.get("peak_memory_bytes")
+            for m in self.story_metrics
+            if m._result.resource_metrics
+        ]
+        resource_values = [v for v in resource_values if v is not None and v > 0]
+        if resource_values:
+            avg_peak_mb = (sum(resource_values) / len(resource_values)) / (1024 * 1024)
+            resource_component = max(
+                1.0, 5.0 - (avg_peak_mb / memory_budget_mb - 1.0) * 2.0
+            )
+        else:
+            resource_component = None
+
+        components = [time_component, token_component]
         if avg_cost_per_story > 0:
             cost_component = max(
                 1.0, 5.0 - (avg_cost_per_story / cost_budget - 1.0) * 2.0
             )
-            efficiency_score = (time_component + token_component + cost_component) / 3.0
+            components.append(cost_component)
         else:
             cost_component = None
-            efficiency_score = (time_component + token_component) / 2.0
+
+        if resource_component is not None:
+            components.append(resource_component)
+
+        efficiency_score = sum(components) / len(components)
 
         self.dimension_scores.append(DimensionScore(
             dimension=EvaluationDimension.EFFICIENCY,
@@ -439,6 +460,8 @@ class EvaluationMetrics:
                 "time_component": time_component,
                 "token_component": token_component,
                 "cost_component": cost_component,
+                "resource_component": resource_component,
+                "memory_budget_mb": memory_budget_mb,
             }
         ))
 
