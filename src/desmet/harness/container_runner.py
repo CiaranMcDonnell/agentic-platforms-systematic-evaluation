@@ -18,6 +18,7 @@ from typing import Any
 
 from desmet.platforms_config import get_platform_field, get_platforms_config
 from desmet.harness.context import StageContext
+from desmet.harness.resource_monitor import ResourceMonitor
 from desmet.harness.results import StageResult
 
 _log = logging.getLogger(__name__)
@@ -68,38 +69,35 @@ def build_image(
 ) -> bool:
     """Build the Docker image for a platform.
 
-    Builds the base image first if it doesn't exist.
-    Returns True on success.
+    Always rebuilds both the base and platform images so that source
+    code and config changes are picked up.  The base image is rebuilt
+    without cache to ensure ``COPY src/`` and ``COPY config/`` layers
+    reflect the current working tree.
     """
     project_root = Path(__file__).resolve().parents[3]
 
-    # Ensure base image exists
+    # Always rebuild base image (src/ and config/ may have changed)
+    if progress_callback:
+        progress_callback(f"Building base image {_BASE_IMAGE}...")
     try:
-        probe = subprocess.run(
-            ["docker", "image", "inspect", _BASE_IMAGE],
-            capture_output=True, timeout=10,
+        base_result = subprocess.run(
+            [
+                "docker", "build",
+                "-f", str(_INFRA_DIR / "Dockerfile.base"),
+                "-t", _BASE_IMAGE,
+                str(project_root),
+            ],
+            capture_output=True, text=True, timeout=600,
         )
-        if probe.returncode != 0:
+        if base_result.returncode != 0:
+            _log.error("Base image build failed: %s", base_result.stderr)
             if progress_callback:
-                progress_callback(f"Building base image {_BASE_IMAGE}...")
-            base_result = subprocess.run(
-                [
-                    "docker", "build",
-                    "-f", str(_INFRA_DIR / "Dockerfile.base"),
-                    "-t", _BASE_IMAGE,
-                    str(project_root),
-                ],
-                capture_output=True, text=True, timeout=600,
-            )
-            if base_result.returncode != 0:
-                _log.error("Base image build failed: %s", base_result.stderr)
-                if progress_callback:
-                    progress_callback(f"Base image build FAILED: {base_result.stderr[:200]}")
-                return False
+                progress_callback(f"Base image build FAILED: {base_result.stderr[:200]}")
+            return False
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
-    # Build platform image
+    # Build platform image (FROM base + uv sync --extra <platform>)
     tag = image_name(platform_id)
     df = dockerfile_path(platform_id)
     if progress_callback:
@@ -199,9 +197,12 @@ def build_image_streaming(
             ],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         )
-        for line in proc.stdout:
-            yield {"platform": platform_id, "phase": "base", "line": line.rstrip()}
-        proc.wait()
+        try:
+            for line in proc.stdout:
+                yield {"platform": platform_id, "phase": "base", "line": line.rstrip()}
+        finally:
+            proc.stdout.close()
+            proc.wait()
         if proc.returncode != 0:
             yield {"platform": platform_id, "status": "failed", "error": "Base image build failed"}
             return False
@@ -220,9 +221,12 @@ def build_image_streaming(
         ],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
-    for line in proc.stdout:
-        yield {"platform": platform_id, "phase": "platform", "line": line.rstrip()}
-    proc.wait()
+    try:
+        for line in proc.stdout:
+            yield {"platform": platform_id, "phase": "platform", "line": line.rstrip()}
+    finally:
+        proc.stdout.close()
+        proc.wait()
 
     if proc.returncode != 0:
         yield {"platform": platform_id, "status": "failed", "error": f"Build failed for {tag}"}
@@ -283,12 +287,31 @@ def _ensure_container(
     for var in _PASSTHROUGH_VARS:
         val = os.environ.get(var)
         if val:
+            # The host .env uses localhost for Langfuse, but inside a
+            # container localhost is the container itself.  Rewrite to
+            # the Docker service name so traces reach Langfuse.
+            if var == "LANGFUSE_HOST" and "localhost" in val:
+                val = "http://desmet-langfuse-web:3000"
             env_flags.extend(["-e", f"{var}={val}"])
+
+    # Join desmet-network if it exists (created by docker-compose for
+    # Langfuse, Postgres, etc.), otherwise run on the default bridge.
+    network_flags: list[str] = []
+    try:
+        probe = subprocess.run(
+            ["docker", "network", "inspect", "desmet-network"],
+            capture_output=True, timeout=10,
+        )
+        if probe.returncode == 0:
+            network_flags = ["--network", "desmet-network"]
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
 
     result = subprocess.run(
         [
             "docker", "run", "-d",
             "--name", name,
+            *network_flags,
             *env_flags,
             "-v", f"{workspace_abs}:/workspace",
             "-w", "/workspace",
@@ -336,8 +359,14 @@ async def run_stage_in_container(
     story_id = context.story.id
     container = _ensure_container(platform_id, story_id, context.workspace)
 
-    # Write context JSON to workspace
+    monitor = ResourceMonitor(container, poll_interval=2.0)
+    monitor.start()
+
+    # Write context JSON to workspace.
+    # The host workspace is mounted at /workspace inside the container,
+    # so rewrite the path so adapter tools resolve files correctly.
     ctx_data = context.to_dict()
+    ctx_data["workspace"] = "/workspace"
     ctx_data.setdefault("metadata", {})["stage_name"] = stage_name
     ctx_file = context.workspace / ".desmet-context.json"
     with open(ctx_file, "w") as f:
@@ -364,9 +393,25 @@ async def run_stage_in_container(
                 progress_callback(text)
 
     stderr_task = asyncio.create_task(_stream_stderr())
-    stdout_data = await proc.stdout.read()
-    await stderr_task
-    await proc.wait()
+    try:
+        stdout_data = await proc.stdout.read()
+        await stderr_task
+        await proc.wait()
+    except asyncio.CancelledError:
+        # Kill the docker exec process and stop the container
+        monitor.stop()
+        proc.kill()
+        await proc.wait()
+        stderr_task.cancel()
+        stop_container(platform_id, story_id)
+        # Clean up context file before re-raising
+        try:
+            ctx_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+    resource_summary = monitor.stop()
 
     # Clean up context file
     try:
@@ -374,22 +419,55 @@ async def run_stage_in_container(
     except OSError:
         pass
 
-    # Parse result
-    if not stdout_data.strip():
+    # Parse result — extract the JSON object from stdout, ignoring any
+    # stray output (library warnings, print statements) before/after it.
+    raw = stdout_data.decode("utf-8", errors="replace") if isinstance(stdout_data, bytes) else stdout_data
+    raw = raw.strip()
+
+    if not raw:
         return StageResult(
             platform_id=platform_id,
             stage_name=stage_name,
             success=False,
             error_message="Container produced no output",
+            resource_metrics=resource_summary.to_dict(),
         )
 
+    # Find the outermost JSON object in stdout
+    json_start = raw.find("{")
+    json_end = raw.rfind("}")
+    if json_start == -1 or json_end == -1:
+        return StageResult(
+            platform_id=platform_id,
+            stage_name=stage_name,
+            success=False,
+            error_message=f"No JSON object in container output (length={len(raw)})",
+            resource_metrics=resource_summary.to_dict(),
+        )
+
+    json_str = raw[json_start:json_end + 1]
+
     try:
-        result_data = json.loads(stdout_data)
-        return StageResult.from_dict(result_data)
-    except (json.JSONDecodeError, Exception) as e:
+        result_data = json.loads(json_str)
+        stage_result = StageResult.from_dict(result_data)
+        stage_result.resource_metrics = resource_summary.to_dict()
+        return stage_result
+    except Exception as e:
+        # Log a snippet around the error position for debugging
+        if isinstance(e, json.JSONDecodeError):
+            pos = e.pos or 0
+            snippet = json_str[max(0, pos - 80):pos + 80]
+            return StageResult(
+                platform_id=platform_id,
+                stage_name=stage_name,
+                success=False,
+                error_message=f"Failed to parse container JSON at char {pos}: {e.msg}\n...{snippet}...",
+                resource_metrics=resource_summary.to_dict(),
+            )
         return StageResult(
             platform_id=platform_id,
             stage_name=stage_name,
             success=False,
             error_message=f"Failed to parse container output: {e}",
+            resource_metrics=resource_summary.to_dict(),
         )

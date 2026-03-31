@@ -52,6 +52,9 @@ class StageResult:
     # Automated framework metrics (computed from trace data)
     framework_metrics: dict[str, float | None] = field(default_factory=dict)
 
+    # Container resource usage (from ResourceMonitor)
+    resource_metrics: dict[str, float | int | None] = field(default_factory=dict)
+
     # Timestamps
     start_time: datetime | None = None
     end_time: datetime | None = None
@@ -84,6 +87,7 @@ class StageResult:
             "cost_usd": self.cost_usd,
             "human_interventions": self.human_interventions,
             "framework_metrics": self.framework_metrics,
+            "resource_metrics": self.resource_metrics,
             "start_time": self.start_time.isoformat() if self.start_time else None,
             "end_time": self.end_time.isoformat() if self.end_time else None,
             "langsmith_run_id": self.langsmith_run_id,
@@ -129,6 +133,7 @@ class StageResult:
         start_time = _dt.fromisoformat(start_time_raw) if start_time_raw else None
         end_time_raw = data.pop("end_time", None)
         end_time = _dt.fromisoformat(end_time_raw) if end_time_raw else None
+        resource_metrics = data.pop("resource_metrics", {})
 
         # Remove fields not in the target dataclass
         import dataclasses
@@ -139,6 +144,7 @@ class StageResult:
             trace=trace,
             start_time=start_time,
             end_time=end_time,
+            resource_metrics=resource_metrics,
             **filtered,
         )
 
