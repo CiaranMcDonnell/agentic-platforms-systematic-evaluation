@@ -31,7 +31,7 @@ class TestSchema:
     def test_schema_version(self, store: ResultStore):
         version = store._conn.execute("SELECT version FROM store_meta").fetchone()
         assert version is not None
-        assert version[0] == 1
+        assert version[0] == 2
 
 
 class TestRunLifecycle:

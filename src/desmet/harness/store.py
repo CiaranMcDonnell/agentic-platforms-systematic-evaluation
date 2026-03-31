@@ -12,7 +12,7 @@ from typing import Any
 import duckdb
 import pandas as pd
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 _CREATE_SQL = """\
 CREATE TABLE IF NOT EXISTS store_meta (
@@ -59,7 +59,11 @@ CREATE TABLE IF NOT EXISTS executions (
     framework_metrics   VARCHAR,
     trace_path          VARCHAR,
     langfuse_trace_id   VARCHAR,
-    langsmith_run_id    VARCHAR
+    langsmith_run_id    VARCHAR,
+    repeat_index            INTEGER DEFAULT 0,
+    resource_peak_memory_bytes  BIGINT,
+    resource_avg_cpu_percent    FLOAT,
+    resource_net_tx_bytes       BIGINT
 );
 """
 
@@ -91,7 +95,15 @@ class ResultStore:
 
         version = self._conn.execute("SELECT version FROM store_meta").fetchone()
         if version is None or version[0] < _SCHEMA_VERSION:
-            # Future migrations go here
+            current = version[0] if version else 0
+            if current < 2:
+                for col_sql in [
+                    "ALTER TABLE executions ADD COLUMN IF NOT EXISTS repeat_index INTEGER DEFAULT 0",
+                    "ALTER TABLE executions ADD COLUMN IF NOT EXISTS resource_peak_memory_bytes BIGINT",
+                    "ALTER TABLE executions ADD COLUMN IF NOT EXISTS resource_avg_cpu_percent FLOAT",
+                    "ALTER TABLE executions ADD COLUMN IF NOT EXISTS resource_net_tx_bytes BIGINT",
+                ]:
+                    self._conn.execute(col_sql)
             self._conn.execute(
                 "UPDATE store_meta SET version = ?", [_SCHEMA_VERSION]
             )
@@ -143,8 +155,10 @@ class ResultStore:
             "  rubric_pipeline_completeness, rubric_tool_integration,"
             "  rubric_error_recovery, rubric_trace_quality,"
             "  rubric_time_efficiency, rubric_autonomy,"
-            "  framework_metrics, trace_path, langfuse_trace_id, langsmith_run_id"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  framework_metrics, trace_path, langfuse_trace_id, langsmith_run_id,"
+            "  repeat_index, resource_peak_memory_bytes,"
+            "  resource_avg_cpu_percent, resource_net_tx_bytes"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 result.execution_id,
                 run_id,
@@ -170,6 +184,10 @@ class ResultStore:
                 result.trace_file,
                 result.langfuse_trace_id,
                 getattr(result, "langsmith_run_id", None),
+                getattr(result, "repeat_index", 0) or 0,
+                (result.resource_metrics or {}).get("peak_memory_bytes"),
+                (result.resource_metrics or {}).get("avg_cpu_percent"),
+                (result.resource_metrics or {}).get("net_tx_total_bytes"),
             ],
         )
 
@@ -236,6 +254,65 @@ class ResultStore:
         values = list(updates.values()) + [execution_id]
         self._conn.execute(
             f"UPDATE executions SET {set_clause} WHERE execution_id = ?",
+            values,
+        )
+
+    def update_rubric_scores_by_story(
+        self,
+        run_id: str,
+        platform_id: str,
+        story_id: str,
+        scores: dict[str, float],
+    ) -> bool:
+        """Update rubric score columns on the execution matching a platform/story.
+
+        *scores* keys are dimension names (e.g. ``"pipeline_completeness"``),
+        automatically prefixed with ``rubric_``.  Returns True if a row was
+        updated.
+        """
+        valid_dims = {
+            "pipeline_completeness", "tool_integration",
+            "error_recovery", "trace_quality",
+            "time_efficiency", "autonomy",
+        }
+        updates = {
+            f"rubric_{k}": v for k, v in scores.items() if k in valid_dims
+        }
+        if not updates:
+            return False
+        set_clause = ", ".join(f"{col} = ?" for col in updates)
+        values = list(updates.values()) + [run_id, platform_id, story_id]
+        result = self._conn.execute(
+            f"UPDATE executions SET {set_clause} "
+            f"WHERE run_id = ? AND platform_id = ? AND story_id = ?",
+            values,
+        )
+        return result.rowcount > 0
+
+    def update_platform_scores(
+        self,
+        run_id: str,
+        platform_id: str,
+        scores: dict[str, float],
+    ) -> None:
+        """Update score columns on ALL execution rows for a platform in a run.
+
+        Used after ``finalize_platform()`` to persist the platform-level
+        dimension scores (1-5 Likert) and overall_score to every execution
+        row for that platform.
+        """
+        valid_columns = {
+            "score_pipeline_completeness", "score_efficiency",
+            "score_orchestration", "score_autonomy", "overall_score",
+        }
+        updates = {k: v for k, v in scores.items() if k in valid_columns}
+        if not updates:
+            return
+        set_clause = ", ".join(f"{col} = ?" for col in updates)
+        values = list(updates.values()) + [run_id, platform_id]
+        self._conn.execute(
+            f"UPDATE executions SET {set_clause} "
+            f"WHERE run_id = ? AND platform_id = ?",
             values,
         )
 
