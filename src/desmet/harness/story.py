@@ -79,7 +79,7 @@ class UserStory:
     expected_test_pass: bool = True
 
     # Metadata
-    created_at: datetime = field(default_factory=datetime.now)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     version: str = "1.0"
     author: str = ""
     notes: str = ""
@@ -153,6 +153,9 @@ class StoryResult:
 
     # Aggregated framework metrics across stages
     framework_metrics: dict[str, float | None] = field(default_factory=dict)
+
+    # Aggregated container resource metrics across stages
+    resource_metrics: dict[str, float | int | None] = field(default_factory=dict)
 
     @property
     def success(self) -> bool:
@@ -236,6 +239,7 @@ class StoryResult:
             "coverage_delta": self.coverage_delta,
             "output_files": self.output_files,
             "langfuse_trace_id": self.langfuse_trace_id,
+            "resource_metrics": self.resource_metrics,
         }
 
 

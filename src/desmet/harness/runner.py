@@ -30,6 +30,7 @@ from desmet.observability import (
     langfuse_span,
     langfuse_trace,
     record_generation,
+    replay_trace_to_langfuse,
 )
 from desmet.harness.story_loader import prepare_stage_context
 
@@ -191,6 +192,7 @@ class EvaluationRunner:
 
                 # Finalize platform metrics
                 self.metrics.finalize_platform(platform_id)
+                self._persist_platform_scores(platform_id)
 
                 # Reset platform state for next run
                 await adapter.reset_state()
@@ -249,6 +251,7 @@ class EvaluationRunner:
                 result = await self._run_story(platform_id, adapter, story, trace=trace)
                 self._record_story_metrics(platform_id, story, result)
                 self.metrics.finalize_platform(platform_id)
+                self._persist_platform_scores(platform_id)
                 self._export_results()
                 self.store.finish_run(self._current_run_id)
                 return result
@@ -259,8 +262,9 @@ class EvaluationRunner:
         self,
         platforms: dict[str, BasePlatformAdapter],
     ):
-        """Initialize all platforms."""
+        """Initialize all platforms, removing those that fail."""
         logger.info("Initializing platforms...")
+        failed: list[str] = []
 
         for platform_id, adapter in platforms.items():
             logger.info(f"  Initializing {adapter.platform_info.name}...")
@@ -288,8 +292,13 @@ class EvaluationRunner:
 
             except asyncio.TimeoutError:
                 logger.error(f"    Timeout initializing {platform_id}")
+                failed.append(platform_id)
             except Exception as e:
                 logger.error(f"    Error initializing {platform_id}: {e}")
+                failed.append(platform_id)
+
+        for pid in failed:
+            platforms.pop(pid, None)
 
     async def _shutdown_platforms(
         self,
@@ -361,11 +370,6 @@ class EvaluationRunner:
                 result.langfuse_trace_id = lf_client.get_current_trace_id()
 
             try:
-                # Stop any leftover eval container before cleaning workspace
-                # (Docker bind-mounts create Linux symlinks Windows can't delete)
-                from desmet.adapters._tools import stop_eval_container
-                stop_eval_container(platform_id=platform_id, story_id=story.id)
-
                 # Create isolated workspace: copy baseline into per-platform directory
                 workspace = (
                     self.config.results_dir / platform_id / story.id / "workspace"
@@ -401,6 +405,24 @@ class EvaluationRunner:
                 # Initialise git remote in workspace for deploy stage
                 self._init_deploy_repo(workspace, platform_id, story.id)
 
+                # Build platform image once per story (always rebuild
+                # so source/config changes are picked up).  Run in a
+                # thread so the blocking subprocess doesn't freeze the
+                # event loop (WebSocket, cancel, etc. stay responsive).
+                import asyncio as _aio
+                from desmet.harness import container_runner
+                if self.progress_callback:
+                    self.progress_callback(
+                        f"  Building Docker image for {platform_id}..."
+                    )
+                build_ok = await _aio.to_thread(
+                    container_runner.build_image,
+                    platform_id,
+                    progress_callback=self.progress_callback,
+                )
+                if not build_ok and not hasattr(adapter, "generate_requirements"):
+                    raise RuntimeError(f"Docker image build failed for {platform_id}")
+
                 # Execute selected stages sequentially
                 for stage_key, method_name in stages_to_run:
                     # Grant access to deploy_remote tool for the deploy stage
@@ -418,20 +440,7 @@ class EvaluationRunner:
                             f"stage-{stage_key}",
                             metadata={"platform_id": platform_id, "story_id": story.id},
                         ):
-                            # Use containerized execution: auto-build image if
-                            # missing, fall back to in-process only when build
-                            # is unavailable (e.g. no Docker).
-                            from desmet.harness import container_runner
-                            if not container_runner.has_image(platform_id):
-                                if self.progress_callback:
-                                    self.progress_callback(
-                                        f"Building Docker image for {platform_id}..."
-                                    )
-                                container_runner.build_image(
-                                    platform_id,
-                                    progress_callback=self.progress_callback,
-                                )
-                            if container_runner.has_image(platform_id):
+                            if await _aio.to_thread(container_runner.has_image, platform_id):
                                 stage_result = await container_runner.run_stage_in_container(
                                     platform_id, stage_key, stage_ctx,
                                     self.progress_callback,
@@ -484,14 +493,9 @@ class EvaluationRunner:
 
                 # Clean up platform container after story completes
                 from desmet.harness import container_runner
-                container_runner.stop_container(platform_id, story.id)
+                await _aio.to_thread(container_runner.stop_container, platform_id, story.id)
 
                 # Stop eval container before post-processing — Docker
-                # bind-mounts create Linux symlinks (e.g. .venv/lib64) that
-                # Windows cannot access while the container holds them.
-                from desmet.adapters._tools import stop_eval_container
-                stop_eval_container(platform_id=platform_id, story_id=story.id)
-
                 # ----- Aggregate results into StoryResult -----
                 result.status = StoryStatus.COMPLETED
                 result.finalize_timing()
@@ -538,6 +542,38 @@ class EvaluationRunner:
                     agg["framework_overhead_ms"] = sum(overheads) if overheads else None
                     result.framework_metrics = agg
 
+                # Aggregate resource metrics across stages
+                resource_stages = [
+                    (sr.resource_metrics, sr.wall_clock_seconds)
+                    for sr in stage_results.values()
+                    if sr.resource_metrics and sr.resource_metrics.get("samples", 0) > 0
+                ]
+                if resource_stages:
+                    total_duration = sum(dur for _, dur in resource_stages)
+                    result.resource_metrics = {
+                        "peak_memory_bytes": max(
+                            rm["peak_memory_bytes"] for rm, _ in resource_stages
+                        ),
+                        "avg_memory_bytes": int(sum(
+                            rm["avg_memory_bytes"] * dur
+                            for rm, dur in resource_stages
+                        ) / total_duration) if total_duration > 0 else 0,
+                        "avg_cpu_percent": round(sum(
+                            rm["avg_cpu_percent"] * dur
+                            for rm, dur in resource_stages
+                        ) / total_duration, 2) if total_duration > 0 else 0.0,
+                        "peak_cpu_percent": max(
+                            rm["peak_cpu_percent"] for rm, _ in resource_stages
+                        ),
+                        "net_rx_total_bytes": sum(
+                            rm["net_rx_total_bytes"] for rm, _ in resource_stages
+                        ),
+                        "net_tx_total_bytes": sum(
+                            rm["net_tx_total_bytes"] for rm, _ in resource_stages
+                        ),
+                        "startup_to_ready_ms": resource_stages[0][0]["startup_to_ready_ms"],
+                    }
+
                 # Pull artifact-specific fields from code / test / deploy stages
                 code_result = stage_results.get("codegen")
                 if isinstance(code_result, CodeResult):
@@ -563,28 +599,16 @@ class EvaluationRunner:
                 if errors:
                     result.error_message = "; ".join(errors)
 
-                # Record generation observation in Langfuse (aggregate)
+                # Replay per-stage trace data to Langfuse so messages
+                # and tool calls appear as nested observations.
                 from desmet.llm_config import get_config as _get_llm_config
                 _llm_cfg = _get_llm_config()
-                # Use already-aggregated cost from result
-                total_cost = result.api_cost_usd
-                record_generation(
-                    parent=span,
-                    name=f"execute-{story.id}",
-                    model=_llm_cfg.model,
-                    input=story.prompt,
-                    output=result.error_message or "success",
-                    usage={
-                        "input": result.tokens_input,
-                        "output": result.tokens_output,
-                    },
-                    cost=total_cost if total_cost > 0 else None,
-                    metadata={
-                        "iterations": result.iterations,
-                        "tool_calls": result.tool_calls,
-                        "stages_completed": list(stage_results.keys()),
-                    },
-                )
+                for stage_key, sr in stage_results.items():
+                    if sr.trace:
+                        replay_trace_to_langfuse(
+                            span, stage_key, sr.trace,
+                            model=_llm_cfg.model,
+                        )
 
                 # Save per-stage traces if configured
                 if self.config.save_traces:
@@ -610,12 +634,30 @@ class EvaluationRunner:
                 result.finalize_timing()
                 logger.error("story_error", error=str(e))
 
-        # Clean up eval container (if one was started for this story)
-        from desmet.adapters._tools import stop_eval_container
-        stop_eval_container(platform_id=platform_id, story_id=story.id)
-
         structlog.contextvars.unbind_contextvars("story_id", "execution_id")
         return result
+
+    def _persist_platform_scores(self, platform_id: str) -> None:
+        """Write platform-level dimension scores + overall_score to DuckDB."""
+        run_id = getattr(self, "_current_run_id", None)
+        if not run_id:
+            return
+        pm = self.metrics.platform_metrics.get(platform_id)
+        if not pm or not pm.dimension_scores:
+            return
+        dim_to_col = {
+            "pipeline_completeness": "score_pipeline_completeness",
+            "efficiency": "score_efficiency",
+            "orchestration": "score_orchestration",
+            "autonomy": "score_autonomy",
+        }
+        scores: dict[str, float] = {}
+        for ds in pm.dimension_scores:
+            col = dim_to_col.get(ds.dimension.value)
+            if col:
+                scores[col] = ds.score
+        scores["overall_score"] = pm.overall_score
+        self.store.update_platform_scores(run_id, platform_id, scores)
 
     def _record_story_metrics(self, platform_id, story, result):
         """Record story-level metrics from the completed StoryResult."""
@@ -624,7 +666,7 @@ class EvaluationRunner:
             time_budget_seconds=story.time_budget_seconds,
         )
         self.metrics.record_story_metrics(platform_id, metrics)
-        if hasattr(self, "_current_run_id") and self._current_run_id:
+        if getattr(self, "_current_run_id", None):
             self.store.save_execution(self._current_run_id, result, metrics)
 
     @staticmethod
