@@ -572,9 +572,14 @@ class EvaluationMetrics:
                     "time_efficiency_score": m.time_efficiency_score,
                     "autonomy_score": m.autonomy_score,
                     "framework_metrics": m.framework_metrics,
+                    "resource_metrics": m._result.resource_metrics,
                 }
                 for m in self.story_metrics
             ],
+            "variance_metrics": {
+                sid: vm.to_dict()
+                for sid, vm in self.variance_metrics.items()
+            } if self.variance_metrics else {},
         }
 
 
@@ -653,6 +658,12 @@ class MetricsCollector:
                 for pid, metrics in self.platform_metrics.items()
             }
         }
+        from desmet.harness.dev_metrics import compute_all_dev_metrics, get_shared_loc
+        all_dev = compute_all_dev_metrics()
+        data["dev_metrics"] = {
+            "platforms": {pid: dm.to_dict() for pid, dm in all_dev.items()},
+            "shared_adapter_loc": get_shared_loc(),
+        }
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         return output_path
@@ -673,6 +684,19 @@ class MetricsCollector:
             }
             for dim_score in metrics.dimension_scores:
                 row[f"score_{dim_score.dimension.value}"] = dim_score.score
+            resource_stories = [
+                sm for sm in metrics.story_metrics
+                if sm._result.resource_metrics and sm._result.resource_metrics.get("peak_memory_bytes")
+            ]
+            if resource_stories:
+                row["resource_peak_memory_mb"] = round(max(
+                    sm._result.resource_metrics["peak_memory_bytes"]
+                    for sm in resource_stories
+                ) / (1024 * 1024), 1)
+                row["resource_avg_cpu_pct"] = round(sum(
+                    sm._result.resource_metrics.get("avg_cpu_percent", 0)
+                    for sm in resource_stories
+                ) / len(resource_stories), 1)
             rows.append(row)
 
         if rows:
@@ -715,6 +739,48 @@ class MetricsCollector:
             for dim in metrics.dimension_scores:
                 bar = "█" * int(dim.score) + "░" * (5 - int(dim.score))
                 lines.append(f"  {dim.dimension.value:20} {bar} {dim.score:.1f}/5")
+
+            resource_stories = [
+                sm for sm in metrics.story_metrics
+                if sm._result.resource_metrics and sm._result.resource_metrics.get("peak_memory_bytes")
+            ]
+            if resource_stories:
+                peak_mem = max(
+                    sm._result.resource_metrics["peak_memory_bytes"]
+                    for sm in resource_stories
+                )
+                avg_cpu = sum(
+                    sm._result.resource_metrics.get("avg_cpu_percent", 0)
+                    for sm in resource_stories
+                ) / len(resource_stories)
+                lines.append(f"\nResource Consumption:")
+                lines.append(f"  Peak Memory: {peak_mem / (1024*1024):.0f} MB")
+                lines.append(f"  Avg CPU:     {avg_cpu:.1f}%")
+
+            if metrics.variance_metrics:
+                lines.append(f"\nRun Variance ({next(iter(metrics.variance_metrics.values())).repeats} repeats):")
+                for sid, vm in metrics.variance_metrics.items():
+                    cv = vm.wall_clock_std / vm.wall_clock_mean if vm.wall_clock_mean > 0 else 0
+                    lines.append(
+                        f"  {sid}: {vm.wall_clock_mean:.1f}s ± {vm.wall_clock_std:.1f}s "
+                        f"(CV={cv:.2f}), success={vm.success_rate:.0%}"
+                    )
+
+        from desmet.harness.dev_metrics import compute_all_dev_metrics, get_shared_loc
+        all_dev = compute_all_dev_metrics()
+        if all_dev:
+            lines.append(f"\n{'─' * 70}")
+            lines.append("Developer Experience")
+            lines.append(f"{'─' * 70}")
+            lines.append(f"{'Platform':<20} {'LOC':>6} {'SLOC':>6} {'Deps':>5} {'Size MB':>8}")
+            lines.append(f"{'─'*20} {'─'*6} {'─'*6} {'─'*5} {'─'*8}")
+            for pid, dm in sorted(all_dev.items()):
+                size_str = f"{dm.install_size_mb:.0f}" if dm.install_size_mb is not None else "—"
+                lines.append(
+                    f"{pid:<20} {dm.adapter_loc:>6} {dm.adapter_sloc:>6} "
+                    f"{dm.dependency_count:>5} {size_str:>8}"
+                )
+            lines.append(f"{'Shared modules':<20} {get_shared_loc():>6}")
 
         lines.append("\n" + "=" * 70)
         return "\n".join(lines)
