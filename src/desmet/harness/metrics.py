@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
+from statistics import mean, pstdev
 from typing import Any
 
 from desmet.harness.story import StoryResult, StoryStatus
@@ -223,6 +224,78 @@ class StoryMetrics:
 
 
 @dataclass
+class VarianceMetrics:
+    """Statistical variance across repeated runs of the same story."""
+    repeats: int
+    wall_clock_mean: float
+    wall_clock_std: float
+    tokens_mean: float
+    tokens_std: float
+    cost_mean: float
+    cost_std: float
+    success_rate: float
+    tool_calls_mean: float
+    tool_calls_std: float
+    iterations_mean: float
+    iterations_std: float
+
+    def to_dict(self) -> dict[str, float]:
+        return {
+            "repeats": self.repeats,
+            "wall_clock_mean": round(self.wall_clock_mean, 2),
+            "wall_clock_std": round(self.wall_clock_std, 2),
+            "tokens_mean": round(self.tokens_mean, 1),
+            "tokens_std": round(self.tokens_std, 1),
+            "cost_mean": round(self.cost_mean, 4),
+            "cost_std": round(self.cost_std, 4),
+            "success_rate": round(self.success_rate, 4),
+            "tool_calls_mean": round(self.tool_calls_mean, 1),
+            "tool_calls_std": round(self.tool_calls_std, 1),
+            "iterations_mean": round(self.iterations_mean, 1),
+            "iterations_std": round(self.iterations_std, 1),
+        }
+
+
+def compute_variance_metrics(results: list) -> VarianceMetrics:
+    """Compute variance statistics from repeated StoryResult runs."""
+    n = len(results)
+    if n == 0:
+        return VarianceMetrics(
+            repeats=0,
+            wall_clock_mean=0, wall_clock_std=0,
+            tokens_mean=0, tokens_std=0,
+            cost_mean=0, cost_std=0,
+            success_rate=0,
+            tool_calls_mean=0, tool_calls_std=0,
+            iterations_mean=0, iterations_std=0,
+        )
+
+    from desmet.harness.story import StoryStatus
+
+    wc = [r.wall_clock_seconds for r in results]
+    tk = [float(r.tokens_input + r.tokens_output) for r in results]
+    co = [r.api_cost_usd for r in results]
+    tc = [float(r.tool_calls) for r in results]
+    it = [float(r.iterations) for r in results]
+    completed = sum(1 for r in results if r.status == StoryStatus.COMPLETED)
+
+    return VarianceMetrics(
+        repeats=n,
+        wall_clock_mean=mean(wc),
+        wall_clock_std=pstdev(wc),
+        tokens_mean=mean(tk),
+        tokens_std=pstdev(tk),
+        cost_mean=mean(co),
+        cost_std=pstdev(co),
+        success_rate=completed / n,
+        tool_calls_mean=mean(tc),
+        tool_calls_std=pstdev(tc),
+        iterations_mean=mean(it),
+        iterations_std=pstdev(it),
+    )
+
+
+@dataclass
 class EvaluationMetrics:
     """
     Complete metrics for a platform evaluation.
@@ -277,6 +350,8 @@ class EvaluationMetrics:
         """
         if not self.story_metrics:
             return
+
+        self.dimension_scores = []
 
         n = len(self.story_metrics)
 
@@ -565,8 +640,15 @@ class MetricsCollector:
             rows.append(row)
 
         if rows:
+            all_keys: list[str] = []
+            seen: set[str] = set()
+            for row in rows:
+                for k in row:
+                    if k not in seen:
+                        all_keys.append(k)
+                        seen.add(k)
             with open(output_path, "w", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+                writer = csv.DictWriter(f, fieldnames=all_keys, extrasaction="ignore")
                 writer.writeheader()
                 writer.writerows(rows)
 
