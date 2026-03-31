@@ -347,6 +347,9 @@ class ResultStore:
                     "trace_quality_score": row["rubric_trace_quality"],
                     "time_efficiency_score": row["rubric_time_efficiency"],
                     "autonomy_score": row["rubric_autonomy"],
+                    "resource_peak_memory_bytes": None if pd.isna(row["resource_peak_memory_bytes"]) else row["resource_peak_memory_bytes"],
+                    "resource_avg_cpu_percent": None if pd.isna(row["resource_avg_cpu_percent"]) else row["resource_avg_cpu_percent"],
+                    "repeat_index": int(row["repeat_index"] or 0),
                 }
                 fm_raw = row["framework_metrics"]
                 if fm_raw is not None and isinstance(fm_raw, str):
