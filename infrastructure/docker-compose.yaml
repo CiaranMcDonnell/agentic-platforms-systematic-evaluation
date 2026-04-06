@@ -49,39 +49,6 @@ services:
       - langflow
 
   # ============================================================================
-  # AGENT EVALUATION ENVIRONMENT
-  # ============================================================================
-  # Consistent Linux sandbox for agent tool execution (execute_shell).
-  # The harness runs on the host; shell commands route through docker exec.
-  #
-  # Start:  docker compose --profile eval-env up -d
-  # Exec:   docker exec desmet-eval-env bash -c "uv run pytest --rootdir=."
-  # ============================================================================
-
-  eval-env:
-    build:
-      context: .
-      dockerfile: Dockerfile.base
-    container_name: desmet-eval-env
-    volumes:
-      - ../../results:/results
-    environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
-      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
-      - DEPLOY_HOST=${DEPLOY_HOST:-}
-      - DEPLOY_USER=${DEPLOY_USER:-}
-      - CREWAI_TELEMETRY_OPT_OUT=1
-    working_dir: /workspace
-    command: sleep infinity
-    restart: unless-stopped
-    profiles:
-      - eval-env
-
-  # ============================================================================
   # PYTHON-BASED PLATFORMS (Development Environment — legacy)
   # ============================================================================
 
@@ -351,8 +318,12 @@ services:
       - DB_POSTGRESDB_USER=${POSTGRES_USER:-desmet}
       - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD:-desmet_pass}
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-change-me}
+      - N8N_API_KEY=${N8N_API_KEY:-desmet-n8n-api-key}
+      - EXECUTIONS_DATA_SAVE_ON_SUCCESS=all
+      - EXECUTIONS_DATA_SAVE_ON_ERROR=all
     volumes:
       - n8n_data:/home/node/.n8n
+      - ${DESMET_RESULTS_DIR:-../results}:/desmet-results
     ports:
       - "5678:5678"
     depends_on:
