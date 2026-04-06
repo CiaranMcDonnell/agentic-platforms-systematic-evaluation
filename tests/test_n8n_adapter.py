@@ -104,3 +104,102 @@ class TestCredentialMapping:
 
         with pytest.raises(ValueError, match="API key"):
             _map_credential("openai", "gpt-5.4", None, None)
+
+
+class TestN8nAdapterStructure:
+    def test_imports(self):
+        from desmet.adapters.n8n import N8nAdapter
+        adapter = N8nAdapter(config={"api_key": "test", "base_url": "http://localhost:5678"})
+        assert adapter.platform_info.id == "n8n"
+
+    def test_platform_info_category(self):
+        from desmet.adapters.n8n import N8nAdapter
+        from desmet.harness.models import PlatformCategory
+        adapter = N8nAdapter(config={"api_key": "test"})
+        assert adapter.platform_info.category == PlatformCategory.VISUAL_WORKFLOW_PLATFORM
+
+    def test_platform_info_runtime_is_docker(self):
+        from desmet.adapters.n8n import N8nAdapter
+        from desmet.harness.models import PlatformRuntime
+        adapter = N8nAdapter(config={"api_key": "test"})
+        assert adapter.platform_info.runtime == PlatformRuntime.DOCKER
+
+    def test_observability_info(self):
+        from desmet.adapters.n8n import N8nAdapter
+        adapter = N8nAdapter(config={"api_key": "test"})
+        info = adapter.get_observability_info()
+        assert isinstance(info, dict)
+        assert "has_tracing" in info
+
+    def test_workspace_path_translation(self):
+        from desmet.adapters.n8n import N8nAdapter
+        adapter = N8nAdapter(config={"api_key": "test"})
+        host_path = "/home/user/project/results/n8n/story_01/workspace"
+        container_path = adapter._translate_workspace(host_path)
+        assert container_path.startswith("/desmet-results/")
+        assert "workspace" in container_path
+
+    def test_workspace_path_windows(self):
+        from desmet.adapters.n8n import N8nAdapter
+        adapter = N8nAdapter(config={"api_key": "test"})
+        host_path = "C:\\Users\\user\\project\\results\\n8n\\story_01\\workspace"
+        container_path = adapter._translate_workspace(host_path)
+        assert container_path.startswith("/desmet-results/")
+
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+
+class TestN8nStageExecution:
+    @pytest.fixture
+    def adapter(self):
+        from desmet.adapters.n8n import N8nAdapter
+        a = N8nAdapter(config={"api_key": "test"})
+        a._initialized = True
+        a._credential_id = "cred-123"
+        a._model_name = "gpt-5.4-2026-03-05"
+        a._client = MagicMock()
+        return a
+
+    @pytest.mark.asyncio
+    async def test_execute_n8n_stage_creates_and_deletes_workflow(self, adapter):
+        from desmet.harness.story import UserStory, DifficultyLevel
+        from desmet.harness.results import RequirementsResult
+
+        adapter._client.create_workflow = AsyncMock(return_value="wf-1")
+        adapter._client.activate_workflow = AsyncMock()
+        adapter._client.execute_workflow = AsyncMock(return_value="exec-1")
+        adapter._client.wait_for_execution = AsyncMock(return_value={
+            "status": "success",
+            "startedAt": "2026-04-06T10:00:00Z",
+            "stoppedAt": "2026-04-06T10:01:00Z",
+            "data": {"resultData": {"runData": {}}},
+        })
+        adapter._client.delete_workflow = AsyncMock()
+
+        story = UserStory(
+            id="test_01", title="Test", description="Test story",
+            difficulty=DifficultyLevel.BASIC, category="test",
+            prompt="Build a hello world app",
+        )
+        context = MagicMock()
+        context.story = story
+        context.workspace = "/tmp/test_workspace"
+        context.platform_id = "n8n"
+        context.max_iterations = 25
+        context.progress_callback = None
+        context.metadata = {}
+
+        with patch("desmet.adapters.n8n.audit_workspace", return_value=[]):
+            result = await adapter._execute_n8n_stage(
+                "requirements",
+                lambda s, **kw: "Analyse this story: " + s.prompt,
+                RequirementsResult,
+                context,
+            )
+
+        assert result.platform_id == "n8n"
+        assert result.stage_name == "requirements"
+        assert result.success is True
+        adapter._client.create_workflow.assert_awaited_once()
+        adapter._client.delete_workflow.assert_awaited()
