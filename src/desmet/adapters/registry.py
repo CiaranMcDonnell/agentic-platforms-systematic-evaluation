@@ -73,7 +73,7 @@ def load_platform_info(platform_id: str) -> PlatformInfo:
     """
     platforms = _load_platforms_yaml()
     if platform_id not in platforms:
-        raise KeyError(f"Platform '{platform_id}' not found in {_PLATFORMS_YAML}")
+        raise KeyError(f"Platform '{platform_id}' not found in config/platforms.yaml")
     p = platforms[platform_id]
     return PlatformInfo(
         name=p["name"],
@@ -115,7 +115,7 @@ def get_adapter(
 # Platforms whose adapters are fully implemented (i.e. do not raise
 # NotImplementedError on their stage methods).  Update this set as more
 # adapters are completed.
-_IMPLEMENTED_PLATFORMS: frozenset[str] = frozenset({"langgraph", "crewai", "openai_agents_sdk", "microsoft_agent_framework", "google_adk"})
+_IMPLEMENTED_PLATFORMS: frozenset[str] = frozenset({"langgraph", "crewai", "openai_agents_sdk", "microsoft_agent_framework", "google_adk", "n8n"})
 
 
 def list_available_platforms() -> list[str]:
