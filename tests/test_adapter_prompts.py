@@ -173,10 +173,11 @@ class TestBuildDeployPrompt:
     def test_includes_dockerfile_creation_step(self):
         result = build_deploy_prompt(_make_story())
         assert "Dockerfile" in result
-        # The Dockerfile step should specify the FastAPI/uvicorn invocation
-        # so the agent doesn't have to guess the entrypoint.
-        assert "uvicorn app.main:app" in result
-        assert "--port 8000" in result
+        # The Dockerfile step must specify the full uvicorn invocation as
+        # one contiguous string so the agent copies it verbatim into CMD.
+        # Asserting the two halves separately would let a future edit
+        # split the sentence and silently degrade the contract.
+        assert "uvicorn app.main:app --host 0.0.0.0 --port 8000" in result
 
     def test_includes_compose_creation_step(self):
         result = build_deploy_prompt(_make_story())
@@ -194,7 +195,7 @@ class TestBuildDeployPrompt:
         assert ".env" in result
         assert "PORT" in result
         # And it must explicitly forbid hardcoding.
-        assert "do NOT hardcode" in result.lower() or "do not hardcode" in result.lower()
+        assert "do not hardcode" in result.lower()
 
     def test_includes_build_directive_in_example(self):
         """The worked compose example must use `build: .` (the Dockerfile
@@ -203,6 +204,20 @@ class TestBuildDeployPrompt:
         """
         result = build_deploy_prompt(_make_story())
         assert "build: ." in result
+
+    def test_compose_example_is_visually_separated_from_prose(self):
+        """The Minimal example block must be visually distinct from the
+        surrounding prose — via a Markdown code fence and a blank line
+        before the header. Without this, an agent skimming the prompt
+        sees the example as continuation text instead of a discrete
+        artifact, and the structure becomes load-bearing-by-luck.
+        """
+        result = build_deploy_prompt(_make_story())
+        # Fenced code block is the strongest signal that "this is a literal
+        # artifact" — require it.
+        assert "```yaml" in result
+        # And ensure the example header isn't glued to the previous prose.
+        assert "\n\nMinimal example:" in result
 
 
 # ---------------------------------------------------------------------------

@@ -140,7 +140,7 @@ stages:
         run `uv sync --no-dev`, and start the service with
         `uvicorn app.main:app --host 0.0.0.0 --port 8000`. The container
         MUST listen on port 8000.
-      - >-
+      - |-
         Write a `docker-compose.yaml` in the workspace root that builds
         from the Dockerfile (`build: .`) and maps host port `${PORT}` to
         container port 8000. The harness injects the `PORT` environment
@@ -149,11 +149,14 @@ stages:
         host port.
 
         Minimal example:
-          services:
-            app:
-              build: .
-              ports:
-                - "${PORT}:8000"
+
+        ```yaml
+        services:
+          app:
+            build: .
+            ports:
+              - "${PORT}:8000"
+        ```
       - 'Push to remote server: deploy_remote(action="push")'
       - 'Start/restart the service: deploy_remote(action="restart")'
       - 'Verify the deployment: deploy_remote(action="health_check")'
