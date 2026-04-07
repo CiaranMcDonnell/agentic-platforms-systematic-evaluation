@@ -155,6 +155,14 @@
     edges?: { id: string; sources: string[]; targets: string[] }[];
   };
 
+  // ELK populates x/y/width/height in-place after layout(). The output type is
+  // structurally the same as ElkNode plus the position fields.
+  type ElkLayoutNode = ElkNode & {
+    x?: number;
+    y?: number;
+    children?: ElkLayoutNode[];
+  };
+
   type EdgeIdGen = (prefix: string) => string;
 
   function buildElkNode(
@@ -195,18 +203,13 @@
     };
   }
 
-  // Captured by emitFlowNodes; refreshed at the start of every loadLangfuseGraph call
-  let _currentAgentObs: LangfuseObservation[] = [];
-  function agentObsForName(name: string): LangfuseObservation | undefined {
-    return _currentAgentObs.find(a => a.name === name);
-  }
-
   function emitFlowNodes(
-    elkNode: any,
+    elkNode: ElkLayoutNode,
     parentId: string | undefined,
     depth: number,
     agentColor: string,
     agentName: string,
+    agentObsRoot: LangfuseObservation | undefined,
     out: Node[],
   ): void {
     const obs = allObservations.get(elkNode.id);
@@ -215,9 +218,8 @@
 
     if (isAgentContainer) {
       // Top-level agent cluster (depth 0)
-      const agentData = agentObsForName(agentName);
-      const agentTotalTokens = agentData
-        ? flattenObservations(agentData).reduce((s, o) => s + o.tokens.total, 0)
+      const agentTotalTokens = agentObsRoot
+        ? flattenObservations(agentObsRoot).reduce((s, o) => s + o.tokens.total, 0)
         : 0;
       out.push({
         id: elkNode.id,
@@ -231,7 +233,7 @@
         },
       });
       for (const child of elkNode.children ?? []) {
-        emitFlowNodes(child, elkNode.id, depth + 1, agentColor, agentName, out);
+        emitFlowNodes(child, elkNode.id, depth + 1, agentColor, agentName, agentObsRoot, out);
       }
       return;
     }
@@ -256,8 +258,15 @@
         },
       });
       for (const child of elkNode.children ?? []) {
-        emitFlowNodes(child, elkNode.id, depth + 1, agentColor, agentName, out);
+        emitFlowNodes(child, elkNode.id, depth + 1, agentColor, agentName, agentObsRoot, out);
       }
+      return;
+    }
+
+    if (hasChildren && !obs) {
+      // Should be impossible: every non-agent compound node was built by
+      // buildElkNode from a real observation that lives in allObservations.
+      console.warn('[AgentGraph] compound ELK node not in allObservations, dropping subtree:', elkNode.id);
       return;
     }
 
@@ -367,12 +376,12 @@
       const layout = await elk.layout(elkGraph);
 
       // Convert ELK layout to Svelte Flow nodes (recursive)
-      _currentAgentObs = agentObs;
       const flowNodes: Node[] = [];
-      for (const agentLayout of layout.children ?? []) {
+      for (const agentLayout of (layout.children ?? []) as ElkLayoutNode[]) {
         const agentName = agentLayout.id.replace('agent-', '');
         const agentColor = roleColor(agentName);
-        emitFlowNodes(agentLayout, undefined, 0, agentColor, agentName, flowNodes);
+        const agentObsRoot = agentObs.find(a => a.name === agentName);
+        emitFlowNodes(agentLayout, undefined, 0, agentColor, agentName, agentObsRoot, flowNodes);
       }
 
       baseNodes = flowNodes;
