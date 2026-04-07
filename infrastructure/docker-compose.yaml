@@ -29,6 +29,41 @@ services:
       - langflow
       - n8n
 
+  # Postgres database bootstrap — creates per-platform databases.
+  # Runs once after postgres is healthy, exits.  Idempotent: uses
+  # CREATE DATABASE guarded by a SELECT check, so it's safe on both
+  # fresh installs and existing volumes.
+  postgres-init-databases:
+    image: postgres:16-alpine
+    container_name: desmet-postgres-init-databases
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-desmet}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-desmet_pass}
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        for db in dify dify_plugin n8n langflow; do
+          if ! psql -tAc "SELECT 1 FROM pg_database WHERE datname='$$db'" | grep -q 1; then
+            echo "Creating database: $$db"
+            psql -c "CREATE DATABASE \"$$db\""
+          else
+            echo "Database already exists: $$db"
+          fi
+        done
+    restart: "no"
+    profiles:
+      - infrastructure
+      - dify
+      - langflow
+      - n8n
+      - visual-platforms
+
   # Redis for caching and message queues
   redis:
     image: redis:7-alpine
@@ -114,6 +149,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-init-databases:
+        condition: service_completed_successfully
     restart: unless-stopped
     profiles:
       - langflow
@@ -176,6 +213,8 @@ services:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
+      postgres-init-databases:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     networks:
@@ -214,6 +253,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-init-databases:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     networks:
@@ -236,6 +277,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-init-databases:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     networks:
@@ -336,6 +379,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-init-databases:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     restart: unless-stopped
@@ -369,6 +414,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-init-databases:
+        condition: service_completed_successfully
     restart: unless-stopped
     profiles:
       - n8n
