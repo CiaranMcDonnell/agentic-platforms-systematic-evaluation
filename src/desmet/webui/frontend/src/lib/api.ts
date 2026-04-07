@@ -32,8 +32,7 @@ export interface AppConfig {
   langfuse_status: string;
   deploy_status: string;
   temperature: number;
-  available_models: string[];
-  allow_custom_model?: boolean;
+  available_models: Record<string, string[]>;
   valid_stages: string[];
   difficulty_levels: string[];
   langsmith_available?: boolean;
