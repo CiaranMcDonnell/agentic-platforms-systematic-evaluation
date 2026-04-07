@@ -91,7 +91,7 @@ services:
       - flowise_data:/root/.flowise
       - ${DESMET_RESULTS_DIR:-../results}:/desmet-results
     ports:
-      - "3000:3000"
+      - "${FLOWISE_PORT:-3000}:3000"
     restart: unless-stopped
     profiles:
       - flowise
@@ -110,7 +110,7 @@ services:
       - langflow_data:/app/langflow
       - ${DESMET_RESULTS_DIR:-../results}:/desmet-results
     ports:
-      - "7860:7860"
+      - "${LANGFLOW_PORT:-7860}:7860"
     depends_on:
       postgres:
         condition: service_healthy
@@ -139,7 +139,7 @@ services:
     image: langgenius/dify-api:latest
     container_name: desmet-dify-api
     ports:
-      - "5001:5001"
+      - "${DIFY_API_PORT:-5001}:5001"
     environment: &dify-shared-env
       # Core
       MODE: api
@@ -191,7 +191,7 @@ services:
     image: langgenius/dify-web:latest
     container_name: desmet-dify-web
     ports:
-      - "3001:3000"
+      - "${DIFY_WEB_PORT:-3001}:3000"
     environment:
       CONSOLE_API_URL: ${DIFY_CONSOLE_API_URL:-http://localhost:5001}
       APP_API_URL: ${DIFY_APP_API_URL:-http://localhost:5001}
@@ -336,7 +336,7 @@ services:
       - n8n_data:/home/node/.n8n
       - ${DESMET_RESULTS_DIR:-../results}:/desmet-results
     ports:
-      - "5678:5678"
+      - "${N8N_PORT:-5678}:5678"
     depends_on:
       postgres:
         condition: service_healthy
