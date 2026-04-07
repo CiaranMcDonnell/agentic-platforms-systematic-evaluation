@@ -338,11 +338,18 @@
         return;
       }
 
-      // Root's direct children are the agent clusters.
-      // If there's only one root observation (the harness wrapper), use its children instead.
+      // Decide which observations to treat as agent clusters.
+      // - If the root has one wrapper whose children look like real agents
+      //   (i.e. they have their own children), descend into the wrapper.
+      // - If the wrapper's children are all leaves, the wrapper is itself
+      //   acting as a single agent with flat events under it — keep the
+      //   wrapper as the agent so all its events end up packed inside one
+      //   container instead of producing N empty agent containers.
       let agentObs: LangfuseObservation[];
       if (rootObs.length === 1 && rootObs[0].children.length > 0) {
-        agentObs = rootObs[0].children;
+        const wrapperChildren = rootObs[0].children;
+        const hasCompoundChildren = wrapperChildren.some(c => c.children.length > 0);
+        agentObs = hasCompoundChildren ? wrapperChildren : [rootObs[0]];
       } else {
         agentObs = rootObs;
       }
@@ -361,26 +368,27 @@
       let edgeCounter = 0;
       const nextEdgeId: EdgeIdGen = (prefix) => `${prefix}-${edgeCounter++}`;
 
+      // Compound agents get the `agent-<name>` prefix so emitFlowNodes
+      // recognises them as cluster containers. Leaf agents (zero children)
+      // keep their original UUID so they render as a regular observation
+      // tile instead of an empty group container.
+      const agentNodeId = (agent: LangfuseObservation): string =>
+        agent.children.length > 0 ? `agent-${agent.name}` : agent.id;
+
       const elkChildren: ElkNode[] = agentObs.map(agent => {
         const node = buildElkNode(agent, 0, nextEdgeId);
-        // Force the agent-cluster id prefix so the visual style picker can
-        // distinguish top-level agent containers from nested compound observations.
-        node.id = `agent-${agent.name}`;
+        node.id = agentNodeId(agent);
         return node;
       });
 
-      // Cross-cluster edges connect agent containers directly (not deep
-      // leaves). elkjs's JSON importer can fail to resolve a deeply-nested
-      // leaf id from an edge declared at the root level, and an agent with
-      // zero children would make firstLeaf/lastLeaf return the agent itself
-      // — whose id has just been renamed to `agent-<name>`. Connecting at
-      // the container level sidesteps both issues and is also visually
-      // cleaner (the arrow enters/exits the container border).
+      // Cross-cluster edges connect agent nodes directly (containers or
+      // leaf observation tiles). Connecting at the agent level avoids elkjs
+      // resolution issues with deeply-nested leaf ids in compound graphs.
       const crossClusterEdges: { source: string; target: string; sourceAgent: string }[] = [];
       const elkEdges: { id: string; sources: string[]; targets: string[] }[] = [];
       for (let i = 0; i < agentObs.length - 1; i++) {
-        const sourceId = `agent-${agentObs[i].name}`;
-        const targetId = `agent-${agentObs[i + 1].name}`;
+        const sourceId = agentNodeId(agentObs[i]);
+        const targetId = agentNodeId(agentObs[i + 1]);
         crossClusterEdges.push({
           source: sourceId,
           target: targetId,
