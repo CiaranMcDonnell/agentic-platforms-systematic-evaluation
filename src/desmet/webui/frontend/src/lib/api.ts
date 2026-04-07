@@ -380,12 +380,20 @@ export const rebuildImage = (platformId: string) =>
 
 // ── Infrastructure ─────────────────
 
+export interface InfraContainer {
+  name: string;
+  status: string;
+}
+
 export interface InfraService {
   id: string;
   name: string;
   description: string;
-  status: string;
+  status: string;          // "running" | "partial" | "not started"
   managed?: boolean;
+  containers?: InfraContainer[];
+  running_count?: number;
+  total_count?: number;
 }
 
 export const fetchInfrastructure = () =>

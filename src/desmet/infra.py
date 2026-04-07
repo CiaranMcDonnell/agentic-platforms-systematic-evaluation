@@ -51,14 +51,15 @@ PLATFORM_NAMES: dict[str, str] = {
 INFRA_SERVICES: dict[str, dict] = {
     "langfuse": {
         "name": "Langfuse",
-        "description": "Observability & tracing",
-        "container": "desmet-langfuse-web",
+        "description": "Observability & tracing (auto-managed)",
+        "containers": ["desmet-langfuse-web"],
         "profile": "langfuse",
+        "managed": True,
     },
     "infrastructure": {
         "name": "Postgres + Redis",
         "description": "Shared database & cache",
-        "container": "desmet-postgres",
+        "containers": ["desmet-postgres", "desmet-redis"],
         "profile": "infrastructure",
     },
 }
@@ -171,15 +172,51 @@ def get_docker_platform_statuses() -> dict[str, str]:
 
 
 def get_infra_statuses() -> list[dict]:
-    """Return status of infrastructure services (Langfuse, Postgres+Redis)."""
+    """Return status of infrastructure services (Langfuse, Postgres+Redis).
+
+    A service can be backed by multiple containers (e.g. the "Postgres +
+    Redis" card represents both ``desmet-postgres`` and ``desmet-redis``).
+    Aggregated status:
+
+    * ``running``     — all containers in the group are running
+    * ``partial``     — some containers running, others not
+    * ``not started`` — no containers running
+
+    The ``containers`` list in the response exposes per-container state
+    so the UI can show which ones specifically are up.
+    """
     results = []
     for sid, info in INFRA_SERVICES.items():
-        status = get_container_status(info["container"])
+        container_names: list[str] = info.get("containers", [])
+        # Back-compat: accept a single "container" field for older entries
+        if not container_names and "container" in info:
+            container_names = [info["container"]]
+
+        per_container = [
+            {"name": name, "status": get_container_status(name)}
+            for name in container_names
+        ]
+        running = sum(1 for c in per_container if c["status"] == "running")
+        total = len(per_container)
+
+        if total == 0:
+            status = "not started"
+        elif running == total:
+            status = "running"
+        elif running == 0:
+            status = "not started"
+        else:
+            status = "partial"
+
         results.append({
             "id": sid,
             "name": info["name"],
             "description": info["description"],
             "status": status,
+            "managed": info.get("managed", False),
+            "containers": per_container,
+            "running_count": running,
+            "total_count": total,
         })
     return results
 

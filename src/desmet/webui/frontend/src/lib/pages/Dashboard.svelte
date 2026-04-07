@@ -24,7 +24,7 @@
     return byDiff;
   });
 
-  // Infra health: count running vs total
+  // Infra health: count services where ALL containers are running
   let infraUp = $derived(store.infraServices.filter(s => s.status === 'running').length);
 
   async function handleInfra(action: string, serviceId: string) {
@@ -46,6 +46,12 @@
     }
   }
 
+  // Poll platform + infra statuses every 5s so the dashboard reflects
+  // live Docker state without requiring a manual page refresh.  This
+  // catches out-of-band changes like platform-triggered dependencies
+  // (postgres/redis coming up when Dify starts).
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+
   onMount(async () => {
     const [rRes, st] = await Promise.all([
       fetchRuns(),
@@ -53,6 +59,19 @@
     ]);
     runs = rRes.runs ?? [];
     stats = st;
+
+    pollTimer = setInterval(async () => {
+      try {
+        await Promise.all([refreshInfra(), refreshPlatformStatuses()]);
+      } catch {
+        // ignore transient fetch errors during polling
+      }
+    }, 5000);
+
+    return () => {
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = null;
+    };
   });
 
   function viewRun(id: string) {
@@ -187,7 +206,7 @@
           {#each store.infraServices as svc}
             <div class="infra-item">
               <div class="status-row">
-                <span class="status-dot {svc.status === 'running' ? 'dot-on' : 'dot-off'}"></span>
+                <span class="status-dot {svc.status === 'running' ? 'dot-on' : svc.status === 'partial' ? 'dot-partial' : 'dot-off'}"></span>
                 <span class="status-name">{svc.name}</span>
                 {#if svc.managed}
                   <span class="infra-btn" style="color: var(--text-2); font-size: 11px;">auto</span>
@@ -199,6 +218,8 @@
                   <span class="infra-btn" style="color: var(--green);">&#10003;</span>
                 {:else if svc.status === 'running'}
                   <button class="infra-btn infra-btn-stop" onclick={() => handleInfra('down', svc.id)}>Stop</button>
+                {:else if svc.status === 'partial'}
+                  <button class="infra-btn infra-btn-start" onclick={() => handleInfra('up', svc.id)}>Start rest</button>
                 {:else}
                   <button class="infra-btn infra-btn-start" onclick={() => handleInfra('up', svc.id)}>Start</button>
                 {/if}
@@ -206,6 +227,16 @@
               <div class="infra-meta">
                 {svc.description}{#if svc.id === 'langfuse' && store.config?.langfuse_status}
                   &nbsp;· keys {store.config.langfuse_status}
+                {/if}
+                {#if svc.containers && svc.containers.length > 1}
+                  <div class="infra-containers">
+                    {#each svc.containers as c}
+                      <span class="infra-container-item">
+                        <span class="status-dot {c.status === 'running' ? 'dot-on' : 'dot-off'}"></span>
+                        {c.name.replace('desmet-', '')}
+                      </span>
+                    {/each}
+                  </div>
                 {/if}
               </div>
               {#if infraAction[svc.id] === 'error' && infraError[svc.id]}
@@ -382,6 +413,25 @@
   }
   .dot-on { background: var(--green); }
   .dot-off { background: #ef4444; opacity: 0.5; }
+  .dot-partial { background: var(--yellow, #f59e0b); }
+
+  .infra-containers {
+    display: flex;
+    gap: 14px;
+    margin-top: 4px;
+    font-size: 10px;
+    color: var(--text-2);
+    font-family: var(--mono, monospace);
+  }
+  .infra-container-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .infra-container-item .status-dot {
+    width: 5px;
+    height: 5px;
+  }
   .status-name {
     font-size: 13px;
     text-transform: capitalize;
