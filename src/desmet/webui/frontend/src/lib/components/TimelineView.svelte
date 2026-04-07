@@ -53,7 +53,7 @@
   let totalMs = $derived(Math.max(traceData.trace.latency_ms, 1));
   let spans = $derived(
     flatten(traceData.observations, origin)
-      .filter(s => s.duration_ms >= 10)  // hide sub-10ms wrapper noise
+      .filter(s => s.duration_ms >= 1)  // hide only zero-duration placeholder spans
       .sort((a, b) => a.start_rel_ms - b.start_rel_ms)
   );
 
