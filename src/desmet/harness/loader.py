@@ -24,6 +24,40 @@ class StoryLoadError(Exception):
 
 
 # ---------------------------------------------------------------------------
+# Evaluation settings (cached from config/platforms.yaml)
+# ---------------------------------------------------------------------------
+
+_eval_settings_cache: dict | None = None
+
+
+def _load_evaluation_settings() -> dict:
+    """Load ``evaluation_settings`` from ``config/platforms.yaml``.
+
+    Returns a dict like::
+
+        {
+            "time_budgets": {"basic": 600, "intermediate": 1200, "advanced": 2400},
+            "iteration_limits": {"basic": 25, "intermediate": 40, "advanced": 60},
+        }
+
+    Falls back to empty sub-dicts if the section is absent.
+    """
+    global _eval_settings_cache  # noqa: PLW0603
+    if _eval_settings_cache is not None:
+        return _eval_settings_cache
+
+    cfg_path = _find_repo_root() / "config" / "platforms.yaml"
+    if cfg_path.exists():
+        with open(cfg_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        _eval_settings_cache = data.get("evaluation_settings", {})
+    else:
+        _eval_settings_cache = {}
+
+    return _eval_settings_cache
+
+
+# ---------------------------------------------------------------------------
 # Internal parsers
 # ---------------------------------------------------------------------------
 
@@ -197,19 +231,25 @@ def load_story(
             verification_method=ac_raw.get("verification_method", "manual"),
         ))
 
+    # --- Resolve per-difficulty defaults from evaluation_settings ---------
+    difficulty = DifficultyLevel(raw["difficulty"])
+    eval_settings = _load_evaluation_settings()
+    default_budget = eval_settings.get("time_budgets", {}).get(difficulty.value, 600)
+    default_iters = eval_settings.get("iteration_limits", {}).get(difficulty.value, 50)
+
     # --- Build UserStory -------------------------------------------------
     return UserStory(
         id=raw["id"],
         title=raw["title"],
         description=raw.get("description", ""),
-        difficulty=DifficultyLevel(raw["difficulty"]),
+        difficulty=difficulty,
         category=raw.get("category", ""),
         prompt=prompt,
         context=context,
         tags=raw.get("tags", []),
         acceptance_criteria=criteria,
-        time_budget_seconds=raw.get("time_budget_seconds", 600),
-        max_iterations=raw.get("max_iterations", 50),
+        time_budget_seconds=raw.get("time_budget_seconds", default_budget),
+        max_iterations=raw.get("max_iterations", default_iters),
         target_files=raw.get("target_files", []),
         expected_files_created=raw.get("expected_files_created", []),
         expected_files_modified=raw.get("expected_files_modified", []),

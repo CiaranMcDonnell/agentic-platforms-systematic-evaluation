@@ -142,6 +142,3 @@ evaluation_settings:
     intermediate: 40
     advanced: 60
 
-  # The canonical default lives in src/desmet/llm_config.py.
-  # Override at runtime with DESMET_MODEL or DEFAULT_MODEL env vars.
-  default_model: gpt-5.4-2026-03-05
