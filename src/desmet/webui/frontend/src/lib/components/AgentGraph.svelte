@@ -369,21 +369,27 @@
         return node;
       });
 
-      // Cross-cluster edges: last leaf of agent[i] -> first leaf of agent[i+1]
+      // Cross-cluster edges connect agent containers directly (not deep
+      // leaves). elkjs's JSON importer can fail to resolve a deeply-nested
+      // leaf id from an edge declared at the root level, and an agent with
+      // zero children would make firstLeaf/lastLeaf return the agent itself
+      // — whose id has just been renamed to `agent-<name>`. Connecting at
+      // the container level sidesteps both issues and is also visually
+      // cleaner (the arrow enters/exits the container border).
       const crossClusterEdges: { source: string; target: string; sourceAgent: string }[] = [];
       const elkEdges: { id: string; sources: string[]; targets: string[] }[] = [];
       for (let i = 0; i < agentObs.length - 1; i++) {
-        const fromLeaf = lastLeaf(agentObs[i]);
-        const toLeaf = firstLeaf(agentObs[i + 1]);
+        const sourceId = `agent-${agentObs[i].name}`;
+        const targetId = `agent-${agentObs[i + 1].name}`;
         crossClusterEdges.push({
-          source: fromLeaf.id,
-          target: toLeaf.id,
+          source: sourceId,
+          target: targetId,
           sourceAgent: agentObs[i].name,
         });
         elkEdges.push({
           id: nextEdgeId('cross'),
-          sources: [fromLeaf.id],
-          targets: [toLeaf.id],
+          sources: [sourceId],
+          targets: [targetId],
         });
       }
 
