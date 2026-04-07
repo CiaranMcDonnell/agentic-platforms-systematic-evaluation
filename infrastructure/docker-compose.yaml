@@ -166,8 +166,11 @@ services:
       # Plugin daemon
       PLUGIN_DAEMON_URL: ${PLUGIN_DAEMON_URL:-http://dify-plugin-daemon:5002}
       PLUGIN_DAEMON_KEY: ${PLUGIN_DAEMON_KEY:-plugin-daemon-change-me}
+      # DESMET: init credentials for admin user
+      INIT_PASSWORD: ${DIFY_INIT_PASSWORD:-desmet-admin}
     volumes:
       - dify_storage:/app/storage
+      - ${DESMET_RESULTS_DIR:-../results}:/desmet-results
     depends_on:
       dify-init:
         condition: service_completed_successfully
@@ -257,6 +260,7 @@ services:
       SANDBOX_PORT: ${SANDBOX_PORT:-8194}
     volumes:
       - dify_sandbox_deps:/dependencies
+      - ${DESMET_RESULTS_DIR:-../results}:/desmet-results
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8194/health"]
       interval: 10s
