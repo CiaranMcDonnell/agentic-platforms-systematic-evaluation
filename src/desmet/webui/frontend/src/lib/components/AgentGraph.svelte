@@ -289,6 +289,29 @@
     });
   }
 
+  function collectInnerEdges(obs: LangfuseObservation, out: Edge[]): void {
+    if (obs.children.length === 0) return;
+
+    // Mirror the same decision the ELK builder made about this container
+    const layoutOptions = pickLayoutOptions(obs.children, 0);
+    const isLayered = layoutOptions['elk.algorithm'] === 'layered';
+
+    if (isLayered) {
+      for (let i = 0; i < obs.children.length - 1; i++) {
+        out.push({
+          id: `inner-${obs.children[i].id}-${obs.children[i + 1].id}`,
+          source: obs.children[i].id,
+          target: obs.children[i + 1].id,
+          style: 'stroke: #444; stroke-width: 1; opacity: 0.5;',
+        });
+      }
+    }
+
+    for (const child of obs.children) {
+      collectInnerEdges(child, out);
+    }
+  }
+
   function obsStat(obs: LangfuseObservation): string {
     if (obs.type === 'generation' && obs.tokens.total > 0) {
       return `${obs.tokens.input.toLocaleString()}↑ ${obs.tokens.output.toLocaleString()}↓`;
@@ -389,17 +412,10 @@
       // Build edges
       const flowEdges: Edge[] = [];
 
-      // Inner edges (sequential within clusters, using original flatObs order)
+      // Inner sequential edges (only inside layered containers; rectpacking
+      // containers get no edges to keep the grid clean)
       for (const agent of agentObs) {
-        const flatObs = flattenObservations(agent);
-        for (let i = 0; i < flatObs.length - 1; i++) {
-          flowEdges.push({
-            id: `inner-${flatObs[i].id}-${flatObs[i + 1].id}`,
-            source: flatObs[i].id,
-            target: flatObs[i + 1].id,
-            style: 'stroke: #444; stroke-width: 1; opacity: 0.5;',
-          });
-        }
+        collectInnerEdges(agent, flowEdges);
       }
 
       // Cross-cluster edges with transition dots
