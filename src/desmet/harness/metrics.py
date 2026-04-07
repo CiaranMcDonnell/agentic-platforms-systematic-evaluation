@@ -72,11 +72,9 @@ class StageMetrics:
 
     All score fields measure **framework capability**, not LLM output quality.
 
-    TODO: Wire StageMetrics into the runner so that each stage result
-    (RequirementsResult, CodeResult, TestResult, DeployResult) is
-    automatically converted to a StageMetrics entry and appended to
-    EvaluationMetrics.stage_metrics.  The dimension-score formulas in
-    calculate_dimension_scores() are designed to consume this list.
+    Wired into the runner: each stage result is automatically converted to a
+    StageMetrics entry and recorded via ``MetricsCollector.record_stage_metrics``
+    (see ``runner.py`` stage execution loop).
     """
     story_id: str
     platform_id: str
@@ -332,9 +330,9 @@ class EvaluationMetrics:
         """Add metrics from a story execution."""
         self.story_metrics.append(metrics)
         self.stories_total += 1
-        if metrics.completed:
+        if metrics.success:
             self.stories_completed += 1
-        if not metrics.completed and not metrics.success:
+        else:
             self.stories_failed += 1
 
     def calculate_dimension_scores(self):
