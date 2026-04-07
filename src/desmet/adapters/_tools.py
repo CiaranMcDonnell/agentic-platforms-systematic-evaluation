@@ -8,6 +8,7 @@ so that each adapter does not need to redefine them.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 import shlex
@@ -16,6 +17,8 @@ from collections import defaultdict
 from collections.abc import Sequence
 from enum import Enum
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
 
 
 class ToolFormat(Enum):
@@ -170,6 +173,9 @@ def _check_loop(workspace: str, tool_name: str, call_key: str) -> str | None:
     # ── Check 0: locked target (sticky enforcement) ──────────────────
     target = _extract_target(tool_name, call_key)
     if target is not None and target in _locked_targets[workspace]:
+        _log.warning(
+            "[DEFENSE] REFUSED %s on locked target '%s'", tool_name, target,
+        )
         return (
             f"REFUSED: '{target}' is locked after a previous loop was "
             f"detected on it. You CANNOT edit, render, or read this "
@@ -191,6 +197,10 @@ def _check_loop(workspace: str, tool_name: str, call_key: str) -> str | None:
     tail = history[-_CONSECUTIVE_THRESHOLD:]
     if len(tail) == _CONSECUTIVE_THRESHOLD and len(set(tail)) == 1:
         _call_history[tracker_key] = []
+        _log.warning(
+            "[DEFENSE] LOOP DETECTED — %s called %d times in a row with identical args",
+            tool_name, _CONSECUTIVE_THRESHOLD,
+        )
         return (
             f"LOOP DETECTED: '{tool_name}' was called {_CONSECUTIVE_THRESHOLD} "
             f"times in a row with identical arguments. You are stuck in a loop. "
@@ -205,6 +215,10 @@ def _check_loop(workspace: str, tool_name: str, call_key: str) -> str | None:
         low_diversity = len(set(window)) <= 3
         if all_recon and low_diversity:
             _call_history[tracker_key] = []
+            _log.warning(
+                "[DEFENSE] LOOP DETECTED — %d reconnaissance shell commands with no progress",
+                _LOOP_WINDOW,
+            )
             return (
                 f"LOOP DETECTED: the last {_LOOP_WINDOW} shell commands were all "
                 f"reconnaissance commands (ls, pwd, echo, …) with no productive "
@@ -233,6 +247,10 @@ def _check_loop(workspace: str, tool_name: str, call_key: str) -> str | None:
             # tool call on it will be refused by the locked-target check
             # at the top of this function.
             _locked_targets[workspace].add(target)
+            _log.warning(
+                "[DEFENSE] LOOP DETECTED + LOCKED — %d cross-tool ops on '%s'",
+                _CROSS_TOOL_THRESHOLD, target,
+            )
             return (
                 f"LOOP DETECTED: you have made {_CROSS_TOOL_THRESHOLD} "
                 f"consecutive operations on '{target}' across multiple tools. "
