@@ -3,6 +3,8 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 import pytest
 
+pytest.importorskip("langchain_core", reason="langchain_core not installed")
+
 
 class TestLangGraphAdapterStructure:
     def test_imports(self):

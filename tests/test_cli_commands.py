@@ -1,6 +1,6 @@
 """Tests for CLI command registration."""
 
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from typer.testing import CliRunner
 
@@ -10,17 +10,18 @@ runner = CliRunner()
 
 
 class TestWebuiCommand:
-    def test_help_shows_webui(self):
+    def test_help_shows_options(self):
         result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
-        assert "webui" in result.output
+        assert "--host" in result.output
+        assert "--port" in result.output
+        assert "--reload" in result.output
 
-    @patch("desmet.cli.uvicorn")
-    def test_webui_default_options(self, mock_uvicorn):
-        """Verify webui passes correct defaults to uvicorn."""
-        # We patch uvicorn at the module level where it's lazily imported
-        with patch("uvicorn.run") as mock_run:
-            runner.invoke(app, ["webui"])
+    def test_default_invocation(self):
+        """Verify default invocation passes correct defaults to uvicorn."""
+        mock_run = MagicMock()
+        with patch("uvicorn.run", mock_run):
+            runner.invoke(app, [])
             mock_run.assert_called_once_with(
                 "desmet.webui.api:app",
                 host="127.0.0.1",

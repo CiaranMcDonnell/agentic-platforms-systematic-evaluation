@@ -13,7 +13,7 @@ def test_deploy_port_is_deterministic():
 
 def test_deploy_port_in_range():
     port = _deploy_port("crewai", "US-001")
-    assert 9000 <= port <= 9999
+    assert 8000 <= port <= 8999
 
 
 def test_deploy_port_differs_across_platforms():

@@ -4,6 +4,11 @@ Every adapter builds identical prompts for the four SDLC pipeline stages
 (requirements, codegen, testing, deploy).  This module centralises that
 logic so each adapter can simply call the builder functions rather than
 duplicating the prompt text.
+
+All static prompt content (personas, expected outputs, task lists) is
+loaded from ``config/prompts.yaml``; only the dynamic assembly logic
+(interpolating user stories, environment context, prior results) lives
+here.
 """
 
 from __future__ import annotations
@@ -17,9 +22,11 @@ if TYPE_CHECKING:
     from desmet.harness.results import RequirementsResult
     from desmet.harness.story import UserStory
 
+_CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
+
 
 # =========================================================================
-# Environment Context
+# Environment Context (loaded from config/environment.yaml)
 # =========================================================================
 
 _ENV_CONTEXT_CACHE: str | None = None
@@ -35,9 +42,10 @@ def load_environment_context() -> str:
     if _ENV_CONTEXT_CACHE is not None:
         return _ENV_CONTEXT_CACHE
 
-    config_path = Path(__file__).resolve().parents[3] / "config" / "environment.yaml"
+    config_path = _CONFIG_DIR / "environment.yaml"
     if not config_path.exists():
-        return ""
+        _ENV_CONTEXT_CACHE = ""
+        return _ENV_CONTEXT_CACHE
 
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
@@ -59,10 +67,38 @@ def load_environment_context() -> str:
 
     rules = ws.get("rules", [])
     if rules:
-        lines.append(f"- Rules: {' '.join(rules)}")
+        lines.append("## Rules")
+        for rule in rules:
+            lines.append(f"- {rule}")
 
     _ENV_CONTEXT_CACHE = "\n".join(lines)
     return _ENV_CONTEXT_CACHE
+
+
+# =========================================================================
+# Prompt config (loaded from config/prompts.yaml)
+# =========================================================================
+
+_PROMPTS_CACHE: dict | None = None
+
+
+def _load_prompts_config() -> dict:
+    global _PROMPTS_CACHE
+    if _PROMPTS_CACHE is not None:
+        return _PROMPTS_CACHE
+
+    config_path = _CONFIG_DIR / "prompts.yaml"
+    with open(config_path) as f:
+        _PROMPTS_CACHE = yaml.safe_load(f)
+    return _PROMPTS_CACHE
+
+
+def _reset_prompts_cache() -> None:
+    global _PROMPTS_CACHE
+    _PROMPTS_CACHE = None
+    # Also reset the lazy proxy so it re-loads from YAML
+    STAGE_EXPECTED_OUTPUTS.clear()
+    STAGE_EXPECTED_OUTPUTS._loaded = False
 
 
 # =========================================================================
@@ -83,58 +119,54 @@ class AgentPersona:
 # Stage → Expected Output (used as CrewAI Task.expected_output)
 # =========================================================================
 
-STAGE_EXPECTED_OUTPUTS: dict[str, str] = {
-    "requirements": "All requirements documents written, UML diagrams in Mermaid format, and each diagram rendered to SVG via execute_shell. Call check_completion to verify.",
-    "codegen": "All required files written to disk using the write_file tool. Call check_completion to verify.",
-    "testing": "Test files written, test suite executed, and results reported. Call check_completion to verify.",
-    "deploy": "Build completed, deployment readiness verified, and any issues reported. Call check_completion to verify.",
-}
+
+def _get_expected_outputs() -> dict[str, str]:
+    return _load_prompts_config()["expected_outputs"]
+
+
+# Module-level proxy so existing ``STAGE_EXPECTED_OUTPUTS["requirements"]``
+# access patterns continue to work without changes to callers.
+class _ExpectedOutputsProxy(dict):
+    """Lazy dict that loads from YAML on first access."""
+
+    _loaded: bool = False
+
+    def _ensure(self) -> None:
+        if not self._loaded:
+            self.update(_get_expected_outputs())
+            self._loaded = True
+
+    def __getitem__(self, key):
+        self._ensure()
+        return super().__getitem__(key)
+
+    def __contains__(self, key):
+        self._ensure()
+        return super().__contains__(key)
+
+    def get(self, key, default=None):
+        self._ensure()
+        return super().get(key, default)
+
+    def items(self):
+        self._ensure()
+        return super().items()
+
+    def keys(self):
+        self._ensure()
+        return super().keys()
+
+
+STAGE_EXPECTED_OUTPUTS: dict[str, str] = _ExpectedOutputsProxy()
+
 
 # =========================================================================
 # Stage → Agent Persona
 # =========================================================================
 
-_STAGE_PERSONAS: dict[str, AgentPersona] = {
-    "requirements": AgentPersona(
-        role="Requirements Analyst",
-        goal=(
-            "Analyse the user story and produce requirements documents "
-            "and UML diagrams in docs/design/"
-        ),
-        backstory=(
-            "You are an experienced business analyst and software architect. "
-            "You decompose user stories into structured requirements "
-            "specifications, domain models, and UML diagrams."
-        ),
-    ),
-    "codegen": AgentPersona(
-        role="Software Developer",
-        goal="Complete the assigned programming task by writing all required files",
-        backstory=(
-            "You are an experienced software developer and architect. "
-            "You always write files to disk using the provided tools. "
-            "You create complete, well-structured documents and code."
-        ),
-    ),
-    "testing": AgentPersona(
-        role="QA Engineer",
-        goal="Write comprehensive tests, execute them, and report results",
-        backstory=(
-            "You are an experienced QA engineer and test automation specialist. "
-            "You write thorough unit and integration tests, execute them, "
-            "and report precise pass/fail counts."
-        ),
-    ),
-    "deploy": AgentPersona(
-        role="DevOps Engineer",
-        goal="Build the project and verify it is deployment-ready",
-        backstory=(
-            "You are an experienced DevOps engineer. "
-            "You build projects, resolve dependency issues, "
-            "and verify deployment readiness."
-        ),
-    ),
-}
+
+def _build_persona(raw: dict) -> AgentPersona:
+    return AgentPersona(role=raw["role"], goal=raw["goal"], backstory=raw["backstory"])
 
 
 def get_stage_persona(stage_name: str) -> AgentPersona:
@@ -143,30 +175,8 @@ def get_stage_persona(stage_name: str) -> AgentPersona:
     Raises :exc:`KeyError` if *stage_name* is not one of
     ``requirements``, ``codegen``, ``testing``, or ``deploy``.
     """
-    return _STAGE_PERSONAS[stage_name]
-
-
-_SUB_PERSONAS: dict[str, AgentPersona] = {
-    "planner": AgentPersona(
-        role="Technical Lead",
-        goal="Analyse the task and produce a structured implementation plan",
-        backstory=(
-            "You are a senior technical lead. You break down complex tasks "
-            "into clear, actionable steps. You identify files to create or "
-            "modify, dependencies between steps, and potential risks."
-        ),
-    ),
-    "reviewer": AgentPersona(
-        role="Code Reviewer",
-        goal="Validate output completeness and correctness against requirements",
-        backstory=(
-            "You are a thorough reviewer. You verify that all required "
-            "artefacts are present in the workspace, outputs are complete "
-            "and correct, and the implementation matches the plan. Use the "
-            "available tools to inspect the workspace and confirm completeness."
-        ),
-    ),
-}
+    cfg = _load_prompts_config()
+    return _build_persona(cfg["personas"]["stages"][stage_name])
 
 
 def get_sub_persona(name: str) -> AgentPersona:
@@ -175,7 +185,8 @@ def get_sub_persona(name: str) -> AgentPersona:
     Valid names: ``planner``, ``reviewer``.
     Raises :exc:`KeyError` if *name* is not recognised.
     """
-    return _SUB_PERSONAS[name]
+    cfg = _load_prompts_config()
+    return _build_persona(cfg["personas"]["sub"][name])
 
 
 # =========================================================================
@@ -183,17 +194,25 @@ def get_sub_persona(name: str) -> AgentPersona:
 # =========================================================================
 
 
+def _render_tasks(stage_cfg: dict) -> str:
+    """Render a numbered task list from a stage config dict."""
+    tasks = stage_cfg.get("tasks", [])
+    if not tasks:
+        return ""
+    preamble = stage_cfg.get("tasks_preamble", "## Tasks")
+    lines = [preamble]
+    for i, task in enumerate(tasks, 1):
+        lines.append(f"{i}. {task}")
+    return "\n".join(lines) + "\n"
+
+
 def build_requirements_prompt(story: UserStory) -> str:
     """Build the user-facing prompt for the **requirements** stage."""
+    cfg = _load_prompts_config()["stages"]["requirements"]
     env = load_environment_context()
-    prompt = (
-        f"You are performing Stage 1: Requirements Analysis.\n"
-        f"Your role is to analyse a user story and produce a structured "
-        f"requirements specification with supporting diagrams.\n\n"
-        f"## User Story\n"
-        f"**{story.title}**\n"
-        f"{story.description}\n\n"
-    )
+
+    prompt = f"{cfg['preamble']}\n\n"
+    prompt += f"## User Story\n**{story.title}**\n{story.description}\n\n"
 
     if story.acceptance_criteria:
         prompt += "## Acceptance Criteria\n"
@@ -202,22 +221,7 @@ def build_requirements_prompt(story: UserStory) -> str:
         prompt += "\n"
 
     prompt += f"{env}\n\n"
-
-    prompt += (
-        "## Tasks\n"
-        "1. Decompose the story into functional and non-functional requirements.\n"
-        "2. Identify domain entities, relationships, and API endpoints.\n"
-        "3. Identify use cases.\n"
-        "4. Produce UML diagrams (class, sequence, use-case) in Mermaid format.\n"
-        "5. Write all requirements documents and diagrams to `docs/design/`.\n"
-        "6. IMPORTANT: After writing all Mermaid diagrams, render EACH one to SVG "
-        "using execute_shell. For every .mermaid file, run:\n"
-        "   execute_shell: bunx @mermaid-js/mermaid-cli mmdc -i <file>.mermaid -o <file>.svg\n"
-        "   Do not skip this step. Each .mermaid file must have a corresponding .svg.\n"
-        "7. When all documents and diagrams are written, call `check_completion` to "
-        "verify the workspace has all required artifacts.\n"
-    )
-
+    prompt += _render_tasks(cfg)
     return prompt
 
 
@@ -233,6 +237,7 @@ def build_codegen_prompt(
     """
     from desmet.harness.results import RequirementsResult
 
+    cfg = _load_prompts_config()["stages"]["codegen"]
     env = load_environment_context()
     prompt = story.prompt
 
@@ -255,53 +260,38 @@ def build_codegen_prompt(
                 prompt += f"\nAPI endpoints: {prior_requirements.api_endpoints}"
 
     prompt += f"\n\n{env}\n"
-    prompt += (
-        "\nWhen all files are written, call `check_completion` to verify "
-        "the workspace.\n"
-    )
+
+    suffix = cfg.get("suffix", "")
+    if suffix:
+        prompt += f"\n{suffix}\n"
+
+    prompt += _render_tasks(cfg)
     return prompt
 
 
 def build_testing_prompt(story: UserStory) -> str:
     """Build the user-facing prompt for the **testing** stage."""
+    cfg = _load_prompts_config()["stages"]["testing"]
     env = load_environment_context()
-    return (
-        f"Write tests for the following user story, execute them, and "
-        f"report the results.\n\n"
-        f"## User Story\n"
-        f"**{story.title}**\n"
-        f"{story.description}\n\n"
-        f"## Prompt\n{story.prompt}\n\n"
-        f"{env}\n\n"
-        f"You must:\n"
-        f"1. Read the existing code in the workspace.\n"
-        f"2. Write comprehensive unit and integration tests.\n"
-        f"3. Run the test suite.\n"
-        f"4. Report the number of tests run, passed, and failed.\n"
-        f"5. If tests fail, attempt to fix the code and re-run.\n"
-        f"6. When done, call `check_completion` to verify the workspace.\n"
-    )
+
+    prompt = f"{cfg['preamble']}\n\n"
+    prompt += f"## User Story\n**{story.title}**\n{story.description}\n\n"
+    prompt += f"## Prompt\n{story.prompt}\n\n"
+    prompt += f"{env}\n\n"
+    prompt += _render_tasks(cfg)
+    return prompt
 
 
 def build_deploy_prompt(story: UserStory) -> str:
     """Build the user-facing prompt for the **deploy** stage."""
+    cfg = _load_prompts_config()["stages"]["deploy"]
     env = load_environment_context()
-    return (
-        f"Build, deploy, and verify the project on the remote server.\n\n"
-        f"## User Story\n"
-        f"**{story.title}**\n"
-        f"{story.description}\n\n"
-        f"{env}\n\n"
-        f"## Steps\n"
-        f"1. Install dependencies: uv sync\n"
-        f"2. Run the test suite: uv run pytest\n"
-        f"3. Build the package: uv build\n"
-        f'4. Push to remote server: deploy_remote(action="push")\n'
-        f'5. Start/restart the service: deploy_remote(action="restart")\n'
-        f'6. Verify the deployment: deploy_remote(action="health_check")\n'
-        f"7. Report success or failure with any issues encountered.\n"
-        f"8. Call `check_completion` to verify deployment artifacts.\n"
-    )
+
+    prompt = f"{cfg['preamble']}\n\n"
+    prompt += f"## User Story\n**{story.title}**\n{story.description}\n\n"
+    prompt += f"{env}\n\n"
+    prompt += _render_tasks(cfg)
+    return prompt
 
 
 def build_system_message(story: UserStory) -> str | None:

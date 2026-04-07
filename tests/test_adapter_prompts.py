@@ -56,7 +56,7 @@ class TestBuildRequirementsPrompt:
         assert "Implement JWT authentication." in result
 
     def test_includes_prompt(self):
-        story = _make_story(prompt="Build a REST API with auth.")
+        story = _make_story(title="Auth Module", description="Build a REST API with auth.")
         result = build_requirements_prompt(story)
         assert "Build a REST API with auth." in result
 
@@ -69,8 +69,9 @@ class TestBuildRequirementsPrompt:
             ],
         )
         result = build_requirements_prompt(story)
-        assert "AC1" not in result
-        assert "Should pass tests" not in result
+        # Acceptance criteria ARE now included in the requirements prompt
+        assert "AC1" in result
+        assert "Should pass tests" in result
 
     def test_contains_analysis_instructions(self):
         result = build_requirements_prompt(_make_story())
@@ -166,8 +167,8 @@ class TestBuildDeployPrompt:
 
     def test_includes_build_instructions(self):
         result = build_deploy_prompt(_make_story())
-        assert "Install all dependencies" in result
-        assert "deployment-ready" in result
+        assert "uv sync" in result
+        assert "deploy_remote" in result
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +239,7 @@ class TestGetStagePersona:
         persona = get_stage_persona("requirements")
         assert isinstance(persona, AgentPersona)
         assert persona.role == "Requirements Analyst"
-        assert "requirements specification" in persona.goal
+        assert "requirements documents" in persona.goal
         assert "business analyst" in persona.backstory
 
     def test_codegen_persona(self):
@@ -287,12 +288,12 @@ class TestStageExpectedOutputs:
 
     def test_requirements_value(self):
         val = STAGE_EXPECTED_OUTPUTS["requirements"]
-        assert "requirements documents" in val
+        assert "Requirements documents" in val
         assert "check_completion" in val
 
     def test_codegen_value(self):
         val = STAGE_EXPECTED_OUTPUTS["codegen"]
-        assert "write_file" in val
+        assert "source files" in val
         assert "check_completion" in val
 
     def test_testing_value(self):
@@ -302,7 +303,7 @@ class TestStageExpectedOutputs:
 
     def test_deploy_value(self):
         val = STAGE_EXPECTED_OUTPUTS["deploy"]
-        assert "deployment readiness" in val
+        assert "deployment verified" in val
         assert "check_completion" in val
 
 

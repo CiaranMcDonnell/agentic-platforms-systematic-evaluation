@@ -189,6 +189,10 @@ class TestCreateToolsCallable:
 
 
 class TestCreateToolsLangchain:
+    @pytest.fixture(autouse=True)
+    def _require_langchain(self):
+        pytest.importorskip("langchain_core", reason="langchain_core not installed")
+
     @pytest.fixture
     def lc_tools(self, workspace):
         return create_tools(

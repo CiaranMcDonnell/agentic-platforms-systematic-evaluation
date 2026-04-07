@@ -178,36 +178,28 @@ def normalize_usage(raw: Any) -> tuple[int, int]:
         return (0, 0)
 
     if isinstance(raw, dict):
-        inp = (
-            raw.get("prompt_tokens")
-            or raw.get("input_tokens")
-            or raw.get("input_token_count")
-            or raw.get("prompt_token_count")  # Gemini / ADK
-            or 0
+        inp = next(
+            (raw[k] for k in ("prompt_tokens", "input_tokens", "input_token_count", "prompt_token_count")
+             if raw.get(k) is not None),
+            0,
         )
-        out = (
-            raw.get("completion_tokens")
-            or raw.get("output_tokens")
-            or raw.get("output_token_count")
-            or raw.get("candidates_token_count")  # Gemini / ADK
-            or 0
+        out = next(
+            (raw[k] for k in ("completion_tokens", "output_tokens", "output_token_count", "candidates_token_count")
+             if raw.get(k) is not None),
+            0,
         )
         return (int(inp), int(out))
 
     # Attribute-based object
-    inp = (
-        getattr(raw, "prompt_tokens", 0)
-        or getattr(raw, "input_tokens", 0)
-        or getattr(raw, "input_token_count", 0)
-        or getattr(raw, "prompt_token_count", 0)  # Gemini / ADK
-        or 0
+    inp = next(
+        (getattr(raw, k) for k in ("prompt_tokens", "input_tokens", "input_token_count", "prompt_token_count")
+         if getattr(raw, k, None)),
+        0,
     )
-    out = (
-        getattr(raw, "completion_tokens", 0)
-        or getattr(raw, "output_tokens", 0)
-        or getattr(raw, "output_token_count", 0)
-        or getattr(raw, "candidates_token_count", 0)  # Gemini / ADK
-        or 0
+    out = next(
+        (getattr(raw, k) for k in ("completion_tokens", "output_tokens", "output_token_count", "candidates_token_count")
+         if getattr(raw, k, None)),
+        0,
     )
     return (int(inp), int(out))
 
