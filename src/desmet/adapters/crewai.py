@@ -7,7 +7,6 @@ Implements the evaluation interface for CrewAI.
 from __future__ import annotations
 
 import logging
-import re
 import time
 from typing import Any
 
@@ -45,29 +44,6 @@ def _compute_iter_budget(max_iterations: int, *, retry: bool = False) -> tuple[i
     return planner, executor, reviewer
 
 
-def _summarise_step(step_output: Any) -> str:
-    """Return a readable string for a CrewAI step output.
-
-    Prefers ``log`` / ``text`` (the LLM reasoning text).  Falls back to a
-    compact summary when ``str()`` would produce a multi-kilobyte Agent/Crew
-    repr that obscures the actual reasoning content.
-    """
-    content = getattr(step_output, "log", "") or getattr(step_output, "text", "")
-    if content:
-        return content
-
-    raw = str(step_output)
-    # Detect verbose CrewAI object reprs (Agent, Task, Crew contain these fields).
-    if len(raw) > 300 and ("role=" in raw or "backstory=" in raw):
-        role_m = re.search(r"role=['\"]([^'\"]{1,80})", raw)
-        goal_m = re.search(r"goal=['\"]([^'\"]{1,120})", raw)
-        role = role_m.group(1) if role_m else "?"
-        goal = (goal_m.group(1)[:100] + "…") if goal_m and len(goal_m.group(1)) > 100 else (goal_m.group(1) if goal_m else "")
-        return f"[Agent: {role}] {goal}".strip()
-
-    return raw
-
-
 class CrewAIAdapter(ToolAgentAdapter):
     """
     Adapter for evaluating CrewAI.
@@ -77,12 +53,18 @@ class CrewAIAdapter(ToolAgentAdapter):
 
     TOOL_FORMAT = ToolFormat.CREWAI
 
+    _event_handlers_registered: bool = False
+
     def __init__(self, config: dict[str, Any] | None = None):
         super().__init__(config)
         self._crew = None
-        # Bridges the event bus handler (registered once) to the per-stage collector
+        # Bridges the event bus handlers (registered once) to the per-stage
+        # collector and progress reporter.  Set before kickoff, cleared after.
         self._current_collector: ObservationCollector | None = None
+        self._current_progress: ProgressReporter | None = None
         self._last_llm_start: float = 0.0
+        self._last_usage_snapshot: dict[str, int] = {}
+        self._llm_call_count: int = 0
 
     @property
     def platform_info(self) -> PlatformInfo:
@@ -114,10 +96,10 @@ class CrewAIAdapter(ToolAgentAdapter):
             except ImportError:
                 pass  # optional — tracing degrades gracefully
 
-            # Per-LLM-call tracing via CrewAI's native event bus.
-            # The handler fires for every chat completion inside the ReAct
-            # loop, giving us per-call token counts and Langfuse generations.
-            self._register_llm_event_handler()
+            # All tracing (LLM calls, tool usage, task completion, iteration
+            # counting) via CrewAI's native event bus — fires on every
+            # execution path including native function calling.
+            self._register_event_handlers()
 
             self._initialized = True
         except ImportError as e:
@@ -130,38 +112,118 @@ class CrewAIAdapter(ToolAgentAdapter):
     async def health_check(self) -> bool:
         return self._initialized
 
-    # ── Per-LLM-call event collection ─────────────────────────────────────
+    # ── Event bus tracing ────────────────────────────────────────────────
 
-    def _register_llm_event_handler(self) -> None:
-        """Subscribe to CrewAI's event bus for individual LLM completion events."""
+    def _register_event_handlers(self) -> None:
+        """Subscribe to CrewAI's event bus for all tracing.
+
+        Replaces the legacy ``step_callback`` / ``task_callback`` closures
+        that were passed to ``Crew()``.  The event bus fires for every
+        execution path (ReAct text parsing *and* native function calling),
+        giving complete coverage.
+        """
+        if CrewAIAdapter._event_handlers_registered:
+            return
         try:
             from crewai.events.event_bus import crewai_event_bus
             from crewai.events.types.llm_events import LLMCallCompletedEvent, LLMCallStartedEvent
+            from crewai.events.types.task_events import TaskCompletedEvent
+            from crewai.events.types.tool_usage_events import ToolUsageFinishedEvent
+
+            # ── LLM calls ───────────────────────────────────────────────
 
             @crewai_event_bus.on(LLMCallStartedEvent)
             def _on_llm_started(source, event) -> None:
                 if self._current_collector is None:
                     return
                 self._last_llm_start = time.monotonic()
+                # Snapshot cumulative token counts so we can compute per-call delta
+                usage = getattr(source, "_token_usage", None)
+                self._last_usage_snapshot = dict(usage) if usage else {}
 
             @crewai_event_bus.on(LLMCallCompletedEvent)
             def _on_llm_completed(source, event: LLMCallCompletedEvent) -> None:
                 col = self._current_collector
                 if col is None:
                     return
-                resp = event.response
-                raw_usage = getattr(resp, "usage", None)
+
+                # Duration
                 duration_ms = 0.0
                 if self._last_llm_start > 0:
                     duration_ms = (time.monotonic() - self._last_llm_start) * 1000
                     self._last_llm_start = 0.0
+
+                # Per-call token delta from LLM's cumulative counters
+                raw_usage = None
+                usage = getattr(source, "_token_usage", None)
+                if usage:
+                    prev = self._last_usage_snapshot
+                    raw_usage = {
+                        "prompt_tokens": usage.get("prompt_tokens", 0) - prev.get("prompt_tokens", 0),
+                        "completion_tokens": usage.get("completion_tokens", 0) - prev.get("completion_tokens", 0),
+                    }
                 col.record_llm_response(
                     raw_usage=raw_usage,
                     duration_ms=duration_ms,
                     model=event.model,
                 )
+
+                # Iteration counting — each LLM call is one reasoning step
+                self._llm_call_count += 1
+                col.trace.total_iterations = self._llm_call_count
+
+                # Record LLM response text as a message in the trace
+                resp_text = str(event.response) if event.response else ""
+                if resp_text:
+                    col.record_message(
+                        "assistant", resp_text[:2000],
+                        metadata={"step": self._llm_call_count},
+                    )
+
+                # Heartbeat every 5 iterations
+                progress = self._current_progress
+                if progress and self._llm_call_count % 5 == 0:
+                    progress.heartbeat(self._llm_call_count, "")
+
+            # ── Tool calls ──────────────────────────────────────────────
+
+            @crewai_event_bus.on(ToolUsageFinishedEvent)
+            def _on_tool_finished(source, event: ToolUsageFinishedEvent) -> None:
+                col = self._current_collector
+                if col is None:
+                    return
+                args = event.tool_args if isinstance(event.tool_args, dict) else {"input": str(event.tool_args)}
+                col.record_tool_execution(
+                    event.tool_name, args, str(event.output or ""),
+                )
+                progress = self._current_progress
+                if progress:
+                    progress.tool_call(event.tool_name, event.tool_args)
+
+            # ── Task completion ──────────────────────────────────────────
+
+            @crewai_event_bus.on(TaskCompletedEvent)
+            def _on_task_completed(source, event: TaskCompletedEvent) -> None:
+                col = self._current_collector
+                if col is None:
+                    return
+                output_str = str(event.output) if event.output else ""
+                col.record_message(
+                    "assistant", output_str,
+                    metadata={"event": "task_complete"},
+                )
+                progress = self._current_progress
+                if progress:
+                    agent_name = ""
+                    if event.task:
+                        agent = getattr(event.task, "agent", None)
+                        if agent:
+                            agent_name = getattr(agent, "role", "") or ""
+                    progress.agent_status(agent_name or "agent", "task complete")
+
+            CrewAIAdapter._event_handlers_registered = True
         except ImportError:
-            _log.debug("crewai.events not available — per-call tracing disabled")
+            _log.debug("crewai.events not available — event bus tracing disabled")
 
     def _create_llm(self, context: StageContext):
         """Build a CrewAI LLM from centralised config + stage context overrides.
@@ -222,14 +284,12 @@ class CrewAIAdapter(ToolAgentAdapter):
         tools: list,
         llm: Any,
         context: StageContext,
-        collector: ObservationCollector,
-        progress: ProgressReporter,
         *,
         retry_attempt: int = 0,
         prior_plan: str = "",
         feedback: str = "",
         plan: ImplementationPlan | None = None,
-    ) -> tuple[Any, list[int]]:
+    ) -> Any:
         """Build a CrewAI crew for one execution attempt.
 
         First attempt (``retry_attempt == 0``): 3-agent crew (planner +
@@ -237,9 +297,6 @@ class CrewAIAdapter(ToolAgentAdapter):
 
         Retry (``retry_attempt > 0``): 2-agent crew (executor + reviewer)
         with the prior plan and validation feedback injected.
-
-        Returns ``(crew, step_counter)`` where *step_counter* is a
-        single-element list whose ``[0]`` value tracks iterations.
         """
         from crewai import Agent, Crew, Process, Task
 
@@ -247,9 +304,19 @@ class CrewAIAdapter(ToolAgentAdapter):
         planner_budget, executor_budget, reviewer_budget = _compute_iter_budget(
             context.max_iterations, retry=is_retry,
         )
-        # Distribute time budget proportionally (same ratio as iterations)
-        total_budget = planner_budget + executor_budget + reviewer_budget
         time_budget = context.time_budget_seconds or 0
+
+        # Time split — executor gets the bulk of the budget (80%) because
+        # it does the real work.  Planner and reviewer cap at 10% each.
+        # This avoids a previous bug where the iteration ratio (60% for
+        # the executor) starved CrewAI of time vs other frameworks that
+        # give the main agent the full budget.
+        def _time_share(fraction: float) -> int | None:
+            return int(time_budget * fraction) if time_budget else None
+
+        planner_time = _time_share(0.10)
+        executor_time = _time_share(0.80)
+        reviewer_time = _time_share(0.10)
 
         def _make_backstory(persona_backstory: str) -> str:
             if system_msg:
@@ -271,7 +338,6 @@ class CrewAIAdapter(ToolAgentAdapter):
 
         # ── Executor — stage-specific persona ────────────────────────────
         executor_persona = get_stage_persona(stage_name)
-        executor_time = int(time_budget * executor_budget / total_budget) if time_budget else None
         executor_backstory = _make_backstory(executor_persona.backstory) + executor_context
         executor_agent = Agent(
             role=executor_persona.role,
@@ -287,7 +353,6 @@ class CrewAIAdapter(ToolAgentAdapter):
 
         # ── Reviewer — Code Reviewer ─────────────────────────────────────
         reviewer_persona = get_sub_persona("reviewer")
-        reviewer_time = int(time_budget * reviewer_budget / total_budget) if time_budget else None
         reviewer_agent = Agent(
             role=reviewer_persona.role,
             goal=reviewer_persona.goal,
@@ -306,7 +371,6 @@ class CrewAIAdapter(ToolAgentAdapter):
         if not is_retry:
             # ── Planner — Technical Lead ─────────────────────────────────
             planner_persona = get_sub_persona("planner")
-            planner_time = int(time_budget * planner_budget / total_budget) if time_budget else None
             planner_agent = Agent(
                 role=planner_persona.role,
                 goal=planner_persona.goal,
@@ -386,24 +450,18 @@ class CrewAIAdapter(ToolAgentAdapter):
             agents = [executor_agent, reviewer_agent]
             tasks = [implement_task, review_task]
 
-        step_cb, task_cb, counter = self._create_trace_callbacks(
-            collector,
-            progress,
-        )
-
         # planning=True disabled: redundant with our planner agent and
         # defaults to gpt-4o-mini which would introduce a second model.
         # Note: max_iter and max_execution_time are per-Agent fields in
         # crewai >=1.7; the per-agent max_iter is already set above.
+        # Tracing is handled entirely via the event bus (no step/task callbacks).
         crew = Crew(
             agents=agents,
             tasks=tasks,
             process=Process.sequential,
             verbose=False,
-            step_callback=step_cb,
-            task_callback=task_cb,
         )
-        return crew, counter
+        return crew
 
     # =========================================================================
     # Core Agent Runner
@@ -439,9 +497,8 @@ class CrewAIAdapter(ToolAgentAdapter):
         structured_plan: ImplementationPlan | None = None
 
         for attempt in range(policy.total_attempts()):
-            crew, counter = self._build_crew(
-                stage_name, prompt, system_msg, tools, llm, context, collector,
-                progress,
+            crew = self._build_crew(
+                stage_name, prompt, system_msg, tools, llm, context,
                 retry_attempt=attempt,
                 prior_plan=plan_text,
                 feedback=feedback,
@@ -449,9 +506,12 @@ class CrewAIAdapter(ToolAgentAdapter):
             )
 
             usage_before = collector.usage_count
+            llm_calls_before = self._llm_call_count
             self._current_collector = collector
+            self._current_progress = progress
             result = await asyncio.to_thread(crew.kickoff)
             self._current_collector = None
+            self._current_progress = None
             collector.record_message("assistant", str(result))
 
             # ── Fallback: use result.token_usage if event bus recorded nothing ─
@@ -460,7 +520,7 @@ class CrewAIAdapter(ToolAgentAdapter):
                 if usage is not None:
                     collector.record_llm_response(raw_usage=usage, model=model_name)
 
-            total_iterations += counter[0]
+            total_iterations += self._llm_call_count - llm_calls_before
 
             # ── Extract plan from first attempt ──────────────────────────
             if attempt == 0:
@@ -503,59 +563,6 @@ class CrewAIAdapter(ToolAgentAdapter):
     # Stage methods inherited from ToolAgentAdapter
 
     # =========================================================================
-    # Trace Callbacks
-    # =========================================================================
-
-    @staticmethod
-    def _create_trace_callbacks(
-        collector: ObservationCollector,
-        progress: ProgressReporter,
-    ) -> tuple[Any, Any, list[int]]:
-        """Create ``step_callback`` and ``task_callback`` closures for a Crew.
-
-        Returns a 3-tuple of ``(step_callback, task_callback, step_counter)``
-        where *step_counter* is a single-element list whose ``[0]`` value is
-        incremented on every agent step so the caller can read the true
-        iteration count after ``crew.kickoff()`` returns.
-        """
-        counter: list[int] = [0]
-
-        def step_callback(step_output: Any) -> None:
-            """Called after every agent reasoning step."""
-            counter[0] += 1
-
-            # CrewAI step outputs vary by type.  Inspect common attributes
-            # to extract tool-call information when present.
-            tool_name = getattr(step_output, "tool", None)
-            if tool_name:
-                tool_input = getattr(step_output, "tool_input", "")
-                tool_result = getattr(step_output, "result", "")
-                args = tool_input if isinstance(tool_input, dict) else {"input": str(tool_input)}
-                collector.record_tool_execution(str(tool_name), args, str(tool_result))
-                progress.tool_call(str(tool_name), tool_input)
-            elif counter[0] % 5 == 0:
-                agent_role = getattr(step_output, "agent", None)
-                role_str = getattr(agent_role, "role", "") if agent_role else ""
-                progress.heartbeat(counter[0], role_str)
-
-            # Always record the step as a message so the full reasoning
-            # chain is visible in the trace.
-            content = _summarise_step(step_output)
-            collector.record_message("assistant", content, metadata={"step": counter[0]})
-            collector.trace.total_iterations = counter[0]
-
-        def task_callback(task_output: Any) -> None:
-            """Called when a CrewAI Task completes."""
-            collector.record_message(
-                "assistant", str(task_output),
-                metadata={"event": "task_complete"},
-            )
-            agent_name = getattr(task_output, "agent", "") or ""
-            progress.agent_status(agent_name or "agent", "task complete")
-
-        return step_callback, task_callback, counter
-
-    # =========================================================================
     # Metadata & Lifecycle
     # =========================================================================
 
@@ -569,8 +576,8 @@ class CrewAIAdapter(ToolAgentAdapter):
             "trace_format": "Custom logs",
             "notes": (
                 "Multi-agent sequential crew (planner/executor/reviewer) with "
-                "up to 3 retries. Per-agent step callbacks + event bus for "
-                "LLM call tracing. Native function calling via provider SDKs."
+                "up to 3 retries. Event bus for LLM, tool, and task tracing. "
+                "Native function calling via provider SDKs."
             ),
         }
 

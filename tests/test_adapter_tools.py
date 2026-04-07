@@ -3,7 +3,15 @@
 
 import pytest
 
-from desmet.adapters._tools import AVAILABLE_TOOLS, ToolFormat, _safe_resolve, create_tools
+from desmet.adapters._tools import (
+    AVAILABLE_TOOLS,
+    ToolFormat,
+    _check_loop,
+    _extract_target,
+    _safe_resolve,
+    create_tools,
+    reset_loop_tracker,
+)
 
 
 @pytest.fixture
@@ -12,6 +20,92 @@ def workspace(tmp_path):
     (tmp_path / "subdir").mkdir()
     (tmp_path / "subdir" / "data.txt").write_text("some data")
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def _reset_loops():
+    """Ensure loop-detection state is clean between tests."""
+    reset_loop_tracker()
+    yield
+    reset_loop_tracker()
+
+
+class TestExtractTarget:
+    def test_read_file_target(self):
+        assert _extract_target("read_file", "docs/design/spec.md") == "docs/design/spec.md"
+
+    def test_write_file_target(self):
+        assert _extract_target("write_file", "src/main.py") == "src/main.py"
+
+    def test_list_directory_returns_none(self):
+        # Directories aren't work targets — ignore to avoid false positives.
+        assert _extract_target("list_directory", "docs") is None
+
+    def test_shell_command_extracts_mermaid_path(self):
+        cmd = "mmdc -p ~/.config/puppeteer.json -i docs/design/use_case.mermaid -o docs/design/use_case.svg"
+        # First match — the .mermaid file is found first
+        assert _extract_target("execute_shell", cmd) == "docs/design/use_case.mermaid"
+
+    def test_shell_command_no_file_returns_none(self):
+        assert _extract_target("execute_shell", "pwd") is None
+        assert _extract_target("execute_shell", "ls -la") is None
+
+
+class TestCrossToolLoopDetection:
+    def test_fires_on_six_cross_tool_ops_on_same_file(self, workspace):
+        ws = str(workspace)
+        target = "docs/design/use_case.mermaid"
+        # Simulate the CrewAI loop pattern: write → shell → read → write → shell → read
+        results = [
+            _check_loop(ws, "write_file", target),
+            _check_loop(ws, "execute_shell", f"mmdc -i {target}"),
+            _check_loop(ws, "read_file", target),
+            _check_loop(ws, "write_file", target),
+            _check_loop(ws, "execute_shell", f"mmdc -i {target}"),
+            _check_loop(ws, "read_file", target),
+        ]
+        # First 5 should be None (still under threshold)
+        assert all(r is None for r in results[:5])
+        # 6th call triggers the cross-tool loop detector
+        assert results[5] is not None
+        assert "LOOP DETECTED" in results[5]
+        assert target in results[5]
+
+    def test_does_not_fire_on_different_files(self, workspace):
+        ws = str(workspace)
+        # Working on different files across tools — legitimate progress
+        results = [
+            _check_loop(ws, "write_file", "a.md"),
+            _check_loop(ws, "execute_shell", "mmdc -i a.mermaid"),
+            _check_loop(ws, "write_file", "b.md"),
+            _check_loop(ws, "execute_shell", "mmdc -i b.mermaid"),
+            _check_loop(ws, "write_file", "c.md"),
+            _check_loop(ws, "execute_shell", "mmdc -i c.mermaid"),
+        ]
+        assert all(r is None for r in results), f"Expected no loop, got: {results}"
+
+    def test_reset_clears_cross_tool_history(self, workspace):
+        ws = str(workspace)
+        target = "foo.md"
+        for _ in range(5):
+            _check_loop(ws, "write_file", target)
+        reset_loop_tracker()
+        # Next 5 after reset should not trigger
+        for i in range(5):
+            r = _check_loop(ws, "write_file", target)
+            # write_file consecutive threshold is 4 — the 4th identical call fires
+            if i >= 3:
+                assert r is not None  # consecutive check
+                reset_loop_tracker()
+                break
+
+    def test_write_file_is_checked(self, workspace):
+        """Verify write_file now participates in loop detection (was a gap)."""
+        # 4 identical write_file calls in a row should trigger the consecutive check.
+        ws = str(workspace)
+        results = [_check_loop(ws, "write_file", "same.md") for _ in range(4)]
+        assert results[-1] is not None
+        assert "LOOP DETECTED" in results[-1]
 
 
 class TestAvailableTools:

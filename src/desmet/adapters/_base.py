@@ -21,7 +21,8 @@ from desmet.adapters._prompts import (
     build_system_message,
     build_testing_prompt,
 )
-from desmet.adapters._tools import ToolFormat, create_tools
+from desmet.adapters._tools import ToolFormat, create_tools, reset_loop_tracker
+from desmet.adapters._validation import audit_workspace
 from desmet.adapters._observation import ObservationCollector, ObservationRequirements
 from desmet.adapters._retry import ProgressReporter, RetryPolicy
 from desmet.adapters._tracing import (
@@ -95,6 +96,7 @@ class ToolAgentAdapter(BasePlatformAdapter):
         """Shared template: build prompt → create tools → run agent → build result."""
         import logging
 
+        reset_loop_tracker()
         trace = start_trace()
         try:
             if stage_name == "codegen":
@@ -142,6 +144,24 @@ class ToolAgentAdapter(BasePlatformAdapter):
                         w,
                     )
             fm = compute_framework_metrics(trace, context.max_iterations)
+
+            # Post-stage scope audit
+            baseline_files = set(context.metadata.get("baseline_files", []))
+            scope_warnings = audit_workspace(
+                stage_name, str(context.workspace), baseline_files,
+            )
+            if scope_warnings:
+                log = logging.getLogger(
+                    f"desmet.adapters.{self.platform_info.id}"
+                )
+                for sw in scope_warnings:
+                    log.warning(
+                        "Stage scope [%s/%s]: %s",
+                        self.platform_info.id,
+                        stage_name,
+                        sw,
+                    )
+
             return build_stage_result(
                 result_cls, self.platform_info.id, stage_name,
                 trace, success=not hit_limit, iterations=iterations,
@@ -149,9 +169,13 @@ class ToolAgentAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             finish_trace(trace, error=str(e))
+            # Use real trace data for iterations — don't discard it on error.
+            # Fall back to tool_calls count if mark_iterations was never called.
+            iterations = trace.total_iterations or len(trace.tool_calls)
             return build_stage_result(
                 result_cls, self.platform_info.id, stage_name,
-                trace, success=False, iterations=0, error_message=str(e),
+                trace, success=False, iterations=iterations,
+                error_message=str(e),
             )
 
     # ── Concrete SDLC stage methods ──────────────────────────────────────

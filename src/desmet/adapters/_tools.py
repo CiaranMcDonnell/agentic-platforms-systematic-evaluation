@@ -72,6 +72,11 @@ _LOOP_WINDOW = 8
 # Consecutive-identical threshold (stricter, fires faster).
 _CONSECUTIVE_THRESHOLD = 4
 
+# Cross-tool target threshold — fires when the same file/target appears
+# in N consecutive calls across ANY tools (catches agents thrashing on
+# one file with different tools: write → render → read → write → …).
+_CROSS_TOOL_THRESHOLD = 6
+
 # Shell commands that produce no meaningful progress.  When the entire
 # window consists of these, the agent is stuck exploring rather than
 # doing real work.
@@ -81,18 +86,73 @@ _RECON_RE = re.compile(
     r"|cat|head|tail|wc|file|stat|which|type)\b"
 )
 
-# Per-workspace:tool sliding window of recent call keys.
+# File-path extraction for shell commands (best-effort heuristic).
+# Matches paths ending in known source/doc extensions.  "Primary" targets
+# (source files the agent is trying to produce) take priority over
+# "config" files like tool configs.
+_SHELL_TARGET_PRIMARY_RE = re.compile(
+    r"([\w./-]+\.(?:mermaid|md|py|ts|tsx|js|jsx|yaml|yml|html|css|svg|txt))"
+)
+_SHELL_TARGET_ANY_RE = re.compile(
+    r"([\w./-]+\.(?:mermaid|md|py|ts|tsx|js|jsx|json|yaml|yml|html|css|svg|txt))"
+)
+# Paths in these directories are tool/config — ignore them when there's
+# a primary match elsewhere in the command.
+_SHELL_TARGET_IGNORE_PREFIXES = ("/", "~/", "/etc/", "/usr/", "/tmp/")
+
+# Per-workspace:tool sliding window of recent call keys (per-tool loop check).
 _call_history: dict[str, list[str]] = defaultdict(list)
+
+# Per-workspace sliding window of recent cross-tool targets (file paths).
+_cross_tool_history: dict[str, list[str]] = defaultdict(list)
+
+
+def _extract_target(tool_name: str, call_key: str) -> str | None:
+    """Extract a file-path target from a tool call, if possible.
+
+    Returns a normalized path for file-oriented tools, or the first
+    file-like argument found in a shell command.  Returns ``None`` when
+    no clear target exists (e.g. ``pwd``, ``echo hello``).
+    """
+    if tool_name in ("read_file", "write_file"):
+        target = call_key.strip()
+        return target if target else None
+    if tool_name == "list_directory":
+        # Directories aren't "work targets" in the same sense — skip them
+        # to avoid false positives on repeated directory listings.
+        return None
+    if tool_name == "search_code":
+        # Key format is "pattern:path" — the path portion is the target
+        if ":" in call_key:
+            _, path = call_key.rsplit(":", 1)
+            return path.strip() or None
+        return None
+    if tool_name == "execute_shell":
+        # Prefer workspace-relative source/doc files over absolute tool-config paths
+        for match in _SHELL_TARGET_PRIMARY_RE.finditer(call_key):
+            path = match.group(1)
+            if not any(path.startswith(p) for p in _SHELL_TARGET_IGNORE_PREFIXES):
+                return path
+        # Fallback: any match, including json
+        for match in _SHELL_TARGET_ANY_RE.finditer(call_key):
+            path = match.group(1)
+            if not any(path.startswith(p) for p in _SHELL_TARGET_IGNORE_PREFIXES):
+                return path
+        return None
+    return None
 
 
 def _check_loop(workspace: str, tool_name: str, call_key: str) -> str | None:
     """Return an error string if a loop is detected, else ``None``.
 
-    Detects two patterns:
+    Detects three patterns:
     1. **Consecutive identical** — the same call_key N times in a row.
     2. **Reconnaissance spin** — the last *window* calls are all low-value
        shell commands (``ls``, ``pwd``, ``echo``, …) with low diversity,
        meaning the agent is cycling instead of making progress.
+    3. **Cross-tool target thrash** — the same file/target appears in
+       ``_CROSS_TOOL_THRESHOLD`` consecutive calls across any tools
+       (agent stuck writing → rendering → reading → writing on one file).
     """
     tracker_key = f"{workspace}:{tool_name}"
     history = _call_history[tracker_key]
@@ -130,12 +190,36 @@ def _check_loop(workspace: str, tool_name: str, call_key: str) -> str | None:
                 f"reviewer validate."
             )
 
+    # ── Check 3: cross-tool target thrash ─────────────────────────────
+    target = _extract_target(tool_name, call_key)
+    if target is not None:
+        cross = _cross_tool_history[workspace]
+        cross.append(target)
+        if len(cross) > _CROSS_TOOL_THRESHOLD * 2:
+            _cross_tool_history[workspace] = cross[-_CROSS_TOOL_THRESHOLD * 2:]
+            cross = _cross_tool_history[workspace]
+        cross_tail = cross[-_CROSS_TOOL_THRESHOLD:]
+        if (
+            len(cross_tail) == _CROSS_TOOL_THRESHOLD
+            and len(set(cross_tail)) == 1
+        ):
+            _cross_tool_history[workspace] = []
+            return (
+                f"LOOP DETECTED: you have made {_CROSS_TOOL_THRESHOLD} "
+                f"consecutive operations on '{target}' across multiple tools. "
+                f"You appear to be stuck trying to fix this file. STOP working "
+                f"on '{target}' — leave it as-is and move on to the next task. "
+                f"Do NOT retry this file. The reviewer will validate what you "
+                f"have produced so far."
+            )
+
     return None
 
 
 def reset_loop_tracker() -> None:
     """Clear all loop detection state (call between evaluation runs)."""
     _call_history.clear()
+    _cross_tool_history.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +314,9 @@ def _read_file(workspace: Path, path: str) -> str:
 
 def _write_file(workspace: Path, path: str, content: str) -> str:
     """Write *content* to a file inside the workspace."""
+    loop_err = _check_loop(str(workspace), "write_file", path)
+    if loop_err:
+        return loop_err
     try:
         full_path = _safe_resolve(workspace, path)
     except ValueError as exc:
