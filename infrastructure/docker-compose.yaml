@@ -104,8 +104,11 @@ services:
     environment:
       - LANGFLOW_DATABASE_URL=postgresql://${POSTGRES_USER:-desmet}:${POSTGRES_PASSWORD:-desmet_pass}@postgres:5432/langflow
       - LANGFLOW_CONFIG_DIR=/app/langflow
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     volumes:
       - langflow_data:/app/langflow
+      - ${DESMET_RESULTS_DIR:-../results}:/desmet-results
     ports:
       - "7860:7860"
     depends_on:
