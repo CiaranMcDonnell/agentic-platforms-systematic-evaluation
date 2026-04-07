@@ -41,6 +41,9 @@ def create_stub_adapter(platform_id: str) -> type[BasePlatformAdapter]:
 
     class _StubAdapter(BasePlatformAdapter):
         __doc__ = f"Stub adapter for {_info.name}."
+        # Marker read by registry._is_implemented() to distinguish
+        # hand-written adapters from auto-generated stubs.
+        _is_desmet_stub = True
 
         @property
         def platform_info(self) -> PlatformInfo:
@@ -87,6 +90,9 @@ def create_visual_stub_adapter(
 
     class _VisualStubAdapter(VisualPlatformAdapter):
         __doc__ = f"Stub adapter for {_info.name}."
+        # Marker read by registry._is_implemented() to distinguish
+        # hand-written adapters from auto-generated stubs.
+        _is_desmet_stub = True
 
         def __init__(self, config: dict[str, Any] | None = None):
             super().__init__(

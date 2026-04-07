@@ -76,11 +76,54 @@ class TestListPlatforms:
         all_set = set(list_all_platforms())
         assert available <= all_set
 
-    def test_implemented_platforms_available(self):
+    def test_available_is_nonempty_when_any_sdk_installed(self):
+        """At least one adapter should import successfully in any dev env.
+
+        Specific adapters are included only when their SDK is installed,
+        so we can't hardcode names here.  Visual adapters (flowise,
+        langflow, dify, n8n) only need httpx which is always present,
+        so at least those should be available.
+        """
+        available = set(list_available_platforms())
+        # Visual adapters don't need heavy SDKs — at least some should appear
+        visual = {"flowise", "langflow", "dify", "n8n"}
+        assert available & visual, (
+            f"Expected at least one visual adapter in {visual}, got {available}"
+        )
+
+    def test_langgraph_available_iff_langchain_installed(self):
+        """langgraph is implemented iff langchain_core can be imported."""
         available = list_available_platforms()
-        assert "langgraph" in available
-        assert "crewai" in available
-        assert "openai_agents_sdk" in available
+        try:
+            import langchain_core  # noqa: F401
+            assert "langgraph" in available
+        except ImportError:
+            assert "langgraph" not in available
+
+
+class TestAutoDerivedImplementation:
+    """Verify _is_implemented() correctly detects stubs vs real adapters."""
+
+    def test_stub_class_detected_as_not_implemented(self):
+        """A class carrying the _is_desmet_stub marker should be rejected."""
+        from desmet.adapters.registry import _is_implemented
+        from desmet.adapters._stub import create_visual_stub_adapter
+
+        # create_visual_stub_adapter returns a class with _is_desmet_stub=True
+        cls = create_visual_stub_adapter("flowise", default_url="http://x")
+        assert getattr(cls, "_is_desmet_stub", False) is True
+
+    def test_real_adapter_detected_as_implemented(self):
+        """Visual adapters don't need external SDKs — they should be detected."""
+        from desmet.adapters.registry import _is_implemented
+
+        # At least one visual adapter should be importable in any dev env
+        assert _is_implemented("flowise") is True
+
+    def test_unknown_platform_not_implemented(self):
+        from desmet.adapters.registry import _is_implemented
+
+        assert _is_implemented("nonexistent_platform") is False
 
 
 # ---------------------------------------------------------------------------

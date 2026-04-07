@@ -1,0 +1,37 @@
+id: US-000
+title: Adapter Smoke Test
+description: >
+  A minimal task used to verify that a newly implemented platform adapter
+  can complete the full requirements → codegen → testing → deploy pipeline
+  without burning significant tokens.  Run this first when adding a new
+  framework to confirm tool calls, file writes, and validation all work.
+
+category: smoke_test
+difficulty: basic
+tags:
+  - smoke-test
+  - adapter-verification
+
+prompt_file: prompts/basic/US000_adapter_smoke_test.md
+gherkin_file: gherkin/basic/US000_adapter_smoke_test.feature
+
+target_files:
+  - hello.py
+
+expected_files_modified:
+  - hello.py
+
+acceptance_criteria:
+  - id: AC-000-1
+    description: hello.py exists with a hello() function
+    verification_method: automated
+
+  - id: AC-000-2
+    description: hello() returns the string "Hello, world!"
+    verification_method: test
+
+time_budget_seconds: 120
+max_iterations: 8
+
+version: "1.0"
+author: DESMET framework

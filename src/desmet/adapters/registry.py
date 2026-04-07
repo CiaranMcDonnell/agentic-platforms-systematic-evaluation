@@ -112,20 +112,49 @@ def get_adapter(
     return adapter_cls(config=config)
 
 
-# Platforms whose adapters are fully implemented (i.e. do not raise
-# NotImplementedError on their stage methods).  Update this set as more
-# adapters are completed.
-_IMPLEMENTED_PLATFORMS: frozenset[str] = frozenset({"langgraph", "crewai", "openai_agents_sdk", "microsoft_agent_framework", "google_adk", "n8n", "flowise", "langflow", "dify"})
+import functools
+
+
+@functools.lru_cache(maxsize=None)
+def _is_implemented(platform_id: str) -> bool:
+    """Check whether an adapter is a real implementation (not a stub).
+
+    An adapter is considered implemented when:
+
+    * Its module in :data:`ADAPTER_REGISTRY` can be imported without error.
+    * The registered class exists on that module.
+    * The class does not carry the ``_is_desmet_stub`` marker (set by
+      factories in :mod:`desmet.adapters._stub`).
+
+    Import failures (missing SDK, syntax error, etc.) mean the adapter
+    cannot actually be used, so it's not considered implemented.
+
+    Result is cached per-process — adapter availability does not change
+    at runtime.
+    """
+    if platform_id not in ADAPTER_REGISTRY:
+        return False
+    module_path, class_name = ADAPTER_REGISTRY[platform_id]
+    try:
+        module = importlib.import_module(module_path)
+    except Exception:
+        return False
+    adapter_cls = getattr(module, class_name, None)
+    if adapter_cls is None:
+        return False
+    return not getattr(adapter_cls, "_is_desmet_stub", False)
 
 
 def list_available_platforms() -> list[str]:
     """Return platform IDs whose adapters are fully implemented.
 
-    Only platforms in ``_IMPLEMENTED_PLATFORMS`` are returned; stub adapters
-    that raise ``NotImplementedError`` are excluded.  Update
-    ``_IMPLEMENTED_PLATFORMS`` above as more adapters are completed.
+    Uses :func:`_is_implemented` to detect implementation status by
+    inspecting the adapter class — stubs and unimportable adapters
+    are excluded automatically.  No hand-maintained list to keep in
+    sync: adding a new adapter only requires registering it in
+    :data:`ADAPTER_REGISTRY`.
     """
-    return sorted(ADAPTER_REGISTRY.keys() & _IMPLEMENTED_PLATFORMS)
+    return sorted(pid for pid in ADAPTER_REGISTRY if _is_implemented(pid))
 
 
 def list_all_platforms() -> list[str]:
