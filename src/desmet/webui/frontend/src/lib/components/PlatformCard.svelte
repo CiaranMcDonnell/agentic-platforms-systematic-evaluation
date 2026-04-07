@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import StatusBadge from './StatusBadge.svelte';
   import type { Platform, ImageDetail, ImageBuildMessage } from '../api';
   import { deleteImage, connectImageBuild } from '../api';
@@ -119,10 +120,15 @@
   }
 
   let busy = $derived(['starting', 'stopping', 'building', 'deleting'].includes(actionState));
+
+  onDestroy(() => {
+    buildWs?.close();
+    buildWs = null;
+  });
 </script>
 
 <div class="card" class:expanded>
-  <div class="card-header" onclick={() => expanded = !expanded} role="button" tabindex="0" onkeydown={(e) => { if (e.key === 'Enter') expanded = !expanded; }}>
+  <div class="card-header" onclick={() => expanded = !expanded} role="button" tabindex="0" onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); expanded = !expanded; } }}>
     <div style="flex: 1; min-width: 0;">
       <div style="display: flex; justify-content: space-between; align-items: flex-start;">
         <div>
@@ -252,6 +258,14 @@
     border: 1px solid rgba(239,68,68,0.25);
     font-size: 12px;
     color: #ef4444;
+    max-width: 100%;
+    max-height: 180px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overflow-wrap: break-word;
+    word-break: break-word;
+    white-space: pre-wrap;
+    line-height: 1.5;
   }
   .error-dismiss {
     background: none;

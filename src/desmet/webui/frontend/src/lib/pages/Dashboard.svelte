@@ -16,7 +16,7 @@
   let activeRuns = $derived(runs.filter(r => r.status === 'running').length);
   let recentRuns = $derived(runs.slice(-5).reverse());
 
-  let storyStats = $derived(() => {
+  let storyStats = $derived.by(() => {
     const byDiff: Record<string, number> = {};
     for (const s of store.stories) {
       byDiff[s.difficulty] = (byDiff[s.difficulty] || 0) + 1;
@@ -31,8 +31,8 @@
     infraAction = { ...infraAction, [serviceId]: action === 'up' ? 'starting' : 'stopping' };
     infraError = { ...infraError, [serviceId]: '' };
     try {
-      const res: any = action === 'up' ? await dockerUp(serviceId) : await dockerDown(serviceId);
-      if (res && !res.success) {
+      const res = action === 'up' ? await dockerUp(serviceId) : await dockerDown(serviceId);
+      if (!res.success) {
         infraAction = { ...infraAction, [serviceId]: 'error' };
         infraError = { ...infraError, [serviceId]: res.message || 'Failed' };
       } else {
@@ -51,7 +51,7 @@
       fetchRuns(),
       fetchDashboardStats(),
     ]);
-    runs = (rRes as any).runs || [];
+    runs = rRes.runs ?? [];
     stats = st;
   });
 
@@ -79,7 +79,7 @@
       <div class="stat-number">{store.stories.length}</div>
       <div class="stat-label">Stories</div>
       <div class="stat-sub">
-        {#each Object.entries(storyStats()) as [diff, count]}
+        {#each Object.entries(storyStats) as [diff, count]}
           <span class="stat-diff">
             <span class="diff-dot {diff}"></span>{count}
           </span>
@@ -189,7 +189,9 @@
               <div class="status-row">
                 <span class="status-dot {svc.status === 'running' ? 'dot-on' : 'dot-off'}"></span>
                 <span class="status-name">{svc.name}</span>
-                {#if infraAction[svc.id] === 'starting'}
+                {#if svc.managed}
+                  <span class="infra-btn" style="color: var(--text-2); font-size: 11px;">auto</span>
+                {:else if infraAction[svc.id] === 'starting'}
                   <span class="infra-btn infra-btn-busy"><span class="spinner"></span>Starting</span>
                 {:else if infraAction[svc.id] === 'stopping'}
                   <span class="infra-btn infra-btn-busy"><span class="spinner"></span>Stopping</span>
@@ -452,6 +454,14 @@
     border: 1px solid rgba(239,68,68,0.2);
     font-size: 11px;
     color: #ef4444;
+    max-width: 100%;
+    max-height: 160px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overflow-wrap: break-word;
+    word-break: break-word;
+    white-space: pre-wrap;
+    line-height: 1.5;
   }
   .infra-error-dismiss {
     background: none;
@@ -475,9 +485,6 @@
     border-radius: 50%;
     animation: spin 0.6s linear infinite;
     vertical-align: middle;
-  }
-  @keyframes spin {
-    to { transform: rotate(360deg); }
   }
 
   /* ── Run rows ───────────────────────── */
