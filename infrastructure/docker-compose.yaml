@@ -33,6 +33,7 @@ services:
       - dify
       - langflow
       - n8n
+      - visual-platforms
 
   # Postgres database bootstrap — creates per-platform databases.
   # Runs once after postgres is healthy, exits.  Idempotent: uses
@@ -96,7 +97,7 @@ services:
     profiles:
       - infrastructure
       - dify
-      - langflow
+      - visual-platforms
 
   # ============================================================================
   # PYTHON-BASED PLATFORMS (Development Environment — legacy)
