@@ -100,64 +100,50 @@
     return result;
   }
 
-  // Threshold for switching from layered DOWN to rectpacking. Compares against
-  // the direct child count, which equals the leaf count only because compound
-  // children always force the layered branch in pickLayoutOptions. Tunable.
-  const PACK_THRESHOLD = 6;
+  // Children come back from the Langfuse client in insertion order, which is
+  // not always temporal. Sort by start_time so the layered direction reflects
+  // real execution order.
+  function sortedChildren(obs: LangfuseObservation): LangfuseObservation[] {
+    return [...obs.children].sort((a, b) => {
+      const ta = a.start_time ? new Date(a.start_time).getTime() : 0;
+      const tb = b.start_time ? new Date(b.start_time).getTime() : 0;
+      return ta - tb;
+    });
+  }
 
-  // DFS positional walkers used for cross-cluster transition edges. They assume
-  // children are in temporal (start_time) order — currently true because the
-  // Langfuse client appends children as it iterates the observation list, which
-  // the API returns chronologically. If that assumption breaks, the cross-cluster
-  // arrows will point at the wrong leaves.
+  // DFS positional walkers used for cross-cluster transition edges. They walk
+  // children in chronological order so the result reflects what actually ran
+  // first / last under each agent.
   function firstLeaf(obs: LangfuseObservation): LangfuseObservation {
     let cur = obs;
-    while (cur.children.length > 0) cur = cur.children[0];
+    while (cur.children.length > 0) cur = sortedChildren(cur)[0];
     return cur;
   }
 
   function lastLeaf(obs: LangfuseObservation): LangfuseObservation {
     let cur = obs;
-    while (cur.children.length > 0) cur = cur.children[cur.children.length - 1];
+    while (cur.children.length > 0) {
+      const sorted = sortedChildren(cur);
+      cur = sorted[sorted.length - 1];
+    }
     return cur;
   }
 
-  // Single source of truth for the layered-vs-rectpacking decision. Both the
-  // ELK builder (pickLayoutOptions) and the inner-edge collector consult this
-  // so they cannot drift apart.
-  function isLayeredContainer(children: LangfuseObservation[]): boolean {
-    const hasCompoundChildren = children.some(c => c.children.length > 0);
-    return hasCompoundChildren || children.length <= PACK_THRESHOLD;
-  }
-
+  // Always lay out compound containers with ELK layered RIGHT + wrapping. The
+  // wrapping strategy lets long sequential chains break into multiple rows so
+  // the container stays roughly widescreen, while still drawing edges between
+  // consecutive observations so the user can see execution order.
   function pickLayoutOptions(
-    children: LangfuseObservation[],
+    _children: LangfuseObservation[],
     headerPad: number,
   ): Record<string, string> {
-    if (isLayeredContainer(children)) {
-      return {
-        'elk.algorithm': 'layered',
-        // RIGHT direction makes execution flow left-to-right inside each
-        // container, matching the horizontal root layout. Stacking DOWN
-        // produced tall narrow columns that wasted horizontal canvas
-        // space and forced fitView to zoom out.
-        'elk.direction': 'RIGHT',
-        'elk.spacing.nodeNode': '20',
-        'elk.layered.spacing.nodeNodeBetweenLayers': '30',
-        // Wrap long sequential chains into multiple rows to keep the
-        // container roughly widescreen rather than infinitely wide.
-        'elk.aspectRatio': '1.6',
-        'elk.layered.wrapping.strategy': 'MULTI_EDGE',
-        'elk.padding': `[top=${headerPad},left=24,bottom=24,right=24]`,
-      };
-    }
     return {
-      'elk.algorithm': 'rectpacking',
-      // Widescreen-ish target. If the bundled elkjs build doesn't honour
-      // elk.aspectRatio, fall back to elk.rectpacking.targetWidth (see spec
-      // risks section).
+      'elk.algorithm': 'layered',
+      'elk.direction': 'RIGHT',
+      'elk.spacing.nodeNode': '20',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '30',
       'elk.aspectRatio': '1.6',
-      'elk.spacing.nodeNode': '12',
+      'elk.layered.wrapping.strategy': 'MULTI_EDGE',
       'elk.padding': `[top=${headerPad},left=24,bottom=24,right=24]`,
     };
   }
@@ -194,21 +180,22 @@
       };
     }
 
-    // Compound node: recurse into children
+    // Compound node: recurse into children, in chronological order so the
+    // layered direction reflects real execution order.
     const headerPad = depth === 0 ? 48 : 32;
-    const layoutOptions = pickLayoutOptions(obs.children, headerPad);
-    const childNodes = obs.children.map(c => buildElkNode(c, depth + 1, nextEdgeId));
+    const sorted = sortedChildren(obs);
+    const layoutOptions = pickLayoutOptions(sorted, headerPad);
+    const childNodes = sorted.map(c => buildElkNode(c, depth + 1, nextEdgeId));
 
-    // Inner sequential edges only for layered containers (rectpacking gets none)
+    // Sequential edges between consecutive children. ELK's wrapping strategy
+    // uses these to lay out the snake-style flow inside the container.
     const edges: { id: string; sources: string[]; targets: string[] }[] = [];
-    if (isLayeredContainer(obs.children)) {
-      for (let i = 0; i < obs.children.length - 1; i++) {
-        edges.push({
-          id: nextEdgeId('inner'),
-          sources: [obs.children[i].id],
-          targets: [obs.children[i + 1].id],
-        });
-      }
+    for (let i = 0; i < sorted.length - 1; i++) {
+      edges.push({
+        id: nextEdgeId('inner'),
+        sources: [sorted[i].id],
+        targets: [sorted[i + 1].id],
+      });
     }
 
     return {
@@ -311,19 +298,19 @@
   function collectInnerEdges(obs: LangfuseObservation, out: Edge[]): void {
     if (obs.children.length === 0) return;
 
-    // Same decision the ELK builder made about this container
-    if (isLayeredContainer(obs.children)) {
-      for (let i = 0; i < obs.children.length - 1; i++) {
-        out.push({
-          id: `inner-${obs.children[i].id}-${obs.children[i + 1].id}`,
-          source: obs.children[i].id,
-          target: obs.children[i + 1].id,
-          style: 'stroke: #444; stroke-width: 1; opacity: 0.5;',
-        });
-      }
+    // Sort by start_time to match buildElkNode's child ordering — sequential
+    // edges only make sense if both sides agree on the order.
+    const sorted = sortedChildren(obs);
+    for (let i = 0; i < sorted.length - 1; i++) {
+      out.push({
+        id: `inner-${sorted[i].id}-${sorted[i + 1].id}`,
+        source: sorted[i].id,
+        target: sorted[i + 1].id,
+        style: 'stroke: #555; stroke-width: 1; opacity: 0.6;',
+      });
     }
 
-    for (const child of obs.children) {
+    for (const child of sorted) {
       collectInnerEdges(child, out);
     }
   }
