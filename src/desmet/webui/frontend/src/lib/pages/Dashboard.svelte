@@ -27,6 +27,23 @@
   // Infra health: count services where ALL containers are running
   let infraUp = $derived(store.infraServices.filter(s => s.status === 'running').length);
 
+  // LLM discovery summary: how many providers have keys set and how
+  // many models each exposes.  Drives the stats card that used to show
+  // a hardcoded 'Default Model' — replaced by live discovery numbers.
+  let llmProviderCount = $derived(
+    Object.keys(store.config?.available_models || {}).length,
+  );
+  let llmTotalModels = $derived(
+    Object.values(store.config?.available_models || {}).reduce(
+      (sum, list) => sum + list.length, 0,
+    ),
+  );
+  let llmProviderSummary = $derived(
+    Object.entries(store.config?.available_models || {})
+      .map(([p, list]) => `${p} ${list.length}`)
+      .join(' · '),
+  );
+
   async function handleInfra(action: string, serviceId: string) {
     infraAction = { ...infraAction, [serviceId]: action === 'up' ? 'starting' : 'stopping' };
     infraError = { ...infraError, [serviceId]: '' };
@@ -115,15 +132,21 @@
       </div>
     </div>
     <div class="stat-card">
-      <div class="stat-number" style="font-size: 18px; padding-top: 6px;">
+      <div class="stat-number">
         {#if store.config}
-          <span class="mono">{store.config.model}</span>
+          {llmTotalModels || '—'}
         {:else}
           —
         {/if}
       </div>
-      <div class="stat-label">Default Model</div>
-      <div class="stat-sub" style="text-transform: capitalize;">{store.config?.provider || '—'}</div>
+      <div class="stat-label">Models Available</div>
+      <div class="stat-sub">
+        {#if llmProviderCount === 0}
+          <span>no provider keys set</span>
+        {:else}
+          <span>{llmProviderSummary}</span>
+        {/if}
+      </div>
     </div>
   </div>
 
