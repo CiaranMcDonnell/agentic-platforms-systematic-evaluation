@@ -29,12 +29,51 @@ def _clear_cache() -> None:
     _CACHE["data"] = {}
 
 
+def _log_fetch_error(provider: str, status_code: int) -> None:
+    """Log a non-200 response at the appropriate severity.
+
+    401/403 means the user's key is wrong, expired, or lacks permission —
+    treat this as expected (info level) so the log doesn't fill with
+    warnings when a user has a placeholder value or a stale key.
+    5xx and other unexpected codes stay at warning level.
+    """
+    if status_code in (401, 403):
+        logger.info(
+            "%s models fetch returned %s — check your API key",
+            provider, status_code,
+        )
+    else:
+        logger.warning("%s models fetch returned %s", provider, status_code)
+
+
 # ── Per-provider fetchers ─────────────────────────────────────────────
+
+
+def _read_api_key(env_var: str) -> str | None:
+    """Read an API key from the environment, stripping whitespace.
+
+    Returns ``None`` when the variable is unset, empty, or obviously a
+    placeholder value (contains ``your-*-key-here``) — these would fail
+    with 401 and just pollute the logs.
+    """
+    raw = os.environ.get(env_var)
+    if not raw:
+        return None
+    key = raw.strip()
+    if not key:
+        return None
+    if "your-" in key and "-key-here" in key:
+        logger.info(
+            "%s looks like a placeholder (%s...) — treating as unset",
+            env_var, key[:16],
+        )
+        return None
+    return key
 
 
 def fetch_openai_models() -> list[str]:
     """Fetch available OpenAI models. Returns empty list on error or no key."""
-    api_key = os.environ.get("OPENAI_API_KEY")
+    api_key = _read_api_key("OPENAI_API_KEY")
     if not api_key:
         return []
     try:
@@ -44,7 +83,7 @@ def fetch_openai_models() -> list[str]:
             timeout=_HTTP_TIMEOUT,
         )
         if resp.status_code != 200:
-            logger.warning("OpenAI models fetch returned %s", resp.status_code)
+            _log_fetch_error("OpenAI", resp.status_code)
             return []
         data = resp.json().get("data", [])
         return sorted([m["id"] for m in data if "id" in m])
@@ -55,7 +94,7 @@ def fetch_openai_models() -> list[str]:
 
 def fetch_anthropic_models() -> list[str]:
     """Fetch available Anthropic models. Returns empty list on error or no key."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = _read_api_key("ANTHROPIC_API_KEY")
     if not api_key:
         return []
     try:
@@ -68,7 +107,7 @@ def fetch_anthropic_models() -> list[str]:
             timeout=_HTTP_TIMEOUT,
         )
         if resp.status_code != 200:
-            logger.warning("Anthropic models fetch returned %s", resp.status_code)
+            _log_fetch_error("Anthropic", resp.status_code)
             return []
         data = resp.json().get("data", [])
         return sorted([m["id"] for m in data if "id" in m])
@@ -79,7 +118,7 @@ def fetch_anthropic_models() -> list[str]:
 
 def fetch_openrouter_models() -> list[str]:
     """Fetch available OpenRouter models. Returns empty list on error or no key."""
-    api_key = os.environ.get("OPENROUTER_API_KEY")
+    api_key = _read_api_key("OPENROUTER_API_KEY")
     if not api_key:
         return []
     try:
@@ -89,7 +128,7 @@ def fetch_openrouter_models() -> list[str]:
             timeout=_HTTP_TIMEOUT,
         )
         if resp.status_code != 200:
-            logger.warning("OpenRouter models fetch returned %s", resp.status_code)
+            _log_fetch_error("OpenRouter", resp.status_code)
             return []
         data = resp.json().get("data", [])
         return sorted([m["id"] for m in data if "id" in m])
@@ -104,7 +143,7 @@ def fetch_google_models() -> list[str]:
     The Google API returns names like ``models/gemini-2.0-pro`` — strip
     the ``models/`` prefix.
     """
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    api_key = _read_api_key("GOOGLE_API_KEY")
     if not api_key:
         return []
     try:
@@ -113,7 +152,7 @@ def fetch_google_models() -> list[str]:
             timeout=_HTTP_TIMEOUT,
         )
         if resp.status_code != 200:
-            logger.warning("Google models fetch returned %s", resp.status_code)
+            _log_fetch_error("Google", resp.status_code)
             return []
         models = resp.json().get("models", [])
         ids: list[str] = []
@@ -143,19 +182,19 @@ def get_available_models() -> dict[str, list[str]]:
         return _CACHE["data"]
 
     result: dict[str, list[str]] = {}
-    if os.environ.get("OPENAI_API_KEY"):
+    if _read_api_key("OPENAI_API_KEY"):
         models = fetch_openai_models()
         if models:
             result["openai"] = models
-    if os.environ.get("ANTHROPIC_API_KEY"):
+    if _read_api_key("ANTHROPIC_API_KEY"):
         models = fetch_anthropic_models()
         if models:
             result["anthropic"] = models
-    if os.environ.get("OPENROUTER_API_KEY"):
+    if _read_api_key("OPENROUTER_API_KEY"):
         models = fetch_openrouter_models()
         if models:
             result["openrouter"] = models
-    if os.environ.get("GOOGLE_API_KEY"):
+    if _read_api_key("GOOGLE_API_KEY"):
         models = fetch_google_models()
         if models:
             result["google"] = models

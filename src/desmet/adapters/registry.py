@@ -119,15 +119,18 @@ import functools
 def _is_implemented(platform_id: str) -> bool:
     """Check whether an adapter is a real implementation (not a stub).
 
-    An adapter is considered implemented when:
+    An adapter is considered implemented when its registered class exists
+    and is not a stub (no ``_is_desmet_stub`` marker from
+    :mod:`desmet.adapters._stub`).
 
-    * Its module in :data:`ADAPTER_REGISTRY` can be imported without error.
-    * The registered class exists on that module.
-    * The class does not carry the ``_is_desmet_stub`` marker (set by
-      factories in :mod:`desmet.adapters._stub`).
-
-    Import failures (missing SDK, syntax error, etc.) mean the adapter
-    cannot actually be used, so it's not considered implemented.
+    **Missing SDK dependencies don't count as "not implemented"** — the
+    adapter code still exists, it just can't run in this particular
+    Python env.  Coded adapters (LangGraph, CrewAI, etc.) usually run
+    inside their Docker container (which has the SDK), so the webui's
+    base env doesn't need every SDK installed.  When an import fails
+    because an *external* SDK module (not a ``desmet.*`` module) is
+    missing, we assume the adapter is implemented and runnable via its
+    container image.
 
     Result is cached per-process — adapter availability does not change
     at runtime.
@@ -137,6 +140,14 @@ def _is_implemented(platform_id: str) -> bool:
     module_path, class_name = ADAPTER_REGISTRY[platform_id]
     try:
         module = importlib.import_module(module_path)
+    except ModuleNotFoundError as e:
+        # Distinguish "missing SDK" from "broken adapter code":
+        #   - missing ext. SDK (e.g. "langchain_core")  → implemented (containerised)
+        #   - missing desmet module (e.g. "desmet.foo") → broken, not implemented
+        missing = e.name or ""
+        if missing and not missing.startswith("desmet"):
+            return True
+        return False
     except Exception:
         return False
     adapter_cls = getattr(module, class_name, None)

@@ -91,14 +91,21 @@ class TestListPlatforms:
             f"Expected at least one visual adapter in {visual}, got {available}"
         )
 
-    def test_langgraph_available_iff_langchain_installed(self):
-        """langgraph is implemented iff langchain_core can be imported."""
+    def test_coded_adapters_available_even_without_sdks(self):
+        """Coded adapters show as available even when their SDK isn't in
+        the webui env — they run inside Docker containers that have the
+        SDK installed.  A ``ModuleNotFoundError`` for an external SDK
+        module should NOT exclude the adapter from the list.
+        """
         available = list_available_platforms()
-        try:
-            import langchain_core  # noqa: F401
-            assert "langgraph" in available
-        except ImportError:
-            assert "langgraph" not in available
+        # Coded adapters should all be present regardless of SDK availability
+        coded = {
+            "langgraph", "crewai", "openai_agents_sdk",
+            "microsoft_agent_framework", "google_adk",
+        }
+        assert coded <= set(available), (
+            f"Expected all coded adapters in list, missing: {coded - set(available)}"
+        )
 
 
 class TestAutoDerivedImplementation:
@@ -124,6 +131,48 @@ class TestAutoDerivedImplementation:
         from desmet.adapters.registry import _is_implemented
 
         assert _is_implemented("nonexistent_platform") is False
+
+    def test_missing_external_sdk_still_implemented(self, monkeypatch):
+        """If importing the adapter fails because an EXTERNAL SDK is
+        missing (e.g. langchain_core), the adapter is still considered
+        implemented — containerised runs work regardless.
+        """
+        import importlib
+        from desmet.adapters import registry
+
+        registry._is_implemented.cache_clear()
+
+        def fake_import(name):
+            if name == "desmet.adapters.langgraph":
+                raise ModuleNotFoundError(
+                    "No module named 'langchain_core'", name="langchain_core",
+                )
+            return importlib.import_module.__wrapped__(name) if hasattr(importlib.import_module, '__wrapped__') else importlib.import_module(name)
+
+        monkeypatch.setattr(registry.importlib, "import_module", fake_import)
+        assert registry._is_implemented("langgraph") is True
+        registry._is_implemented.cache_clear()
+
+    def test_missing_desmet_module_not_implemented(self, monkeypatch):
+        """If importing the adapter fails because a DESMET module is
+        missing (broken code, not a missing SDK), the adapter is NOT
+        considered implemented.
+        """
+        from desmet.adapters import registry
+
+        registry._is_implemented.cache_clear()
+
+        def fake_import(name):
+            if name == "desmet.adapters.langgraph":
+                raise ModuleNotFoundError(
+                    "No module named 'desmet.adapters._broken'",
+                    name="desmet.adapters._broken",
+                )
+            raise RuntimeError("unexpected call")
+
+        monkeypatch.setattr(registry.importlib, "import_module", fake_import)
+        assert registry._is_implemented("langgraph") is False
+        registry._is_implemented.cache_clear()
 
 
 # ---------------------------------------------------------------------------
