@@ -12,29 +12,75 @@
   let loading = $state(true);
   let error = $state('');
   let ws: WebSocket | null = null;
+  let statusPoll: ReturnType<typeof setInterval> | null = null;
+
+  // Terminal statuses — no further polling needed once we see one of these.
+  const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+
+  function stopStatusPoll() {
+    if (statusPoll) {
+      clearInterval(statusPoll);
+      statusPoll = null;
+    }
+  }
+
+  async function refreshStatus() {
+    try {
+      const data = await fetchRun(runId);
+      if (!data.error) {
+        // Update status / timestamps / summary but keep our streamed logs —
+        // the log buffer on the server may have been truncated and we have
+        // the live WebSocket data.
+        run = { ...data, logs: run?.logs ?? data.logs };
+      }
+      if (run && TERMINAL_STATUSES.has(run.status)) {
+        stopStatusPoll();
+      }
+    } catch {
+      // transient fetch errors — keep polling
+    }
+  }
 
   onMount(async () => {
     try {
       const data = await fetchRun(runId);
-      if ((data as any).error) {
-        error = (data as any).error;
+      if (data.error) {
+        error = data.error;
       } else {
         run = data;
-        logs = data.logs || [];
+        logs = data.logs ?? [];
       }
     } catch (e) {
       error = 'Failed to load run details';
     }
     loading = false;
+
     ws = connectRunLogs(runId, (line) => {
       logs = [...logs, line];
+      // If the backend emits its terminal marker, refresh immediately
+      // rather than waiting for the next poll tick.
+      if (line.startsWith('[DONE]') || line.startsWith('[CANCELLED]') || line.startsWith('[FAILED]')) {
+        refreshStatus();
+      }
     });
+
+    // Only poll while the run is in a non-terminal state.  The poll
+    // stops itself as soon as it sees a terminal status.
+    if (run && !TERMINAL_STATUSES.has(run.status)) {
+      statusPoll = setInterval(refreshStatus, 3000);
+    }
   });
 
-  onDestroy(() => ws?.close());
+  onDestroy(() => {
+    ws?.close();
+    stopStatusPoll();
+  });
 
   async function handleCancel() {
     await cancelRun(runId);
+    // Immediate refresh so the button disappears without waiting
+    // for the next poll tick.
+    await refreshStatus();
   }
 </script>
 
