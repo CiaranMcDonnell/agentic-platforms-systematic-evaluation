@@ -146,6 +146,57 @@
     };
   }
 
+  type ElkNode = {
+    id: string;
+    width?: number;
+    height?: number;
+    layoutOptions?: Record<string, string>;
+    children?: ElkNode[];
+    edges?: { id: string; sources: string[]; targets: string[] }[];
+  };
+
+  let elkEdgeCounter = 0;
+  function nextEdgeId(prefix: string): string {
+    return `${prefix}-${elkEdgeCounter++}`;
+  }
+
+  function buildElkNode(
+    obs: LangfuseObservation,
+    depth: number,
+  ): ElkNode {
+    if (obs.children.length === 0) {
+      return {
+        id: obs.id,
+        width: 200,
+        height: obs.model ? 56 : 44,
+      };
+    }
+
+    // Compound node: recurse into children
+    const headerPad = depth === 0 ? 48 : 32;
+    const layoutOptions = pickLayoutOptions(obs.children, headerPad);
+    const childNodes = obs.children.map(c => buildElkNode(c, depth + 1));
+
+    // Inner sequential edges only for layered containers (rectpacking gets none)
+    const edges: { id: string; sources: string[]; targets: string[] }[] = [];
+    if (layoutOptions['elk.algorithm'] === 'layered') {
+      for (let i = 0; i < obs.children.length - 1; i++) {
+        edges.push({
+          id: nextEdgeId('inner'),
+          sources: [obs.children[i].id],
+          targets: [obs.children[i + 1].id],
+        });
+      }
+    }
+
+    return {
+      id: obs.id,
+      layoutOptions,
+      children: childNodes,
+      edges,
+    };
+  }
+
   function obsStat(obs: LangfuseObservation): string {
     if (obs.type === 'generation' && obs.tokens.total > 0) {
       return `${obs.tokens.input.toLocaleString()}↑ ${obs.tokens.output.toLocaleString()}↓`;
@@ -178,67 +229,41 @@
         agentObs = rootObs;
       }
 
-      // Build observation index
+      // Build observation index (full DFS over each agent subtree)
       for (const agent of agentObs) {
         for (const obs of flattenObservations(agent)) {
           allObservations.set(obs.id, obs);
         }
       }
 
-      // Build ELK compound graph
+      // Build ELK compound graph recursively from the Langfuse tree
       const elk = new ELK();
-      const elkChildren: any[] = [];
-      const elkEdges: any[] = [];
-      let edgeIdx = 0;
+      elkEdgeCounter = 0;
 
-      for (const agent of agentObs) {
-        const flatObs = flattenObservations(agent);
-        const agentNode: any = {
-          id: `agent-${agent.name}`,
-          layoutOptions: {
-            'elk.algorithm': 'layered',
-            'elk.direction': 'DOWN',
-            'elk.spacing.nodeNode': '20',
-            'elk.layered.spacing.nodeNodeBetweenLayers': '30',
-            'elk.padding': '[top=48,left=24,bottom=24,right=24]',
-          },
-          children: flatObs.map(obs => ({
-            id: obs.id,
-            width: 200,
-            height: obs.model ? 56 : 44,
-          })),
-          edges: [] as any[],
-        };
+      const elkChildren: ElkNode[] = agentObs.map(agent => {
+        const node = buildElkNode(agent, 0);
+        // Force the agent-cluster id prefix so the visual style picker can
+        // distinguish top-level agent containers from nested compound observations.
+        node.id = `agent-${agent.name}`;
+        return node;
+      });
 
-        // Sequential edges within cluster
-        for (let i = 0; i < flatObs.length - 1; i++) {
-          agentNode.edges.push({
-            id: `inner-${edgeIdx++}`,
-            sources: [flatObs[i].id],
-            targets: [flatObs[i + 1].id],
-          });
-        }
-
-        elkChildren.push(agentNode);
-      }
-
-      // Cross-cluster edges (last obs of agent[i] → first obs of agent[i+1])
+      // Cross-cluster edges: last leaf of agent[i] -> first leaf of agent[i+1]
       const crossClusterEdges: { source: string; target: string; sourceAgent: string }[] = [];
+      const elkEdges: { id: string; sources: string[]; targets: string[] }[] = [];
       for (let i = 0; i < agentObs.length - 1; i++) {
-        const fromFlat = flattenObservations(agentObs[i]);
-        const toFlat = flattenObservations(agentObs[i + 1]);
-        if (fromFlat.length > 0 && toFlat.length > 0) {
-          crossClusterEdges.push({
-            source: fromFlat[fromFlat.length - 1].id,
-            target: toFlat[0].id,
-            sourceAgent: agentObs[i].name,
-          });
-          elkEdges.push({
-            id: `cross-${edgeIdx++}`,
-            sources: [fromFlat[fromFlat.length - 1].id],
-            targets: [toFlat[0].id],
-          });
-        }
+        const fromLeaf = lastLeaf(agentObs[i]);
+        const toLeaf = firstLeaf(agentObs[i + 1]);
+        crossClusterEdges.push({
+          source: fromLeaf.id,
+          target: toLeaf.id,
+          sourceAgent: agentObs[i].name,
+        });
+        elkEdges.push({
+          id: nextEdgeId('cross'),
+          sources: [fromLeaf.id],
+          targets: [toLeaf.id],
+        });
       }
 
       const elkGraph = {
