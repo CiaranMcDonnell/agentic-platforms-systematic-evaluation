@@ -1,14 +1,39 @@
-# Example Dockerfile for adding a new platform adapter.
+# Example Dockerfile for a platform that needs custom setup beyond the
+# default template.  Most platforms should NOT need this file at all —
+# the default Dockerfile.platform template handles the common case of
+# "base image + uv sync --extra <name>" for every coded adapter.
 #
-# 1. Copy this file to Dockerfile.<your-framework>
-# 2. Add your framework's dependencies as an optional extra in pyproject.toml
-# 3. Replace "your-framework" below with the extra name
-# 4. Build: docker build -f infrastructure/Dockerfile.<your-framework> -t desmet-eval-<your-framework>:1.0 .
+# Only create a Dockerfile.<your-platform-id> when your platform needs:
+#   - Different base image (e.g. a specific glibc version)
+#   - Extra system packages (e.g. libpq-dev, tesseract-ocr, ffmpeg)
+#   - Compilation of native extensions or custom binaries
+#   - Bespoke environment variables baked into the image
+#   - A multi-stage build for size or security
 #
-# The base image includes: Ubuntu 24.04, Python 3.11, uv, bun, git,
-# Mermaid CLI, and the desmet package with core dependencies.
+# When a Dockerfile.<platform-id> exists, container_runner picks it
+# automatically over the shared template.  Platform ID must match the
+# pip_extra field in config/platforms.yaml (e.g. Dockerfile.crewai,
+# Dockerfile.langgraph).
+#
+# Workflow:
+#   1. Copy this file to Dockerfile.<your-platform-id>
+#   2. Add your framework's dependencies as an optional extra in pyproject.toml
+#   3. Customise the image below
+#   4. Nothing else — container_runner picks it up automatically
 
 FROM desmet-eval-base:1.0
+
+# Example: install extra system packages your framework needs
+# RUN apt-get update && apt-get install -y --no-install-recommends \
+#       libpq-dev ffmpeg \
+#     && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
+
+# Install your framework's optional extra (required)
 RUN uv sync --extra your-framework --no-dev
+
+# Example: extra env vars specific to your framework
+# ENV MY_FRAMEWORK_CACHE_DIR=/tmp/my-framework
+
 WORKDIR /workspace

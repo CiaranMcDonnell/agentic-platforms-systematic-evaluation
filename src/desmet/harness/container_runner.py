@@ -45,9 +45,32 @@ def image_name(platform_id: str) -> str:
 
 
 def dockerfile_path(platform_id: str) -> Path:
-    """Return the Dockerfile path for a platform."""
+    """Return the Dockerfile path for a platform.
+
+    Prefers a platform-specific ``Dockerfile.<extra>`` if it exists
+    (escape hatch for platforms that need custom system packages,
+    a different base image, or compile steps).  Falls back to the
+    shared ``Dockerfile.platform`` template, which takes the
+    ``PLATFORM_EXTRA`` build-arg to install only that platform's
+    uv extra.
+    """
     suffix = get_platform_field(platform_id, "pip_extra", platform_id)
-    return _INFRA_DIR / f"Dockerfile.{suffix}"
+    specific = _INFRA_DIR / f"Dockerfile.{suffix}"
+    if specific.exists():
+        return specific
+    return _INFRA_DIR / "Dockerfile.platform"
+
+
+def _platform_build_args(platform_id: str) -> list[str]:
+    """Return ``--build-arg`` flags for a platform image build.
+
+    When using the shared ``Dockerfile.platform`` template, we pass
+    ``PLATFORM_EXTRA`` so the template knows which uv extra to install.
+    Platform-specific Dockerfiles don't need any build args, but it's
+    harmless to pass an unused one.
+    """
+    suffix = get_platform_field(platform_id, "pip_extra", platform_id)
+    return ["--build-arg", f"PLATFORM_EXTRA={suffix}"]
 
 
 def has_image(platform_id: str) -> bool:
@@ -100,6 +123,7 @@ def build_image(
     # Build platform image (FROM base + uv sync --extra <platform>)
     tag = image_name(platform_id)
     df = dockerfile_path(platform_id)
+    build_args = _platform_build_args(platform_id)
     if progress_callback:
         progress_callback(f"Building {tag}...")
 
@@ -108,6 +132,7 @@ def build_image(
             [
                 "docker", "build",
                 "-f", str(df),
+                *build_args,
                 "-t", tag,
                 str(project_root),
             ],
@@ -210,12 +235,14 @@ def build_image_streaming(
     # Build platform image
     tag = image_name(platform_id)
     df = dockerfile_path(platform_id)
+    build_args = _platform_build_args(platform_id)
     yield {"platform": platform_id, "phase": "platform", "line": f"Building {tag}..."}
 
     proc = subprocess.Popen(
         [
             "docker", "build",
             "-f", str(df),
+            *build_args,
             "-t", tag,
             str(project_root),
         ],

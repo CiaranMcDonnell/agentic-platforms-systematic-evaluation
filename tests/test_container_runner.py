@@ -31,17 +31,63 @@ class TestImageNaming:
 
 
 class TestDockerfilePath:
-    def test_path_for_langgraph(self):
+    """All coded platforms currently use the shared Dockerfile.platform
+    template.  If a platform-specific Dockerfile.<extra> file is added
+    later (escape hatch), dockerfile_path prefers it over the template.
+    """
+
+    def test_falls_back_to_template_for_langgraph(self):
         path = dockerfile_path("langgraph")
-        assert path.name == "Dockerfile.langgraph"
+        assert path.name == "Dockerfile.platform"
+        assert path.exists()
 
-    def test_path_for_crewai(self):
+    def test_falls_back_to_template_for_crewai(self):
         path = dockerfile_path("crewai")
-        assert path.name == "Dockerfile.crewai"
+        assert path.name == "Dockerfile.platform"
+        assert path.exists()
 
-    def test_path_for_google_adk(self):
+    def test_falls_back_to_template_for_google_adk(self):
         path = dockerfile_path("google_adk")
-        assert path.name == "Dockerfile.google-adk"
+        assert path.name == "Dockerfile.platform"
+        assert path.exists()
+
+    def test_prefers_platform_specific_dockerfile_when_present(self, tmp_path, monkeypatch):
+        """If Dockerfile.<extra> exists, dockerfile_path returns it instead of the template."""
+        import desmet.harness.container_runner as cr
+
+        # Point the infra dir at a temp directory with a fake specific dockerfile
+        fake_infra = tmp_path
+        (fake_infra / "Dockerfile.platform").write_text("FROM base")
+        (fake_infra / "Dockerfile.langgraph").write_text("FROM custom")
+
+        monkeypatch.setattr(cr, "_INFRA_DIR", fake_infra)
+        result = dockerfile_path("langgraph")
+        assert result.name == "Dockerfile.langgraph"
+
+    def test_returns_template_when_no_specific_dockerfile(self, tmp_path, monkeypatch):
+        import desmet.harness.container_runner as cr
+
+        fake_infra = tmp_path
+        (fake_infra / "Dockerfile.platform").write_text("FROM base")
+        monkeypatch.setattr(cr, "_INFRA_DIR", fake_infra)
+        result = dockerfile_path("langgraph")
+        assert result.name == "Dockerfile.platform"
+
+
+class TestPlatformBuildArgs:
+    def test_passes_platform_extra(self):
+        from desmet.harness.container_runner import _platform_build_args
+
+        args = _platform_build_args("langgraph")
+        assert "--build-arg" in args
+        assert "PLATFORM_EXTRA=langgraph" in args
+
+    def test_uses_pip_extra_not_platform_id(self):
+        """openai_agents_sdk has pip_extra=openai-agents (hyphenated)."""
+        from desmet.harness.container_runner import _platform_build_args
+
+        args = _platform_build_args("openai_agents_sdk")
+        assert "PLATFORM_EXTRA=openai-agents" in args
 
 
 class TestPlatformExtraMap:

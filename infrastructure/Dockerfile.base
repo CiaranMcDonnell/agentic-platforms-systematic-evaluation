@@ -64,10 +64,14 @@ RUN mkdir -p /home/agent/.config \
     && echo '{"args":["--no-sandbox","--disable-setuid-sandbox"]}' \
        > /home/agent/.config/puppeteer.json
 
+# Dependencies layer — cached until pyproject.toml or uv.lock change
 COPY --chown=agent:agent pyproject.toml uv.lock README.md /app/
+WORKDIR /app
+RUN uv sync --no-install-project --no-dev
+
+# Source + config layer — rebuilt on any code or config change
 COPY --chown=agent:agent src/ /app/src/
 COPY --chown=agent:agent config/ /app/config/
-WORKDIR /app
 RUN uv sync --no-dev
 
 

@@ -1,0 +1,32 @@
+# Default Dockerfile template for coded platform adapters.
+#
+# container_runner builds one image per platform from this template,
+# passing PLATFORM_EXTRA as a build arg.  Each image still has its own
+# isolated Python environment — only the platform's own `uv --extra` is
+# installed, so dependency trees never mix across platforms.
+#
+# Escape hatch: if a platform needs custom setup (extra system packages,
+# a different base image, compile steps, etc.) create a platform-specific
+# Dockerfile.<platform-id> and container_runner will prefer it over this
+# template.
+#
+# Build (manual):
+#   docker build -f infrastructure/Dockerfile.platform \
+#     --build-arg PLATFORM_EXTRA=<extra> \
+#     -t desmet-eval-<extra>:1.0 .
+#
+# The base image (desmet-eval-base:1.0) is built from Dockerfile.base and
+# includes Ubuntu 24.04, Python 3.11, uv, bun, git, Mermaid CLI, and the
+# desmet package source.
+
+FROM desmet-eval-base:1.0
+
+# Name of the uv optional extra to install (e.g. langgraph, crewai).
+# Required — build fails loudly if not provided.
+ARG PLATFORM_EXTRA
+RUN test -n "${PLATFORM_EXTRA}" || (echo "PLATFORM_EXTRA build-arg is required" && exit 1)
+
+WORKDIR /app
+RUN uv sync --extra ${PLATFORM_EXTRA} --no-dev
+
+WORKDIR /workspace
