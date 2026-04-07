@@ -17,6 +17,7 @@
     LangfuseObservation, LangfuseTraceDetail,
   } from '../api';
   import AgentNode from './AgentNode.svelte';
+  import AgentClusterNode from './AgentClusterNode.svelte';
   import ObservationNode from './ObservationNode.svelte';
   import TransitionEdge from './TransitionEdge.svelte';
   import TimelineCard from './TimelineCard.svelte';
@@ -49,6 +50,7 @@
 
   const nodeTypes: NodeTypes = {
     agent: AgentNode as any,
+    agentCluster: AgentClusterNode as any,
     observation: ObservationNode as any,
   };
   const edgeTypes: EdgeTypes = { transition: TransitionEdge as any };
@@ -231,15 +233,18 @@
     const hasChildren = (elkNode.children?.length ?? 0) > 0;
 
     if (isAgentContainer) {
-      // Top-level agent cluster (depth 0)
+      // Top-level agent cluster (depth 0). Uses the AgentClusterNode custom
+      // component instead of the built-in 'group' type so cross-cluster
+      // transition edges have real handles to anchor to.
       const agentTotalTokens = agentObsRoot
         ? flattenObservations(agentObsRoot).reduce((s, o) => s + o.tokens.total, 0)
         : 0;
       out.push({
         id: elkNode.id,
-        type: 'group',
+        type: 'agentCluster',
         position: { x: elkNode.x ?? 0, y: elkNode.y ?? 0 },
-        style: `width: ${elkNode.width}px; height: ${elkNode.height}px; background: rgba(255,255,255,0.02); border: 2px solid ${agentColor}; border-radius: 12px; box-sizing: content-box;`,
+        width: elkNode.width,
+        height: elkNode.height,
         data: {
           label: agentName.charAt(0).toUpperCase() + agentName.slice(1),
           color: agentColor,
