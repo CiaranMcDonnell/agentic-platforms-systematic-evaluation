@@ -72,13 +72,13 @@ Immediately after the leaf walkers from Step 1, add:
 
 - [ ] **Step 3: Verify the file still compiles**
 
-Run the dev server (or `bun run check` if available) to confirm there are no TypeScript or Svelte errors. The behaviour is unchanged at this point — only new helpers were added, none of them are called yet.
+Run a Vite build to catch TypeScript/Svelte errors. The behaviour is unchanged at this point — only new helpers were added, none of them are called yet.
 
 ```bash
-cd src/desmet/webui/frontend && bun run check
+cd src/desmet/webui/frontend && bun run build
 ```
 
-Expected: passes (no new errors). If `bun run check` is not configured, just confirm `bun run dev` starts cleanly.
+Expected: build succeeds with no new errors. Pre-existing warnings are OK; the goal is just "no new errors introduced by this task".
 
 - [ ] **Step 4: Commit**
 
@@ -217,10 +217,10 @@ But this also means observations stored in `allObservations` whose ID equals an 
 - [ ] **Step 3: Verify it compiles**
 
 ```bash
-cd src/desmet/webui/frontend && bun run check
+cd src/desmet/webui/frontend && bun run build
 ```
 
-Expected: passes.
+Expected: build succeeds with no new errors.
 
 - [ ] **Step 4: Commit**
 
@@ -353,10 +353,10 @@ Replace that whole block with:
 - [ ] **Step 3: Verify it compiles**
 
 ```bash
-cd src/desmet/webui/frontend && bun run check
+cd src/desmet/webui/frontend && bun run build
 ```
 
-Expected: passes.
+Expected: build succeeds with no new errors.
 
 - [ ] **Step 4: Commit**
 
@@ -420,10 +420,10 @@ Leave the cross-cluster edge construction (`for (const ce of crossClusterEdges)`
 - [ ] **Step 3: Verify it compiles**
 
 ```bash
-cd src/desmet/webui/frontend && bun run check
+cd src/desmet/webui/frontend && bun run build
 ```
 
-Expected: passes.
+Expected: build succeeds with no new errors.
 
 - [ ] **Step 4: Commit**
 
