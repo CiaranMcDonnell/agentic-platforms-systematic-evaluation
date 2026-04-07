@@ -120,13 +120,19 @@
     return cur;
   }
 
+  // Single source of truth for the layered-vs-rectpacking decision. Both the
+  // ELK builder (pickLayoutOptions) and the inner-edge collector consult this
+  // so they cannot drift apart.
+  function isLayeredContainer(children: LangfuseObservation[]): boolean {
+    const hasCompoundChildren = children.some(c => c.children.length > 0);
+    return hasCompoundChildren || children.length <= PACK_THRESHOLD;
+  }
+
   function pickLayoutOptions(
     children: LangfuseObservation[],
     headerPad: number,
   ): Record<string, string> {
-    const hasCompoundChildren = children.some(c => c.children.length > 0);
-    const useLayered = hasCompoundChildren || children.length <= PACK_THRESHOLD;
-    if (useLayered) {
+    if (isLayeredContainer(children)) {
       return {
         'elk.algorithm': 'layered',
         'elk.direction': 'DOWN',
@@ -185,7 +191,7 @@
 
     // Inner sequential edges only for layered containers (rectpacking gets none)
     const edges: { id: string; sources: string[]; targets: string[] }[] = [];
-    if (layoutOptions['elk.algorithm'] === 'layered') {
+    if (isLayeredContainer(obs.children)) {
       for (let i = 0; i < obs.children.length - 1; i++) {
         edges.push({
           id: nextEdgeId('inner'),
@@ -292,11 +298,8 @@
   function collectInnerEdges(obs: LangfuseObservation, out: Edge[]): void {
     if (obs.children.length === 0) return;
 
-    // Mirror the same decision the ELK builder made about this container
-    const layoutOptions = pickLayoutOptions(obs.children, 0);
-    const isLayered = layoutOptions['elk.algorithm'] === 'layered';
-
-    if (isLayered) {
+    // Same decision the ELK builder made about this container
+    if (isLayeredContainer(obs.children)) {
       for (let i = 0; i < obs.children.length - 1; i++) {
         out.push({
           id: `inner-${obs.children[i].id}-${obs.children[i + 1].id}`,
