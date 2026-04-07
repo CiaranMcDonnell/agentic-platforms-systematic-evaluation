@@ -5,6 +5,7 @@
   import { store } from '../data.svelte';
   import { currentPage, selectedRunId } from '../stores';
   import StatusBadge from '../components/StatusBadge.svelte';
+  import ModelPicker from '../components/ModelPicker.svelte';
 
   let recentRuns = $state<Run[]>([]);
 
@@ -12,8 +13,10 @@
   let selectedStories = $state<string[]>([]);
   let selectedDifficulties = $state<string[]>([]);
   let selectedStages = $state<string[]>([]);
-  let model = $state('');
-  let customModel = $state('');
+  const LAST_MODEL_KEY = 'desmet:last-model';
+  let model = $state<string>(
+    typeof localStorage !== 'undefined' ? (localStorage.getItem(LAST_MODEL_KEY) ?? '') : ''
+  );
   let dryRun = $state(false);
   let deployMode = $state<'local' | 'remote'>('local');
   let deployConfigured = $derived(store.config?.deploy_status === 'configured');
@@ -75,12 +78,15 @@
     submitting = true;
     startError = null;
     try {
+      if (typeof localStorage !== 'undefined' && model) {
+        localStorage.setItem(LAST_MODEL_KEY, model);
+      }
       const res = await startRun({
         platforms: selectedPlatforms,
         stories: selectedStories,
         difficulties: selectedDifficulties,
         stages: selectedStages,
-        model: (model === '__custom__' ? customModel : model) || null,
+        model: model || null,
         dry_run: dryRun,
         deploy_mode: deployMode,
       });
@@ -140,32 +146,12 @@
 
     <div class="filter-group" style="flex: 1; min-width: 200px;">
       <span class="filter-label">Model</span>
-      <select class="input" style="max-width: 320px;" bind:value={model}>
-        <option value="">Default ({store.config?.model})</option>
-        {#each store.config?.available_models || [] as m}<option value={m}>{m}</option>{/each}
-        <option value="__custom__">Custom model</option>
-      </select>
+      <ModelPicker
+        models={store.config?.available_models || {}}
+        bind:value={model}
+      />
     </div>
   </div>
-
-  {#if model === '__custom__'}
-    <div class="card" style="padding: 14px 20px;">
-      <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
-        <input
-          id="custom-model"
-          class="input"
-          type="text"
-          style="max-width: 360px;"
-          placeholder="e.g. claude-opus-4-6 or openai/gpt-5.4"
-          bind:value={customModel}
-        />
-        <div style="font-size: 12.5px; color: var(--text-2); line-height: 1.5;">
-          Native: <code style="font-size: 12px;">claude-opus-4-6</code>, <code style="font-size: 12px;">gpt-5.4-2026-03-05</code>
-          · OpenRouter: <code style="font-size: 12px;">vendor/model</code> — <a href="https://openrouter.ai/models" target="_blank" rel="noopener" style="color: var(--accent);">browse models</a>
-        </div>
-      </div>
-    </div>
-  {/if}
 
   <!-- ── Row 2: 3-column layout ─────────────────────────────── -->
   <div class="main-grid">
@@ -362,7 +348,7 @@
     <button
       class="btn btn-primary"
       style="padding: 10px 28px; font-size: 14px; border-radius: 8px; flex-shrink: 0;"
-      disabled={!selectedPlatforms.length || submitting}
+      disabled={!selectedPlatforms.length || !model || submitting}
       onclick={submit}
     >
       {submitting ? 'Starting...' : 'Start Benchmark Run'}
