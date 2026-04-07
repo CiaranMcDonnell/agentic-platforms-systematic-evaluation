@@ -46,21 +46,28 @@ services:
         condition: service_healthy
     environment:
       PGHOST: postgres
+      PGPORT: "5432"
       PGUSER: ${POSTGRES_USER:-desmet}
       PGPASSWORD: ${POSTGRES_PASSWORD:-desmet_pass}
+      # IMPORTANT: connect to the always-existing 'postgres' maintenance
+      # database.  Without this, psql defaults to a DB named after the
+      # user (e.g. 'desmet') which doesn't exist → connection error 2.
+      PGDATABASE: postgres
     entrypoint:
       - sh
       - -c
       - |
         set -e
         for db in dify dify_plugin n8n langflow; do
-          if ! psql -tAc "SELECT 1 FROM pg_database WHERE datname='$$db'" | grep -q 1; then
+          exists=$$(psql -tAc "SELECT 1 FROM pg_database WHERE datname='$$db'")
+          if [ "$$exists" = "1" ]; then
+            echo "Database already exists: $$db"
+          else
             echo "Creating database: $$db"
             psql -c "CREATE DATABASE \"$$db\""
-          else
-            echo "Database already exists: $$db"
           fi
         done
+        echo "postgres-init-databases: done"
     restart: "no"
     profiles:
       - infrastructure
