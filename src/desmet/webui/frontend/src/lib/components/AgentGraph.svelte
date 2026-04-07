@@ -135,9 +135,17 @@
     if (isLayeredContainer(children)) {
       return {
         'elk.algorithm': 'layered',
-        'elk.direction': 'DOWN',
+        // RIGHT direction makes execution flow left-to-right inside each
+        // container, matching the horizontal root layout. Stacking DOWN
+        // produced tall narrow columns that wasted horizontal canvas
+        // space and forced fitView to zoom out.
+        'elk.direction': 'RIGHT',
         'elk.spacing.nodeNode': '20',
         'elk.layered.spacing.nodeNodeBetweenLayers': '30',
+        // Wrap long sequential chains into multiple rows to keep the
+        // container roughly widescreen rather than infinitely wide.
+        'elk.aspectRatio': '1.6',
+        'elk.layered.wrapping.strategy': 'MULTI_EDGE',
         'elk.padding': `[top=${headerPad},left=24,bottom=24,right=24]`,
       };
     }
