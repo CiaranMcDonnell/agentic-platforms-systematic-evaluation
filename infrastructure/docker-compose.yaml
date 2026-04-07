@@ -134,7 +134,11 @@ services:
       - flowise_data:/root/.flowise
       - ${DESMET_RESULTS_DIR:-../results}:/desmet-results
     ports:
-      - "${FLOWISE_PORT:-3000}:3000"
+      # Host-side default is 3200 (not 3000) to avoid conflict with the
+      # many services that squat on :3000 (Grafana, Next.js dev, React
+      # dev, generic web dev).  Container-internal port stays 3000.
+      # Browse Flowise at http://localhost:3200 (or override).
+      - "${FLOWISE_PORT:-3200}:3000"
     restart: unless-stopped
     profiles:
       - flowise
@@ -153,7 +157,10 @@ services:
       - langflow_data:/app/langflow
       - ${DESMET_RESULTS_DIR:-../results}:/desmet-results
     ports:
-      - "${LANGFLOW_PORT:-7860}:7860"
+      # Host-side default is 7960 (not 7860) — the 7860 Gradio default
+      # is used by many local ML demos.  Container-internal port stays
+      # 7860.  Browse LangFlow at http://localhost:7960 (or override).
+      - "${LANGFLOW_PORT:-7960}:7860"
     depends_on:
       postgres:
         condition: service_healthy
@@ -184,7 +191,11 @@ services:
     image: langgenius/dify-api:latest
     container_name: desmet-dify-api
     ports:
-      - "${DIFY_API_PORT:-5001}:5001"
+      # Host-side default is 5401 (not 5001) — macOS AirPlay Receiver
+      # hijacks :5000-5001 on recent macOS, and it's a common Flask dev
+      # default on other systems.  Container-internal port stays 5001.
+      # Browse Dify API at http://localhost:5401 (or override).
+      - "${DIFY_API_PORT:-5401}:5001"
     environment: &dify-shared-env
       # Core
       MODE: api
@@ -238,10 +249,14 @@ services:
     image: langgenius/dify-web:latest
     container_name: desmet-dify-web
     ports:
-      - "${DIFY_WEB_PORT:-3001}:3000"
+      # Host-side default is 3401 (not 3001) — keep it away from the
+      # crowded :3000 neighbourhood.  Container-internal port stays 3000.
+      - "${DIFY_WEB_PORT:-3401}:3000"
     environment:
-      CONSOLE_API_URL: ${DIFY_CONSOLE_API_URL:-http://localhost:5001}
-      APP_API_URL: ${DIFY_APP_API_URL:-http://localhost:5001}
+      # Browser-side URLs — must point to the HOST-side API port, not
+      # the container-internal one.  Default matches DIFY_API_PORT above.
+      CONSOLE_API_URL: ${DIFY_CONSOLE_API_URL:-http://localhost:${DIFY_API_PORT:-5401}}
+      APP_API_URL: ${DIFY_APP_API_URL:-http://localhost:${DIFY_API_PORT:-5401}}
     depends_on:
       - dify-api
     restart: unless-stopped
