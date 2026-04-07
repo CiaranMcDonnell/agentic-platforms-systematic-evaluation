@@ -107,3 +107,57 @@ def test_deploy_remote_invalid_action(tmp_path):
             action="destroy",
         )
     assert "Error" in result
+
+
+class TestLocalDeployMode:
+    """Tests for deploy_mode=local routing."""
+
+    def test_local_push_is_noop(self, tmp_path):
+        with patch.dict(os.environ, {"DESMET_DEPLOY_MODE": "local"}):
+            result = _deploy_remote(
+                workspace=tmp_path,
+                platform_id="crewai",
+                story_id="US-001",
+                action="push",
+            )
+            assert "local" in result.lower() or "available" in result.lower()
+
+    def test_local_restart_calls_docker_compose(self, tmp_path):
+        with patch.dict(os.environ, {"DESMET_DEPLOY_MODE": "local"}), \
+             patch("desmet.adapters._tools.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="started", stderr="", returncode=0)
+            result = _deploy_remote(
+                workspace=tmp_path,
+                platform_id="crewai",
+                story_id="US-001",
+                action="restart",
+            )
+            assert mock_run.called
+            cmd_str = str(mock_run.call_args)
+            assert "docker" in cmd_str or "compose" in cmd_str
+
+    def test_local_health_check_curls_localhost(self, tmp_path):
+        with patch.dict(os.environ, {"DESMET_DEPLOY_MODE": "local"}), \
+             patch("desmet.adapters._tools.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout='{"status":"ok"}', stderr="", returncode=0)
+            result = _deploy_remote(
+                workspace=tmp_path,
+                platform_id="crewai",
+                story_id="US-001",
+                action="health_check",
+            )
+            assert mock_run.called
+            port = _deploy_port("crewai", "US-001")
+            cmd_str = str(mock_run.call_args)
+            assert str(port) in cmd_str
+            assert "localhost" in cmd_str or "127.0.0.1" in cmd_str
+
+    def test_local_invalid_action_returns_error(self, tmp_path):
+        with patch.dict(os.environ, {"DESMET_DEPLOY_MODE": "local"}):
+            result = _deploy_remote(
+                workspace=tmp_path,
+                platform_id="crewai",
+                story_id="US-001",
+                action="destroy",
+            )
+            assert "Error" in result

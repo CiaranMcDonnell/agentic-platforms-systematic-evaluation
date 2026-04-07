@@ -250,6 +250,7 @@ class RunRequest(BaseModel):
     model: str | None = None
     results_dir: str | None = None
     repeats: int = 1
+    deploy_mode: str = "local"
 
 
 class DockerAction(BaseModel):
@@ -777,6 +778,7 @@ async def _execute_run(run: RunState, req: RunRequest):
             resolved_stage = req.stages[0] if len(req.stages) == 1 else None
         config = RunnerConfig(dry_run=req.dry_run, verbose=True, stage=resolved_stage)
         config.repeats = req.repeats
+        config.deploy_mode = req.deploy_mode
         if req.results_dir:
             config.results_dir = Path(req.results_dir)
             config.logs_dir = Path(req.results_dir) / "logs"

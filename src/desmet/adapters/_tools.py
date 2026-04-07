@@ -10,7 +10,9 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shlex
 import subprocess
+from collections import defaultdict
 from collections.abc import Sequence
 from enum import Enum
 from pathlib import Path
@@ -61,18 +63,169 @@ def _safe_resolve(workspace: Path, path: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Loop detection — catches agents repeating low-value tool calls
+# ---------------------------------------------------------------------------
+
+# Window size: how many recent calls to inspect for loop patterns.
+_LOOP_WINDOW = 8
+
+# Consecutive-identical threshold (stricter, fires faster).
+_CONSECUTIVE_THRESHOLD = 4
+
+# Shell commands that produce no meaningful progress.  When the entire
+# window consists of these, the agent is stuck exploring rather than
+# doing real work.
+_RECON_RE = re.compile(
+    r"^\s*(?:/\S+/)?"  # optional path prefix (/bin/, /usr/bin/, …)
+    r"(?:ls|dir|pwd|echo|date|id|whoami|true|hostname|uname"
+    r"|cat|head|tail|wc|file|stat|which|type)\b"
+)
+
+# Per-workspace:tool sliding window of recent call keys.
+_call_history: dict[str, list[str]] = defaultdict(list)
+
+
+def _check_loop(workspace: str, tool_name: str, call_key: str) -> str | None:
+    """Return an error string if a loop is detected, else ``None``.
+
+    Detects two patterns:
+    1. **Consecutive identical** — the same call_key N times in a row.
+    2. **Reconnaissance spin** — the last *window* calls are all low-value
+       shell commands (``ls``, ``pwd``, ``echo``, …) with low diversity,
+       meaning the agent is cycling instead of making progress.
+    """
+    tracker_key = f"{workspace}:{tool_name}"
+    history = _call_history[tracker_key]
+    history.append(call_key)
+
+    # Keep only the last _LOOP_WINDOW entries
+    if len(history) > _LOOP_WINDOW:
+        _call_history[tracker_key] = history[-_LOOP_WINDOW:]
+        history = _call_history[tracker_key]
+
+    # ── Check 1: consecutive identical ────────────────────────────────
+    tail = history[-_CONSECUTIVE_THRESHOLD:]
+    if len(tail) == _CONSECUTIVE_THRESHOLD and len(set(tail)) == 1:
+        _call_history[tracker_key] = []
+        return (
+            f"LOOP DETECTED: '{tool_name}' was called {_CONSECUTIVE_THRESHOLD} "
+            f"times in a row with identical arguments. You are stuck in a loop. "
+            f"STOP repeating this action and try a completely different approach. "
+            f"If a command keeps failing, skip it and move on to the next task."
+        )
+
+    # ── Check 2: reconnaissance spin (execute_shell only) ─────────────
+    if tool_name == "execute_shell" and len(history) >= _LOOP_WINDOW:
+        window = history[-_LOOP_WINDOW:]
+        all_recon = all(_RECON_RE.match(cmd) for cmd in window)
+        low_diversity = len(set(window)) <= 3
+        if all_recon and low_diversity:
+            _call_history[tracker_key] = []
+            return (
+                f"LOOP DETECTED: the last {_LOOP_WINDOW} shell commands were all "
+                f"reconnaissance commands (ls, pwd, echo, …) with no productive "
+                f"work. You are stuck in a loop. STOP running exploratory "
+                f"commands and attempt the actual task (e.g. render "
+                f"diagrams, write files). Once done, stop and let the "
+                f"reviewer validate."
+            )
+
+    return None
+
+
+def reset_loop_tracker() -> None:
+    """Clear all loop detection state (call between evaluation runs)."""
+    _call_history.clear()
+
+
+# ---------------------------------------------------------------------------
+# Stage-specific shell command filtering
+# ---------------------------------------------------------------------------
+
+# Commands allowed during the requirements stage (allowlist).
+# Only stages listed here are filtered; unlisted stages have unrestricted shell.
+_REQUIREMENTS_SHELL_ALLOW = frozenset({
+    # Filesystem inspection
+    "ls", "cat", "head", "tail", "find", "grep", "egrep", "fgrep",
+    "wc", "file", "stat", "tree", "diff", "sort", "uniq",
+    "realpath", "readlink", "basename", "dirname",
+    # File management
+    "mkdir", "cp", "mv", "rm", "touch", "chmod",
+    # Diagram rendering
+    "mmdc",
+    # Shell basics
+    "echo", "printf", "pwd", "which", "type", "true", "false",
+    "test", "[", "env", "date",
+    # Text processing
+    "sed", "awk", "cut", "tr", "tee", "xargs",
+})
+
+_STAGE_SHELL_ALLOWLIST: dict[str, frozenset[str]] = {
+    "requirements": _REQUIREMENTS_SHELL_ALLOW,
+}
+
+_CMD_SPLIT_RE = re.compile(r"[|;&]+")
+
+
+def _extract_command_names(command: str) -> list[str]:
+    """Extract command names from a (possibly piped/chained) shell command."""
+    parts = _CMD_SPLIT_RE.split(command)
+    names: list[str] = []
+    for part in parts:
+        tokens = part.strip().split()
+        if not tokens:
+            continue
+        # Skip leading env-var assignments (FOO=bar cmd ...)
+        idx = 0
+        while idx < len(tokens) and re.match(r"^[A-Za-z_]\w*=", tokens[idx]):
+            idx += 1
+        if idx < len(tokens):
+            # Strip path prefix (/usr/bin/mmdc → mmdc)
+            names.append(tokens[idx].rsplit("/", 1)[-1])
+    return names
+
+
+def _check_shell_stage(stage: str | None, command: str) -> str | None:
+    """Return an error string if *command* is blocked for *stage*, else ``None``."""
+    if stage is None:
+        return None
+    allowlist = _STAGE_SHELL_ALLOWLIST.get(stage)
+    if allowlist is None:
+        return None
+    cmd_names = _extract_command_names(command)
+    blocked = [c for c in cmd_names if c not in allowlist]
+    if not blocked:
+        return None
+    return (
+        f"BLOCKED: Command{'s' if len(blocked) > 1 else ''} "
+        f"{', '.join(repr(c) for c in blocked)} not permitted during "
+        f"the {stage} stage. Only documentation and diagram tools are "
+        f"allowed (e.g. mmdc, mkdir, cat). Use write_file to create "
+        f"files directly."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Core tool implementations (format-agnostic)
 # ---------------------------------------------------------------------------
 
+_MAX_READ_SIZE = 5_242_880  # 5 MB
+
+
 def _read_file(workspace: Path, path: str) -> str:
     """Read a file inside the workspace."""
+    loop_err = _check_loop(str(workspace), "read_file", path)
+    if loop_err:
+        return loop_err
     try:
         full_path = _safe_resolve(workspace, path)
     except ValueError as exc:
         return f"Error: {exc}"
-    if full_path.exists():
-        return full_path.read_text(encoding="utf-8")
-    return f"File not found: {path}"
+    if not full_path.exists():
+        return f"File not found: {path}"
+    if full_path.stat().st_size > _MAX_READ_SIZE:
+        return f"Error: file too large ({full_path.stat().st_size} bytes, limit {_MAX_READ_SIZE})"
+    return full_path.read_text(encoding="utf-8")
 
 
 def _write_file(workspace: Path, path: str, content: str) -> str:
@@ -88,6 +241,9 @@ def _write_file(workspace: Path, path: str, content: str) -> str:
 
 def _list_directory(workspace: Path, path: str = ".") -> str:
     """List directory entries, sorted alphabetically."""
+    loop_err = _check_loop(str(workspace), "list_directory", path)
+    if loop_err:
+        return loop_err
     try:
         full_path = _safe_resolve(workspace, path)
     except ValueError as exc:
@@ -100,144 +256,25 @@ def _list_directory(workspace: Path, path: str = ".") -> str:
     return f"Directory not found: {path}"
 
 
-_EVAL_IMAGE = os.environ.get("DESMET_EVAL_IMAGE", "desmet-eval-env:1.0")
 _SHELL_TIMEOUT = 120  # mermaid rendering w/ Puppeteer needs >30s
 
-# Container registry: maps container name → True while running.
-# Containers are started lazily on first execute_shell call and cleaned
-# up by stop_eval_container().
-_running_containers: dict[str, bool] = {}
 
+def _execute_shell(workspace: Path, command: str, *, stage: str | None = None) -> str:
+    """Run a shell command locally inside the workspace.
 
-def _eval_container_name(platform_id: str | None, story_id: str | None) -> str:
-    """Deterministic container name for a platform+story evaluation run."""
-    p = platform_id or "default"
-    s = story_id or "default"
-    return f"desmet-eval-{p}-{s}"
-
-
-def _ensure_eval_container(
-    container_name: str, workspace: Path
-) -> bool:
-    """Start the eval container if not already running.
-
-    Returns True if the container is ready, False on failure.
+    The agent already runs inside a per-platform Docker container
+    (started by ``container_runner``), so commands execute directly —
+    no nested container needed.
     """
-    if _running_containers.get(container_name):
-        return True
+    # Stage-based command filtering (requirements = allowlist only)
+    stage_err = _check_shell_stage(stage, command)
+    if stage_err:
+        return stage_err
 
-    # Check if already running (from a previous invocation)
-    try:
-        probe = subprocess.run(
-            ["docker", "inspect", "-f", "{{.State.Running}}", container_name],
-            capture_output=True, text=True, timeout=10,
-        )
-        if probe.returncode == 0 and "true" in probe.stdout.lower():
-            _running_containers[container_name] = True
-            return True
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
+    loop_err = _check_loop(str(workspace), "execute_shell", command)
+    if loop_err:
+        return loop_err
 
-    # Start container: mount workspace at /workspace, run bash -c 'sleep infinity'
-    workspace_abs = str(workspace.resolve()).replace("\\", "/")
-
-    # Build the docker run command.  On Windows (Git Bash / MSYS), path
-    # arguments like /workspace are mangled to C:/Program Files/Git/workspace.
-    # Setting MSYS_NO_PATHCONV=1 in the subprocess env disables this.
-    env = {**os.environ, "MSYS_NO_PATHCONV": "1"}
-
-    run_cmd = [
-        "docker", "run", "-d",
-        "--name", container_name,
-        "-v", f"{workspace_abs}:/workspace",
-        "-w", "/workspace",
-        _EVAL_IMAGE,
-        "bash", "-c", "sleep infinity",
-    ]
-    try:
-        result = subprocess.run(
-            run_cmd, capture_output=True, text=True, timeout=60, env=env,
-        )
-        if result.returncode != 0:
-            # Container name might exist but be stopped — remove and retry
-            subprocess.run(
-                ["docker", "rm", "-f", container_name],
-                capture_output=True, timeout=10,
-            )
-            result = subprocess.run(
-                run_cmd, capture_output=True, text=True, timeout=60, env=env,
-            )
-        if result.returncode == 0:
-            _running_containers[container_name] = True
-            return True
-        return False
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
-
-
-def stop_eval_container(
-    platform_id: str | None = None,
-    story_id: str | None = None,
-    container_name: str | None = None,
-) -> None:
-    """Stop and remove an eval container.
-
-    Call with either ``container_name`` directly or ``platform_id`` +
-    ``story_id`` to derive it.
-    """
-    name = container_name or _eval_container_name(platform_id, story_id)
-    _running_containers.pop(name, None)
-    try:
-        subprocess.run(
-            ["docker", "rm", "-f", name],
-            capture_output=True, timeout=15,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-
-
-def _execute_shell(
-    workspace: Path,
-    command: str,
-    *,
-    container_name: str | None = None,
-) -> str:
-    """Run a shell command, either inside a Docker eval container or locally.
-
-    When ``container_name`` is provided, the command runs via
-    ``docker exec`` inside the ``desmet-eval-env`` container (started
-    lazily).  The workspace is bind-mounted at ``/workspace`` so all
-    file-system tools and shell commands see the same files.
-
-    When ``container_name`` is ``None``, falls back to local execution
-    (Git Bash on Windows, ``/bin/bash`` on Unix).
-    """
-    if container_name is not None:
-        if not _ensure_eval_container(container_name, workspace):
-            return "Error: failed to start eval container"
-        try:
-            env = {**os.environ, "MSYS_NO_PATHCONV": "1"}
-            result = subprocess.run(
-                [
-                    "docker", "exec", container_name,
-                    "bash", "-c", command,
-                ],
-                capture_output=True, text=True,
-                timeout=_SHELL_TIMEOUT,
-                env=env,
-            )
-            output = result.stdout + result.stderr
-            # Cap output to 2000 chars so LLMs see the key error message
-            # instead of drowning in stack traces
-            if len(output) > 2000:
-                output = output[:1000] + "\n...(truncated)...\n" + output[-800:]
-            return output if output else "(no output)"
-        except subprocess.TimeoutExpired:
-            return "Command timed out"
-        except Exception as exc:
-            return f"Error: {exc}"
-
-    # Local fallback
     try:
         result = subprocess.run(
             command,
@@ -248,6 +285,8 @@ def _execute_shell(
             timeout=_SHELL_TIMEOUT,
         )
         output = result.stdout + result.stderr
+        if len(output) > 2000:
+            output = output[:1000] + "\n...(truncated)...\n" + output[-800:]
         return output if output else "(no output)"
     except subprocess.TimeoutExpired:
         return "Command timed out"
@@ -257,6 +296,9 @@ def _execute_shell(
 
 def _search_code(workspace: Path, pattern: str, path: str = ".") -> str:
     """Search files for lines matching *pattern*, capped at 100 results."""
+    loop_err = _check_loop(str(workspace), "search_code", f"{pattern}:{path}")
+    if loop_err:
+        return loop_err
     try:
         full_path = _safe_resolve(workspace, path)
     except ValueError as exc:
@@ -299,9 +341,22 @@ def _search_code(workspace: Path, pattern: str, path: str = ".") -> str:
 
 
 def _deploy_port(platform_id: str, story_id: str) -> int:
-    """Deterministic port from platform_id + story_id (range 9000-9999)."""
-    h = int(hashlib.sha256(f"{platform_id}/{story_id}".encode()).hexdigest(), 16)
-    return 9000 + (h % 1000)
+    """Return the deploy port for *platform_id*.
+
+    Reads ``deploy_port`` from ``config/platforms.yaml``.  Falls back to
+    a hash-based port in 8100-8199 when the config field is missing.
+    The *story_id* parameter is retained for API compatibility but is
+    ignored — each platform gets one fixed port matching the nginx
+    reverse-proxy configuration.
+    """
+    from desmet.platforms_config import get_platform_field
+
+    configured = get_platform_field(platform_id, "deploy_port")
+    if configured is not None:
+        return int(configured)
+    # Fallback: deterministic per-platform port outside infrastructure range
+    h = int(hashlib.sha256(platform_id.encode()).hexdigest(), 16)
+    return 8100 + (h % 100)
 
 
 def _git_push_url(repo: str) -> str:
@@ -337,6 +392,72 @@ def _git_push_url(repo: str) -> str:
     return https_url
 
 
+def _deploy_local(
+    workspace: Path,
+    platform_id: str,
+    story_id: str,
+    action: str,
+    url: str = "/health",
+) -> str:
+    """Execute a local deploy operation via Docker Compose."""
+    port = _deploy_port(platform_id, story_id)
+
+    if action == "push":
+        return "Local mode — workspace is already available, no push needed."
+
+    if action == "restart":
+        compose_project = f"{platform_id}-{story_id}".lower()
+        env_file = workspace / ".env"
+        existing = env_file.read_text() if env_file.exists() else ""
+        lines = [
+            ln for ln in existing.splitlines()
+            if not ln.startswith("COMPOSE_PROJECT_NAME=")
+            and not ln.startswith("PORT=")
+        ]
+        lines.append(f"COMPOSE_PROJECT_NAME={compose_project}")
+        lines.append(f"PORT={port}")
+        env_file.write_text("\n".join(lines) + "\n")
+
+        try:
+            result = subprocess.run(
+                ["docker", "compose", "up", "-d", "--build"],
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            output = result.stdout + result.stderr
+            if result.returncode != 0:
+                return f"Error: docker compose failed: {output}"
+            return output if output else "Started successfully"
+        except subprocess.TimeoutExpired:
+            return "Error: docker compose timed out"
+        except FileNotFoundError:
+            return "Error: docker command not found"
+        except Exception as exc:
+            return f"Error: {exc}"
+
+    if action == "health_check":
+        try:
+            result = subprocess.run(
+                ["curl", "-sf", f"http://localhost:{port}{url}"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                return f"Health check failed (exit {result.returncode}): {result.stderr}"
+            return result.stdout if result.stdout else "OK"
+        except subprocess.TimeoutExpired:
+            return "Error: health check timed out"
+        except FileNotFoundError:
+            return "Error: curl command not found"
+        except Exception as exc:
+            return f"Error: {exc}"
+
+    return f"Error: unknown action '{action}'. Valid: push, restart, health_check"
+
+
 def _deploy_remote(
     workspace: Path,
     platform_id: str,
@@ -345,6 +466,11 @@ def _deploy_remote(
     url: str = "/health",
 ) -> str:
     """Execute a remote deploy operation via SSH + git."""
+    # ── Local deploy mode ──────────────────────────────────────────────
+    deploy_mode = os.environ.get("DESMET_DEPLOY_MODE", "remote")
+    if deploy_mode == "local":
+        return _deploy_local(workspace, platform_id, story_id, action, url)
+
     host = os.environ.get("DEPLOY_HOST")
     ssh_port = os.environ.get("DEPLOY_PORT", "22")
     user = os.environ.get("DEPLOY_USER")
@@ -358,9 +484,7 @@ def _deploy_remote(
     branch = f"{platform_id}/{story_id}"
     remote_path = f"{base}/{platform_id}/{story_id}"
     port = _deploy_port(platform_id, story_id)
-    ssh_opts = f"ssh -i {key} -p {ssh_port} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
-
-    timeouts = {"push": 120, "restart": 180, "health_check": 30}
+    ssh_opts = f"ssh -i {shlex.quote(key)} -p {shlex.quote(ssh_port)} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
 
     if action == "push":
         # Stage, commit, and push workspace to the deploy repo branch.
@@ -404,22 +528,27 @@ def _deploy_remote(
         #   docker compose --project-directory <path> <subcommand>
         import subprocess as _sp
 
+        q_branch = shlex.quote(branch)
+        q_remote = shlex.quote(remote_path)
+        q_repo = shlex.quote(deploy_repo)
+        q_user_host = f"{shlex.quote(user)}@{shlex.quote(host)}"
+
         # Step 1: git clone (first deploy) or cd && git pull (subsequent)
         clone_result = _sp.run(
-            f'{ssh_opts} {user}@{host} '
-            f'"git clone -b {branch} {deploy_repo} {remote_path}"',
+            f'{ssh_opts} {q_user_host} '
+            f'"git clone -b {q_branch} {q_repo} {q_remote}"',
             shell=True, capture_output=True, text=True, timeout=120,
         )
         if clone_result.returncode != 0:
             # Already cloned — pull latest
             _sp.run(
-                f'{ssh_opts} {user}@{host} '
-                f'"cd {remote_path} && git fetch origin {branch}"',
+                f'{ssh_opts} {q_user_host} '
+                f'"cd {q_remote} && git fetch origin {q_branch}"',
                 shell=True, capture_output=True, text=True, timeout=60,
             )
             _sp.run(
-                f'{ssh_opts} {user}@{host} '
-                f'"cd {remote_path} && git pull origin {branch}"',
+                f'{ssh_opts} {q_user_host} '
+                f'"cd {q_remote} && git pull origin {q_branch}"',
                 shell=True, capture_output=True, text=True, timeout=60,
             )
 
@@ -448,25 +577,26 @@ def _deploy_remote(
             ["git", "commit", "-m", "add compose env"], cwd=workspace,
             capture_output=True, timeout=10,
         )
-        push_url = _git_push_url(deploy_repo)
         _sp.run(
             ["git", "push", "deploy", f"HEAD:{branch}", "--force"],
             cwd=workspace, capture_output=True, timeout=60,
         )
         # Pull on server
         _sp.run(
-            f'{ssh_opts} {user}@{host} "cd {remote_path} && git pull origin {branch}"',
+            f'{ssh_opts} {q_user_host} "cd {q_remote} && git pull origin {q_branch}"',
             shell=True, capture_output=True, text=True, timeout=60,
         )
 
         cmd = (
-            f'{ssh_opts} {user}@{host} '
-            f'"cd {remote_path} && docker compose up -d --build"'
+            f'{ssh_opts} {q_user_host} '
+            f'"cd {q_remote} && docker compose up -d --build"'
         )
     elif action == "health_check":
+        q_url = shlex.quote(url)
+        q_user_host = f"{shlex.quote(user)}@{shlex.quote(host)}"
         cmd = (
-            f'{ssh_opts} {user}@{host} '
-            f'"curl -sf http://localhost:{port}{url}"'
+            f'{ssh_opts} {q_user_host} '
+            f'"curl -sf http://localhost:{port}{q_url}"'
         )
     else:
         return f"Error: unknown action '{action}'. Use push, restart, or health_check."
@@ -525,7 +655,6 @@ def _check_completion(workspace: Path, stage: str) -> tuple[bool, str]:
 def _build_callable_tools(workspace: Path, tool_names: list[str], platform_id=None, story_id=None, stage_name=None) -> list:
     """Return plain callables with meaningful ``__name__`` attributes."""
     tools: list = []
-    cname = _eval_container_name(platform_id, story_id) if platform_id else None
 
     for name in tool_names:
         if name == "read_file":
@@ -549,7 +678,7 @@ def _build_callable_tools(workspace: Path, tool_names: list[str], platform_id=No
         elif name == "execute_shell":
             def execute_shell(*, command: str) -> str:
                 """Execute a shell command."""
-                return _execute_shell(workspace, command, container_name=cname)
+                return _execute_shell(workspace, command, stage=stage_name)
             tools.append(execute_shell)
 
         elif name == "search_code":
@@ -579,7 +708,6 @@ def _build_langchain_tools(workspace: Path, tool_names: list[str], platform_id=N
     from langchain.tools import tool as lc_tool
 
     tools: list = []
-    cname = _eval_container_name(platform_id, story_id) if platform_id else None
 
     for name in tool_names:
         if name == "read_file":
@@ -607,7 +735,7 @@ def _build_langchain_tools(workspace: Path, tool_names: list[str], platform_id=N
             @lc_tool
             def execute_shell(command: str) -> str:
                 """Execute a shell command."""
-                return _execute_shell(workspace, command, container_name=cname)
+                return _execute_shell(workspace, command, stage=stage_name)
             tools.append(execute_shell)
 
         elif name == "search_code":
@@ -647,7 +775,6 @@ def _build_crewai_tools(workspace: Path, tool_names: list[str], platform_id=None
     from pydantic import BaseModel, Field
 
     tools: list = []
-    cname = _eval_container_name(platform_id, story_id) if platform_id else None
 
     if "read_file" in tool_names:
 
@@ -706,7 +833,7 @@ def _build_crewai_tools(workspace: Path, tool_names: list[str], platform_id=None
             args_schema: type[BaseModel] = ExecuteShellInput
 
             def _run(self, command: str) -> str:
-                return _execute_shell(workspace, command, container_name=cname)
+                return _execute_shell(workspace, command, stage=stage_name)
 
         tools.append(ExecuteShellTool())
 
@@ -754,8 +881,7 @@ def _build_crewai_tools(workspace: Path, tool_names: list[str], platform_id=None
 
             def _run(self) -> str:
                 passed, message = _check_completion(workspace, stage_name)
-                if passed:
-                    self.result_as_answer = True
+                self.result_as_answer = passed
                 return message
 
         tools.append(CheckCompletionTool())
@@ -768,7 +894,6 @@ def _build_openai_agents_tools(workspace: Path, tool_names: list[str], platform_
     from agents import function_tool
 
     tools: list = []
-    cname = _eval_container_name(platform_id, story_id) if platform_id else None
 
     if "read_file" in tool_names:
         @function_tool
@@ -795,7 +920,7 @@ def _build_openai_agents_tools(workspace: Path, tool_names: list[str], platform_
         @function_tool
         def execute_shell(command: str) -> str:
             """Execute a shell command in the project directory."""
-            return _execute_shell(workspace, command, container_name=cname)
+            return _execute_shell(workspace, command, stage=stage_name)
         tools.append(execute_shell)
 
     if "search_code" in tool_names:
@@ -830,7 +955,6 @@ def _build_agent_framework_tools(workspace: Path, tool_names: list[str], platfor
     adapter wraps these with ``@tool`` at runtime when the SDK is available.
     """
     tools: list = []
-    cname = _eval_container_name(platform_id, story_id) if platform_id else None
 
     if "read_file" in tool_names:
         def read_file(path: str) -> str:
@@ -853,7 +977,7 @@ def _build_agent_framework_tools(workspace: Path, tool_names: list[str], platfor
     if "execute_shell" in tool_names:
         def execute_shell(command: str) -> str:
             """Execute a shell command in the project directory."""
-            return _execute_shell(workspace, command, container_name=cname)
+            return _execute_shell(workspace, command, stage=stage_name)
         tools.append(execute_shell)
 
     if "search_code" in tool_names:

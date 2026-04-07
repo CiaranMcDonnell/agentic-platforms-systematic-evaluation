@@ -93,6 +93,7 @@ class RunnerConfig:
     dry_run: bool = False
     verbose: bool = False
     save_traces: bool = True
+    deploy_mode: str = "local"  # "local" or "remote"
 
 
 class EvaluationRunner:
@@ -422,6 +423,17 @@ class EvaluationRunner:
                 )
                 stage_ctx.progress_callback = self.progress_callback
 
+                # Snapshot baseline file paths for post-stage scope auditing
+                _skip = {".git", "__pycache__", ".venv", "venv", "node_modules"}
+                _baseline: set[str] = set()
+                for _dp, _dn, _fn in os.walk(workspace):
+                    _dn[:] = [d for d in _dn if d not in _skip]
+                    for f in _fn:
+                        _baseline.add(
+                            str(Path(_dp, f).relative_to(workspace)).replace("\\", "/")
+                        )
+                stage_ctx.metadata["baseline_files"] = sorted(_baseline)
+
                 # Accumulator for per-stage results
                 stage_results: dict[str, StageResult] = {}
 
@@ -459,6 +471,8 @@ class EvaluationRunner:
                     # Grant access to deploy_remote tool for the deploy stage
                     if stage_key == "deploy" and "deploy_remote" not in stage_ctx.allowed_tools:
                         stage_ctx.allowed_tools.append("deploy_remote")
+                    if stage_key == "deploy":
+                        os.environ["DESMET_DEPLOY_MODE"] = self.config.deploy_mode
 
                     if self.progress_callback is not None:
                         self.progress_callback(
