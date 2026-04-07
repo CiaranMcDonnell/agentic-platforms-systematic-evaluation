@@ -17,7 +17,6 @@ Environment variables (all optional):
     ANTHROPIC_API_KEY      – Anthropic key
     GOOGLE_API_KEY         – Google AI key
     OPENROUTER_API_KEY     – OpenRouter key
-    DEFAULT_MODEL          – legacy fallback (prefer DESMET_MODEL)
 """
 
 from __future__ import annotations
@@ -27,7 +26,6 @@ from dataclasses import dataclass
 from enum import Enum
 
 # ── defaults ────────────────────────────────────────────────────────────
-DEFAULT_MODEL = "gpt-5.4-2026-03-05"
 DEFAULT_TEMPERATURE = 0.0
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 # ────────────────────────────────────────────────────────────────────────
@@ -58,7 +56,7 @@ def detect_provider(model: str) -> Provider:
     if "claude" in m:
         return Provider.ANTHROPIC
     # Native OpenAI
-    if m.startswith(("gpt-", "o1", "o3", "o4", "dall-e", "tts-", "whisper")):
+    if m.startswith(("gpt-", "o1-", "o3-", "o4-", "dall-e", "tts-", "whisper")) or m in ("o1", "o3", "o4"):
         return Provider.OPENAI
     # Native Google
     if any(tok in m for tok in ("gemini", "palm")):
@@ -133,7 +131,7 @@ def get_config(
         model
         or os.getenv("DESMET_MODEL")
         or os.getenv("DEFAULT_MODEL")
-        or DEFAULT_MODEL
+        or ""
     )
 
     resolved_temp = (

@@ -9,7 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from desmet.llm_config import DEFAULT_MODEL, DEFAULT_TEMPERATURE
+from desmet.llm_config import DEFAULT_TEMPERATURE
 
 from .results import StageResult
 
@@ -52,7 +52,7 @@ class StageContext:
     )
 
     # Model configuration
-    model: str = DEFAULT_MODEL
+    model: str = ""
     temperature: float = DEFAULT_TEMPERATURE
 
     # Accumulated stage results
