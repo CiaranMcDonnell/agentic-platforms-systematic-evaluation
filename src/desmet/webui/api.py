@@ -336,6 +336,8 @@ async def get_config():
     cfg = get_config_status()
     llm = get_llm_config()
 
+    from desmet.webui.model_discovery import get_available_models
+
     return {
         "model": cfg.model,
         "provider": llm.provider.value,
@@ -343,12 +345,7 @@ async def get_config():
         "langfuse_status": cfg.langfuse_status,
         "deploy_status": cfg.deploy_status,
         "temperature": llm.temperature,
-        "available_models": [
-            "gpt-5.4-2026-03-05",
-            "claude-opus-4-6",
-            "claude-sonnet-4-6",
-        ],
-        "allow_custom_model": True,
+        "available_models": get_available_models(),
         "valid_stages": ["requirements", "codegen", "testing", "deploy", "all"],
         "difficulty_levels": ["basic", "intermediate", "advanced"],
         "langsmith_available": None,
