@@ -124,6 +124,69 @@ class TestDeleteImage:
         assert delete_image("langgraph") is False
 
 
+class TestDeleteAllEvalImages:
+    @patch("desmet.harness.container_runner.subprocess.run")
+    def test_removes_all_coded_platforms_plus_base(self, mock_run):
+        from desmet.harness.container_runner import (
+            delete_all_eval_images,
+            PLATFORM_EXTRA_MAP,
+        )
+
+        mock_run.return_value = MagicMock(returncode=0, stderr="", stdout="")
+        results = delete_all_eval_images(include_base=True)
+
+        # One entry per coded platform + the base image
+        assert len(results) == len(PLATFORM_EXTRA_MAP) + 1
+        assert "desmet-eval-base:1.0" in results
+        assert all(ok is True for ok in results.values())
+
+        # Each call should be 'docker rmi <tag>'
+        for call in mock_run.call_args_list:
+            cmd = call.args[0]
+            assert cmd[0] == "docker"
+            assert cmd[1] == "rmi"
+
+    @patch("desmet.harness.container_runner.subprocess.run")
+    def test_skips_base_when_include_base_false(self, mock_run):
+        from desmet.harness.container_runner import (
+            delete_all_eval_images,
+            PLATFORM_EXTRA_MAP,
+        )
+
+        mock_run.return_value = MagicMock(returncode=0)
+        results = delete_all_eval_images(include_base=False)
+
+        assert len(results) == len(PLATFORM_EXTRA_MAP)
+        assert "desmet-eval-base:1.0" not in results
+
+    @patch("desmet.harness.container_runner.subprocess.run")
+    def test_progress_callback_called_per_image(self, mock_run):
+        from desmet.harness.container_runner import (
+            delete_all_eval_images,
+            PLATFORM_EXTRA_MAP,
+        )
+
+        mock_run.return_value = MagicMock(returncode=0)
+        messages: list[str] = []
+        delete_all_eval_images(
+            include_base=True, progress_callback=messages.append,
+        )
+        # One message per platform + one for the base
+        assert len(messages) == len(PLATFORM_EXTRA_MAP) + 1
+        assert any("base" in m for m in messages)
+
+    @patch("desmet.harness.container_runner.subprocess.run")
+    def test_handles_missing_images_gracefully(self, mock_run):
+        from desmet.harness.container_runner import delete_all_eval_images
+
+        # Simulate 'No such image' errors
+        mock_run.return_value = MagicMock(returncode=1, stderr="No such image")
+        results = delete_all_eval_images(include_base=True)
+
+        # Function returns without raising; all results are False
+        assert all(ok is False for ok in results.values())
+
+
 class TestGetImageDetails:
     @patch("desmet.harness.container_runner.subprocess.run")
     def test_returns_details_for_existing_image(self, mock_run):

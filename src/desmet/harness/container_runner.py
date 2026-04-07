@@ -164,6 +164,44 @@ def delete_image(platform_id: str) -> bool:
         return False
 
 
+def delete_all_eval_images(
+    include_base: bool = True,
+    progress_callback: Callable[[str], None] | None = None,
+) -> dict[str, bool]:
+    """Remove every ``desmet-eval-*`` platform image and optionally the base.
+
+    Called on shutdown when --clean-on-exit is set so the next run starts
+    from a clean slate — avoids the stale Docker layer cache problem
+    where an old ``_tools.py`` (or any other source file) sticks around
+    inside the base image because its COPY layer was cached.
+
+    Only touches images tagged ``desmet-eval-*:1.0`` — does NOT touch
+    visual platform containers (n8n, dify, etc.) or user data volumes.
+
+    Returns a map of tag -> success for each image processed.
+    """
+    results: dict[str, bool] = {}
+    for platform_id in PLATFORM_EXTRA_MAP:
+        tag = image_name(platform_id)
+        if progress_callback:
+            progress_callback(f"Removing {tag}...")
+        results[tag] = delete_image(platform_id)
+
+    if include_base:
+        if progress_callback:
+            progress_callback(f"Removing {_BASE_IMAGE}...")
+        try:
+            result = subprocess.run(
+                ["docker", "rmi", _BASE_IMAGE],
+                capture_output=True, text=True, timeout=30,
+            )
+            results[_BASE_IMAGE] = result.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            results[_BASE_IMAGE] = False
+
+    return results
+
+
 def get_image_details(platform_id: str) -> dict[str, Any] | None:
     """Return image metadata (size, creation date) or None if not found."""
     tag = image_name(platform_id)
