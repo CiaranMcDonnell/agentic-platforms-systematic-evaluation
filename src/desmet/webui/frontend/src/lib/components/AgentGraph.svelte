@@ -55,7 +55,7 @@
 
   // ── Langfuse mode state ───────────────────────────────────────
   let langfuseData: LangfuseTraceDetail | null = $state(null);
-  let allObservations: Map<string, LangfuseObservation> = new Map();
+  let allObservations: Map<string, LangfuseObservation> = $state(new Map());
   let selectedObsId: string | null = $state(null);
   let selectedObservation = $derived(
     selectedObsId ? allObservations.get(selectedObsId) ?? null : null
@@ -96,6 +96,45 @@
       result.push(...flattenObservations(child));
     }
     return result;
+  }
+
+  // Threshold for switching from layered DOWN to rectpacking when a container
+  // has many leaf children. Tunable.
+  const PACK_THRESHOLD = 6;
+
+  function firstLeaf(obs: LangfuseObservation): LangfuseObservation {
+    let cur = obs;
+    while (cur.children.length > 0) cur = cur.children[0];
+    return cur;
+  }
+
+  function lastLeaf(obs: LangfuseObservation): LangfuseObservation {
+    let cur = obs;
+    while (cur.children.length > 0) cur = cur.children[cur.children.length - 1];
+    return cur;
+  }
+
+  function pickLayoutOptions(
+    children: LangfuseObservation[],
+    headerPad: number,
+  ): Record<string, string> {
+    const hasCompoundChildren = children.some(c => c.children.length > 0);
+    const useLayered = hasCompoundChildren || children.length <= PACK_THRESHOLD;
+    if (useLayered) {
+      return {
+        'elk.algorithm': 'layered',
+        'elk.direction': 'DOWN',
+        'elk.spacing.nodeNode': '20',
+        'elk.layered.spacing.nodeNodeBetweenLayers': '30',
+        'elk.padding': `[top=${headerPad},left=24,bottom=24,right=24]`,
+      };
+    }
+    return {
+      'elk.algorithm': 'rectpacking',
+      'elk.aspectRatio': '1.6',
+      'elk.spacing.nodeNode': '12',
+      'elk.padding': `[top=${headerPad},left=24,bottom=24,right=24]`,
+    };
   }
 
   function obsStat(obs: LangfuseObservation): string {
@@ -152,12 +191,12 @@
             'elk.direction': 'DOWN',
             'elk.spacing.nodeNode': '20',
             'elk.layered.spacing.nodeNodeBetweenLayers': '30',
-            'elk.padding': '[top=40,left=15,bottom=15,right=15]',
+            'elk.padding': '[top=48,left=24,bottom=24,right=24]',
           },
           children: flatObs.map(obs => ({
             id: obs.id,
-            width: 160,
-            height: obs.model ? 52 : 40,
+            width: 200,
+            height: obs.model ? 56 : 44,
           })),
           edges: [] as any[],
         };
@@ -218,12 +257,12 @@
           ? flattenObservations(agentData).reduce((s, o) => s + o.tokens.total, 0)
           : 0;
 
-        // Agent container as a group node
+        // Agent container — content-box so border doesn't eat into ELK-computed area
         flowNodes.push({
           id: agentLayout.id,
           type: 'group',
           position: { x: agentLayout.x ?? 0, y: agentLayout.y ?? 0 },
-          style: `width: ${agentLayout.width}px; height: ${agentLayout.height}px; background: rgba(255,255,255,0.02); border: 2px solid ${agentColor}; border-radius: 12px;`,
+          style: `width: ${agentLayout.width}px; height: ${agentLayout.height}px; background: rgba(255,255,255,0.02); border: 2px solid ${agentColor}; border-radius: 12px; box-sizing: content-box;`,
           data: {
             label: agentName.charAt(0).toUpperCase() + agentName.slice(1),
             color: agentColor,
@@ -368,11 +407,11 @@
       id: 'root',
       layoutOptions: {
         'elk.algorithm': 'layered',
-        'elk.direction': 'DOWN',
+        'elk.direction': 'RIGHT',
         'elk.spacing.nodeNode': '80',
         'elk.layered.spacing.nodeNodeBetweenLayers': '100',
       },
-      children: apiNodes.map(n => ({ id: n.id, width: 120, height: 80 })),
+      children: apiNodes.map(n => ({ id: n.id, width: 140, height: 80 })),
       edges: apiEdges.map((e, i) => ({
         id: `elk-edge-${i}`,
         sources: [e.source],
@@ -540,7 +579,7 @@
   });
 </script>
 
-<div class="agent-graph-container" onkeydown={handleKeydown} tabindex="0" role="application">
+<div class="agent-graph-container" onkeydown={handleKeydown} tabindex="0" role="region" aria-label="Agent communication graph">
   {#if mode === 'langfuse' && langfuseData && !error}
     <div class="topology-badge">
       <span class="topology-label">TRACE</span>
@@ -649,8 +688,8 @@
   }
 
   .topology-label {
-    background: rgba(74, 158, 255, 0.2);
-    color: #4a9eff;
+    background: color-mix(in srgb, var(--blue) 20%, transparent);
+    color: var(--blue);
     padding: 2px 8px;
     border-radius: 4px;
     font-weight: 600;
@@ -658,7 +697,7 @@
     font-size: 11px;
   }
 
-  .topology-stats { color: #888; }
+  .topology-stats { color: var(--text-2); }
 
   .graph-layout {
     display: flex;
@@ -680,7 +719,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #888;
+    color: var(--text-2);
     font-size: 13px;
     z-index: 1;
   }
@@ -710,7 +749,7 @@
     background: rgba(255, 255, 255, 0.05);
     border-radius: 4px;
     font-size: 12px;
-    color: #ccc;
+    color: var(--text-1);
     position: sticky;
     top: 0;
     z-index: 1;
@@ -719,20 +758,20 @@
   .filter-clear {
     background: none;
     border: none;
-    color: #888;
+    color: var(--text-2);
     font-size: 16px;
     cursor: pointer;
     padding: 0 4px;
   }
 
-  .filter-clear:hover { color: #ccc; }
+  .filter-clear:hover { color: var(--text-1); }
 
   .timeline-empty {
     display: flex;
     align-items: center;
     justify-content: center;
     height: 200px;
-    color: #666;
+    color: var(--text-2);
     font-size: 13px;
   }
 
