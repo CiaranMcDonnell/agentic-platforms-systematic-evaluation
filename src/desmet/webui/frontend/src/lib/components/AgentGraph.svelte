@@ -195,6 +195,91 @@
     };
   }
 
+  // Captured by emitFlowNodes; refreshed at the start of every loadLangfuseGraph call
+  let _currentAgentObs: LangfuseObservation[] = [];
+  function agentObsForName(name: string): LangfuseObservation | undefined {
+    return _currentAgentObs.find(a => a.name === name);
+  }
+
+  function emitFlowNodes(
+    elkNode: any,
+    parentId: string | undefined,
+    depth: number,
+    agentColor: string,
+    agentName: string,
+    out: Node[],
+  ): void {
+    const obs = allObservations.get(elkNode.id);
+    const isAgentContainer = elkNode.id.startsWith('agent-');
+    const hasChildren = (elkNode.children?.length ?? 0) > 0;
+
+    if (isAgentContainer) {
+      // Top-level agent cluster (depth 0)
+      const agentData = agentObsForName(agentName);
+      const agentTotalTokens = agentData
+        ? flattenObservations(agentData).reduce((s, o) => s + o.tokens.total, 0)
+        : 0;
+      out.push({
+        id: elkNode.id,
+        type: 'group',
+        position: { x: elkNode.x ?? 0, y: elkNode.y ?? 0 },
+        style: `width: ${elkNode.width}px; height: ${elkNode.height}px; background: rgba(255,255,255,0.02); border: 2px solid ${agentColor}; border-radius: 12px; box-sizing: content-box;`,
+        data: {
+          label: agentName.charAt(0).toUpperCase() + agentName.slice(1),
+          color: agentColor,
+          tokens: agentTotalTokens,
+        },
+      });
+      for (const child of elkNode.children ?? []) {
+        emitFlowNodes(child, elkNode.id, depth + 1, agentColor, agentName, out);
+      }
+      return;
+    }
+
+    if (hasChildren && obs) {
+      // Nested compound observation — render as a sub-container
+      const obsTypeColor =
+        obs.type === 'generation' ? 'var(--blue)'
+        : obs.type === 'tool' ? 'var(--green)'
+        : 'var(--text-2)';
+      out.push({
+        id: elkNode.id,
+        type: 'group',
+        position: { x: elkNode.x ?? 0, y: elkNode.y ?? 0 },
+        parentId,
+        extent: 'parent' as const,
+        style: `width: ${elkNode.width}px; height: ${elkNode.height}px; background: rgba(255,255,255,0.015); border: 1px solid ${obsTypeColor}; border-radius: 8px; box-sizing: content-box;`,
+        data: {
+          label: obs.name,
+          color: obsTypeColor,
+          tokens: obs.tokens.total,
+        },
+      });
+      for (const child of elkNode.children ?? []) {
+        emitFlowNodes(child, elkNode.id, depth + 1, agentColor, agentName, out);
+      }
+      return;
+    }
+
+    // Leaf observation
+    if (!obs) return;
+    out.push({
+      id: obs.id,
+      type: 'observation',
+      position: { x: elkNode.x ?? 0, y: elkNode.y ?? 0 },
+      parentId,
+      extent: 'parent' as const,
+      data: {
+        name: obs.name,
+        obsType: obs.type,
+        stat: obsStat(obs),
+        model: obs.model,
+        isError: obs.level === 'ERROR',
+        selected: false,
+      },
+    });
+  }
+
   function obsStat(obs: LangfuseObservation): string {
     if (obs.type === 'generation' && obs.tokens.total > 0) {
       return `${obs.tokens.input.toLocaleString()}↑ ${obs.tokens.output.toLocaleString()}↓`;
@@ -281,54 +366,13 @@
 
       const layout = await elk.layout(elkGraph);
 
-      // Convert ELK layout to Svelte Flow nodes.
-      // TODO(Task 3): this loop is depth-1 only. buildElkNode produces a
-      // multi-level compound graph; compound observation children are dropped
-      // here and will be rendered correctly once Task 3 replaces this block
-      // with a recursive emitFlowNodes walker.
+      // Convert ELK layout to Svelte Flow nodes (recursive)
+      _currentAgentObs = agentObs;
       const flowNodes: Node[] = [];
-
       for (const agentLayout of layout.children ?? []) {
         const agentName = agentLayout.id.replace('agent-', '');
         const agentColor = roleColor(agentName);
-        const agentData = agentObs.find(a => a.name === agentName);
-        const agentTotalTokens = agentData
-          ? flattenObservations(agentData).reduce((s, o) => s + o.tokens.total, 0)
-          : 0;
-
-        // Agent container — content-box so border doesn't eat into ELK-computed area
-        flowNodes.push({
-          id: agentLayout.id,
-          type: 'group',
-          position: { x: agentLayout.x ?? 0, y: agentLayout.y ?? 0 },
-          style: `width: ${agentLayout.width}px; height: ${agentLayout.height}px; background: rgba(255,255,255,0.02); border: 2px solid ${agentColor}; border-radius: 12px; box-sizing: content-box;`,
-          data: {
-            label: agentName.charAt(0).toUpperCase() + agentName.slice(1),
-            color: agentColor,
-            tokens: agentTotalTokens,
-          },
-        });
-
-        // Observation nodes inside the container
-        for (const obsLayout of agentLayout.children ?? []) {
-          const obs = allObservations.get(obsLayout.id);
-          if (!obs) continue;
-          flowNodes.push({
-            id: obs.id,
-            type: 'observation',
-            position: { x: obsLayout.x ?? 0, y: obsLayout.y ?? 0 },
-            parentId: agentLayout.id,
-            extent: 'parent' as const,
-            data: {
-              name: obs.name,
-              obsType: obs.type,
-              stat: obsStat(obs),
-              model: obs.model,
-              isError: obs.level === 'ERROR',
-              selected: false,
-            },
-          });
-        }
+        emitFlowNodes(agentLayout, undefined, 0, agentColor, agentName, flowNodes);
       }
 
       baseNodes = flowNodes;
