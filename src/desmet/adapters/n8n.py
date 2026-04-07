@@ -13,33 +13,13 @@ from typing import Any
 
 import httpx
 
-from desmet.adapters._prompts import (
-    build_codegen_prompt,
-    build_deploy_prompt,
-    build_requirements_prompt,
-    build_system_message,
-    build_testing_prompt,
-)
 from desmet.adapters._tracing import (
-    build_stage_result,
-    finish_trace,
-    record_message,
-    record_usage,
     record_llm_duration,
-    start_trace,
+    record_usage,
 )
-from desmet.adapters._validation import audit_workspace
+from desmet.adapters._visual_base import VisualAgentAdapter
 from desmet.adapters.registry import load_platform_info
-from desmet.harness.adapter import VisualPlatformAdapter
-from desmet.harness.context import StageContext
 from desmet.harness.models import PlatformInfo
-from desmet.harness.results import (
-    CodeResult,
-    DeployResult,
-    RequirementsResult,
-    StageResult,
-    TestResult,
-)
 from desmet.llm_config import get_config as get_llm_config
 
 logger = logging.getLogger(__name__)
@@ -190,13 +170,8 @@ def _map_credential(
     return "openAiApi", data
 
 
-_CONTAINER_RESULTS_ROOT = "/desmet-results"
-
-
-class N8nAdapter(VisualPlatformAdapter):
+class N8nAdapter(VisualAgentAdapter):
     """n8n adapter — creates AI Agent workflows via the REST API."""
-
-    max_retries: int = 3
 
     def __init__(self, config: dict[str, Any] | None = None):
         config = config or {}
@@ -266,118 +241,44 @@ class N8nAdapter(VisualPlatformAdapter):
         assert self._client is not None
         await self._client.delete_workflow(workflow_id)
 
-    # ── Workspace path translation ─────────────────────────────────────
+    # ── Platform-specific workflow execution ───────────────────────────
 
-    def _translate_workspace(self, host_path: str) -> str:
-        """Translate a host workspace path to the container-side path."""
-        import re
-        normalised = host_path.replace("\\", "/")
-        match = re.search(r"results/(.+)$", normalised)
-        if match:
-            return f"{_CONTAINER_RESULTS_ROOT}/{match.group(1)}"
-        return normalised
-
-    # ── Stage executor ─────────────────────────────────────────────────
-
-    async def _execute_n8n_stage(
+    async def _run_workflow(
         self,
         stage_name: str,
-        prompt_fn,
-        result_cls: type[StageResult],
-        context: StageContext,
-    ) -> StageResult:
-        """Create, execute, and clean up an n8n workflow for one SDLC stage."""
+        prompt: str,
+        system_msg: str,
+        workspace: str,
+    ) -> dict:
+        """Create, execute, poll, and clean up one n8n workflow."""
         from desmet.adapters.n8n_templates import build_workflow
 
-        trace = start_trace()
-        workflow_id: str | None = None
+        wf_def = build_workflow(
+            stage_name=stage_name,
+            prompt=prompt,
+            system_msg=system_msg,
+            workspace=workspace,
+            model_name=self._model_name or "",
+            credential_id=self._credential_id or "",
+        )
+        workflow_id = await self._client.create_workflow(wf_def)
         try:
-            if stage_name == "codegen":
-                prior = context.get_prior_result("requirements")
-                prompt = prompt_fn(context.story, prior_requirements=prior)
-            else:
-                prompt = prompt_fn(context.story)
-            system_msg = build_system_message(context.story)
-            workspace = self._translate_workspace(str(context.workspace))
+            try:
+                await self._client.activate_workflow(workflow_id)
+            except Exception:
+                pass
 
-            record_message(trace, "user", prompt)
-
-            iterations = 0
-            success = False
-
-            for attempt in range(self.max_retries + 1):
-                wf_def = build_workflow(
-                    stage_name=stage_name,
-                    prompt=prompt,
-                    system_msg=system_msg or "",
-                    workspace=workspace,
-                    model_name=self._model_name or "",
-                    credential_id=self._credential_id or "",
-                )
-                workflow_id = await self._client.create_workflow(wf_def)
-
-                try:
-                    await self._client.activate_workflow(workflow_id)
-                except Exception:
-                    pass
-
-                exec_id = await self._client.execute_workflow(workflow_id, {
-                    "prompt": prompt,
-                    "workspace": workspace,
-                })
-                exec_data = await self._client.wait_for_execution(
-                    exec_id,
-                    timeout=context.metadata.get("time_budget", 600),
-                )
-
-                iterations += 1
-                self._collect_execution_metrics(trace, exec_data)
-
-                scope_warnings = audit_workspace(
-                    stage_name, str(context.workspace),
-                    set(context.metadata.get("baseline_files", [])),
-                )
-
-                if not scope_warnings:
-                    success = True
-                    break
-
-                feedback = "; ".join(scope_warnings)
-                logger.info(
-                    "n8n stage %s attempt %d/%d failed validation: %s",
-                    stage_name, attempt + 1, self.max_retries + 1, feedback,
-                )
-                record_message(
-                    trace, "system",
-                    f"Validation failed (attempt {attempt + 1}): {feedback}",
-                )
-
-                await self._client.delete_workflow(workflow_id)
-                workflow_id = None
-
-                prompt = (
-                    f"{prompt}\n\n"
-                    f"PREVIOUS ATTEMPT FAILED VALIDATION:\n{feedback}\n"
-                    f"Please fix these issues."
-                )
-
-            return build_stage_result(
-                result_cls, "n8n", stage_name, trace,
-                success=success, iterations=iterations,
-            )
-
-        except Exception as e:
-            finish_trace(trace, error=str(e))
-            return build_stage_result(
-                result_cls, "n8n", stage_name, trace,
-                success=False, iterations=0, error_message=str(e),
-            )
+            exec_id = await self._client.execute_workflow(workflow_id, {
+                "prompt": prompt,
+                "workspace": workspace,
+            })
+            exec_data = await self._client.wait_for_execution(exec_id)
+            return exec_data
         finally:
-            if workflow_id:
-                try:
-                    await self._client.delete_workflow(workflow_id)
-                except Exception:
-                    pass
+            try:
+                await self._client.delete_workflow(workflow_id)
+            except Exception:
+                pass
 
     def _collect_execution_metrics(self, trace, exec_data: dict) -> None:
         """Extract timing and token usage from n8n execution response."""
@@ -417,28 +318,6 @@ class N8nAdapter(VisualPlatformAdapter):
                             out = usage.get("completionTokens", 0) or usage.get("completion_tokens", 0)
                             if inp or out:
                                 record_usage(trace, int(inp), int(out), model=self._model_name)
-
-    # ── SDLC stage methods ─────────────────────────────────────────────
-
-    async def generate_requirements(self, context: StageContext) -> RequirementsResult:
-        return await self._execute_n8n_stage(
-            "requirements", build_requirements_prompt, RequirementsResult, context,
-        )
-
-    async def generate_code(self, context: StageContext) -> CodeResult:
-        return await self._execute_n8n_stage(
-            "codegen", build_codegen_prompt, CodeResult, context,
-        )
-
-    async def generate_tests(self, context: StageContext) -> TestResult:
-        return await self._execute_n8n_stage(
-            "testing", build_testing_prompt, TestResult, context,
-        )
-
-    async def build_and_deploy(self, context: StageContext) -> DeployResult:
-        return await self._execute_n8n_stage(
-            "deploy", build_deploy_prompt, DeployResult, context,
-        )
 
     # ── Metadata ──────────────────────────────────────────────────────
 
