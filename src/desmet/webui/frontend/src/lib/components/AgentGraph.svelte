@@ -414,8 +414,11 @@
         layoutOptions: {
           'elk.algorithm': 'layered',
           'elk.direction': 'RIGHT',
-          'elk.spacing.nodeNode': '40',
-          'elk.layered.spacing.nodeNodeBetweenLayers': '60',
+          // Wider spacing at the root keeps small agent containers from
+          // collapsing against huge rectpacked neighbours when the canvas
+          // gets fitView'd to show everything.
+          'elk.spacing.nodeNode': '120',
+          'elk.layered.spacing.nodeNodeBetweenLayers': '160',
         },
         children: elkChildren,
         edges: elkEdges,
@@ -750,6 +753,8 @@
           {nodeTypes}
           {edgeTypes}
           fitView
+          fitViewOptions={{ padding: 0.04 }}
+          minZoom={0.05}
           nodesDraggable={false}
           nodesConnectable={false}
           elementsSelectable={false}
