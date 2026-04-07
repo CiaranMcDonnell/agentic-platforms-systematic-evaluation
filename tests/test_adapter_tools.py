@@ -107,6 +107,67 @@ class TestCrossToolLoopDetection:
         assert results[-1] is not None
         assert "LOOP DETECTED" in results[-1]
 
+    def test_locked_target_blocks_all_subsequent_tools(self, workspace):
+        """After cross-tool loop fires, the target is LOCKED for the stage.
+
+        The LLM can't work around the warning by switching tools — any
+        subsequent read/write/render on the locked file gets REFUSED.
+        """
+        ws = str(workspace)
+        target = "docs/design/use_case.mermaid"
+
+        # Build up 6 cross-tool ops to trigger the lock
+        sequence = [
+            ("write_file", target),
+            ("execute_shell", f"mmdc -i {target}"),
+            ("write_file", target),
+            ("execute_shell", f"mmdc -i {target}"),
+            ("write_file", target),
+            ("execute_shell", f"mmdc -i {target}"),
+        ]
+        results = [_check_loop(ws, tool, arg) for tool, arg in sequence]
+        # 6th call triggers the cross-tool loop and LOCKS the target
+        assert results[-1] is not None
+        assert "LOCKED" in results[-1]
+
+        # Any subsequent attempt — DIFFERENT tool, DIFFERENT arg — refused
+        refused_read = _check_loop(ws, "read_file", target)
+        assert refused_read is not None
+        assert "REFUSED" in refused_read
+        assert target in refused_read
+
+        refused_write = _check_loop(ws, "write_file", target)
+        assert refused_write is not None
+        assert "REFUSED" in refused_write
+
+        # Shell command that also touches this target → refused
+        refused_shell = _check_loop(
+            ws, "execute_shell", f"cat {target}",
+        )
+        assert refused_shell is not None
+        assert "REFUSED" in refused_shell
+
+        # But OTHER files are still fine
+        other_file = _check_loop(ws, "write_file", "docs/design/other.md")
+        assert other_file is None
+
+    def test_reset_clears_locked_targets(self, workspace):
+        """reset_loop_tracker() must clear locked targets (between stages)."""
+        ws = str(workspace)
+        target = "stuck.md"
+
+        # Trigger a lock
+        for _ in range(6):
+            _check_loop(ws, "write_file", target)
+        refused = _check_loop(ws, "write_file", target)
+        assert refused is not None
+
+        # Reset → fresh state
+        reset_loop_tracker()
+
+        # Same file is now workable again
+        assert _check_loop(ws, "write_file", target) is None
+
 
 class TestAvailableTools:
     def test_all_seven_tools_present(self):

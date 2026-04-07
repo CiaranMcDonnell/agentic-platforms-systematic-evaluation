@@ -106,6 +106,13 @@ _call_history: dict[str, list[str]] = defaultdict(list)
 # Per-workspace sliding window of recent cross-tool targets (file paths).
 _cross_tool_history: dict[str, list[str]] = defaultdict(list)
 
+# Per-workspace set of targets that have been declared "locked" because
+# a loop was detected on them.  Subsequent tool calls touching any of
+# these targets are refused for the rest of the stage — the LLM cannot
+# "work around" the loop warning by switching tools or varying the
+# arguments.  Reset between stages via reset_loop_tracker().
+_locked_targets: dict[str, set[str]] = defaultdict(set)
+
 
 def _extract_target(tool_name: str, call_key: str) -> str | None:
     """Extract a file-path target from a tool call, if possible.
@@ -153,7 +160,24 @@ def _check_loop(workspace: str, tool_name: str, call_key: str) -> str | None:
     3. **Cross-tool target thrash** — the same file/target appears in
        ``_CROSS_TOOL_THRESHOLD`` consecutive calls across any tools
        (agent stuck writing → rendering → reading → writing on one file).
+
+    Once a loop is detected on a target (check 3), that target is added
+    to a per-workspace "locked" set.  Any subsequent tool call whose
+    extracted target is in the locked set is refused immediately — this
+    prevents the LLM from working around the initial warning by
+    switching tools or changing arguments.
     """
+    # ── Check 0: locked target (sticky enforcement) ──────────────────
+    target = _extract_target(tool_name, call_key)
+    if target is not None and target in _locked_targets[workspace]:
+        return (
+            f"REFUSED: '{target}' is locked after a previous loop was "
+            f"detected on it. You CANNOT edit, render, or read this "
+            f"file again in this stage. Move on to the next task or "
+            f"stop and let the reviewer validate what you have produced. "
+            f"Further attempts on this file will be ignored."
+        )
+
     tracker_key = f"{workspace}:{tool_name}"
     history = _call_history[tracker_key]
     history.append(call_key)
@@ -191,7 +215,8 @@ def _check_loop(workspace: str, tool_name: str, call_key: str) -> str | None:
             )
 
     # ── Check 3: cross-tool target thrash ─────────────────────────────
-    target = _extract_target(tool_name, call_key)
+    # Note: `target` was extracted at the top of the function (for the
+    # locked-target check).  Reuse it here.
     if target is not None:
         cross = _cross_tool_history[workspace]
         cross.append(target)
@@ -204,13 +229,17 @@ def _check_loop(workspace: str, tool_name: str, call_key: str) -> str | None:
             and len(set(cross_tail)) == 1
         ):
             _cross_tool_history[workspace] = []
+            # LOCK this target for the rest of the stage — any further
+            # tool call on it will be refused by the locked-target check
+            # at the top of this function.
+            _locked_targets[workspace].add(target)
             return (
                 f"LOOP DETECTED: you have made {_CROSS_TOOL_THRESHOLD} "
                 f"consecutive operations on '{target}' across multiple tools. "
-                f"You appear to be stuck trying to fix this file. STOP working "
-                f"on '{target}' — leave it as-is and move on to the next task. "
-                f"Do NOT retry this file. The reviewer will validate what you "
-                f"have produced so far."
+                f"This file is now LOCKED for the rest of the stage — any "
+                f"further read, write, or render on '{target}' will be "
+                f"refused. Move on to the next task or stop and let the "
+                f"reviewer validate what you have produced."
             )
 
     return None
@@ -220,6 +249,7 @@ def reset_loop_tracker() -> None:
     """Clear all loop detection state (call between evaluation runs)."""
     _call_history.clear()
     _cross_tool_history.clear()
+    _locked_targets.clear()
 
 
 # ---------------------------------------------------------------------------

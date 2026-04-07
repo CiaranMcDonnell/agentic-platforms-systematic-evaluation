@@ -32,15 +32,15 @@ class TestWebuiCommand:
                 reload=False,
                 log_level="info",
             )
-            # clean_on_exit defaults to True → atexit handler registered
-            assert mock_atexit.called
+            # clean_on_exit defaults to False → no atexit handler registered
+            assert not mock_atexit.called
 
-    def test_no_clean_on_exit_skips_atexit(self):
-        """When --no-clean-on-exit is passed, no cleanup handler registers."""
+    def test_clean_on_exit_registers_atexit(self):
+        """When --clean-on-exit is passed, cleanup handler registers."""
         mock_run = MagicMock()
         mock_atexit = MagicMock()
         with patch("uvicorn.run", mock_run), \
              patch("atexit.register", mock_atexit):
-            runner.invoke(app, ["--no-clean-on-exit"])
+            runner.invoke(app, ["--clean-on-exit"])
             mock_run.assert_called_once()
-            assert not mock_atexit.called
+            assert mock_atexit.called

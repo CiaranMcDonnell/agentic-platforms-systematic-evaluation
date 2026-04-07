@@ -6,10 +6,10 @@ full control over evaluation runs, platform management, Docker
 infrastructure, and results viewing.
 
 Usage:
-    desmet                          # Start on default port 8042, clean images on exit
+    desmet                          # Start on default port 8042
     desmet --port 9000              # Custom port
     desmet --reload                 # Dev mode with auto-reload
-    desmet --no-clean-on-exit       # Keep platform images after shutdown (faster restart)
+    desmet --clean-on-exit          # Remove platform images on shutdown (forces rebuild)
 """
 
 from __future__ import annotations
@@ -58,14 +58,14 @@ def main_command(
     port: int = typer.Option(8042, help="Port to listen on"),
     reload: bool = typer.Option(False, help="Enable auto-reload for development"),
     clean_on_exit: bool = typer.Option(
-        True,
+        False,
         "--clean-on-exit/--no-clean-on-exit",
         help=(
             "Remove all desmet-eval-* platform images and the base image "
             "on shutdown so the next run rebuilds from scratch. "
-            "Defaults to on to avoid stale Docker layer cache issues. "
-            "Disable with --no-clean-on-exit for faster restart during "
-            "rapid iteration when source hasn't changed."
+            "Defaults OFF to avoid the ~60-90s base-image rebuild penalty "
+            "on every startup. Enable if you suspect stale Docker layer "
+            "cache is holding onto old source code."
         ),
     ),
 ):
@@ -76,7 +76,7 @@ def main_command(
     console.print("[bold]DESMET Management Console[/bold]")
     console.print(f"  Starting on [cyan]http://{host}:{port}[/cyan]")
     if clean_on_exit:
-        console.print("  [dim]Images will be cleaned on shutdown (--no-clean-on-exit to disable)[/dim]")
+        console.print("  [yellow]⚠ --clean-on-exit enabled — images will be removed on shutdown[/yellow]")
     console.print("  Press Ctrl+C to stop.\n")
 
     # Register cleanup hook BEFORE uvicorn starts so it fires on normal
