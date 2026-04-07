@@ -2,8 +2,8 @@
 # DESMET Agentic Platforms - Platform Configuration
 # =============================================================================
 # Defines the 9 agentic platforms evaluated under the DESMET framework.
-# TODO: Wire into CLI/loader so adapters and runner read from here
-#       instead of hardcoding platform info and evaluation settings.
+# Platform info is read by adapters/registry.py; evaluation_settings
+# are read by harness/loader.py as per-difficulty defaults.
 # =============================================================================
 
 platforms:
@@ -16,6 +16,10 @@ platforms:
     description: Graph-based agent orchestration built on LangChain
     documentation_url: https://langchain-ai.github.io/langgraph/
     repository_url: https://github.com/langchain-ai/langgraph
+    pip_extra: langgraph
+    python_package: langgraph
+    deploy_port: 8001
+    colour: "#818cf8"
 
   - id: crewai
     name: CrewAI
@@ -25,6 +29,10 @@ platforms:
     description: Role-based multi-agent collaboration framework
     documentation_url: https://docs.crewai.com/
     repository_url: https://github.com/joaomdmoura/crewAI
+    pip_extra: crewai
+    python_package: crewai
+    deploy_port: 8002
+    colour: "#fb7185"
 
   - id: microsoft_agent_framework
     name: Microsoft Agent Framework
@@ -34,6 +42,10 @@ platforms:
     description: Unified agent SDK combining AutoGen and Semantic Kernel
     documentation_url: https://github.com/microsoft/agent-framework
     repository_url: https://github.com/microsoft/agent-framework
+    pip_extra: agent-framework
+    python_package: agent_framework
+    deploy_port: 8005
+    colour: "#7dd3fc"
 
   # Agent SDK Runtimes
   - id: openai_agents_sdk
@@ -44,6 +56,10 @@ platforms:
     description: Official OpenAI SDK for building agentic applications
     documentation_url: https://platform.openai.com/docs/agents
     repository_url: https://github.com/openai/openai-agents-python
+    pip_extra: openai-agents
+    python_package: agents
+    deploy_port: 8003
+    colour: "#fbbf24"
 
   - id: google_adk
     name: Google ADK
@@ -53,6 +69,10 @@ platforms:
     description: Google Agent Development Kit for building AI agents
     documentation_url: https://google.github.io/adk-docs/
     repository_url: https://github.com/google/adk-python
+    pip_extra: google-adk
+    python_package: google.adk
+    deploy_port: 8004
+    colour: "#2dd4bf"
 
   # Visual / Workflow Platforms
   - id: flowise
@@ -63,6 +83,9 @@ platforms:
     description: Drag-and-drop UI for building LLM flows and agents
     documentation_url: https://docs.flowiseai.com/
     repository_url: https://github.com/FlowiseAI/Flowise
+    container_name: desmet-flowise
+    deploy_port: 8006
+    colour: "#fb923c"
 
   - id: langflow
     name: LangFlow
@@ -72,6 +95,9 @@ platforms:
     description: Visual framework for building multi-agent and RAG applications
     documentation_url: https://docs.langflow.org/
     repository_url: https://github.com/langflow-ai/langflow
+    container_name: desmet-langflow
+    deploy_port: 8007
+    colour: "#a78bfa"
 
   - id: dify
     name: Dify
@@ -81,6 +107,9 @@ platforms:
     description: Open-source LLM app development platform with visual workflow builder
     documentation_url: https://docs.dify.ai/
     repository_url: https://github.com/langgenius/dify
+    container_name: desmet-dify-api
+    deploy_port: 8008
+    colour: "#f87171"
 
   - id: n8n
     name: n8n
@@ -90,11 +119,16 @@ platforms:
     description: Workflow automation platform with AI agent capabilities
     documentation_url: https://docs.n8n.io/
     repository_url: https://github.com/n8n-io/n8n
+    container_name: desmet-n8n
+    deploy_port: 8009
+    colour: "#34d399"
 
 # =============================================================================
 # Evaluation Settings
 # =============================================================================
-# TODO: Have RunnerConfig and story loader read these defaults.
+# Per-difficulty defaults for time_budget_seconds and max_iterations.
+# Story YAML values override these; these are fallbacks for stories that
+# omit them.  Read by harness/loader.py via _load_evaluation_settings().
 # =============================================================================
 
 evaluation_settings:
