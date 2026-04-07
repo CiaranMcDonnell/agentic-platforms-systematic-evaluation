@@ -170,6 +170,40 @@ class TestBuildDeployPrompt:
         assert "uv sync" in result
         assert "deploy_remote" in result
 
+    def test_includes_dockerfile_creation_step(self):
+        result = build_deploy_prompt(_make_story())
+        assert "Dockerfile" in result
+        # The Dockerfile step should specify the FastAPI/uvicorn invocation
+        # so the agent doesn't have to guess the entrypoint.
+        assert "uvicorn app.main:app" in result
+        assert "--port 8000" in result
+
+    def test_includes_compose_creation_step(self):
+        result = build_deploy_prompt(_make_story())
+        assert "docker-compose.yaml" in result
+        # The compose step must include the worked example with literal
+        # ${PORT}:8000 so the agent copies the exact form the validator
+        # checks for.
+        assert "${PORT}:8000" in result
+
+    def test_explains_port_env_injection(self):
+        """The prompt must tell the agent WHY ${PORT} matters — without
+        the explanation an agent might 'fix' a complaint by hardcoding.
+        """
+        result = build_deploy_prompt(_make_story())
+        assert ".env" in result
+        assert "PORT" in result
+        # And it must explicitly forbid hardcoding.
+        assert "do NOT hardcode" in result.lower() or "do not hardcode" in result.lower()
+
+    def test_includes_build_directive_in_example(self):
+        """The worked compose example must use `build: .` (the Dockerfile
+        path) — not `image: ...`. This is what makes the deploy actually
+        package the baseline rather than pulling a published image.
+        """
+        result = build_deploy_prompt(_make_story())
+        assert "build: ." in result
+
 
 # ---------------------------------------------------------------------------
 # TestBuildTestingPrompt
