@@ -621,3 +621,54 @@ class TestSplitToolsCallable:
         assert "check_completion" not in executor_names
         assert "read_file" in reviewer_names
         assert "check_completion" in reviewer_names
+
+
+# ---------------------------------------------------------------------------
+# _check_completion hint string tests
+# ---------------------------------------------------------------------------
+
+from desmet.adapters._tools import _check_completion
+
+
+class TestCheckCompletionDeployHint:
+    """The deploy hint string is fed back to the agent on retry via the
+    Bug B retry-feedback path. It must name every failure mode the
+    validator can flag, otherwise the agent can't fix the right thing.
+    """
+
+    def test_deploy_hint_mentions_dockerfile(self, tmp_path):
+        # Empty workspace → validation fails → returns the hint string.
+        passed, msg = _check_completion(tmp_path, "deploy")
+        assert passed is False
+        assert "Dockerfile" in msg
+
+    def test_deploy_hint_mentions_docker_compose_yaml(self, tmp_path):
+        passed, msg = _check_completion(tmp_path, "deploy")
+        assert passed is False
+        assert "docker-compose.yaml" in msg
+
+    def test_deploy_hint_mentions_port_variable(self, tmp_path):
+        """Must include the literal `${PORT}` token so the agent can
+        copy it verbatim into its compose file.
+        """
+        passed, msg = _check_completion(tmp_path, "deploy")
+        assert passed is False
+        assert "${PORT}" in msg
+
+    def test_deploy_hint_explains_env_injection(self, tmp_path):
+        """The hint should tell the agent why ${PORT} matters — that
+        the harness injects it via .env at deploy time. Without this
+        context the agent might "fix" by hardcoding a port number.
+        """
+        passed, msg = _check_completion(tmp_path, "deploy")
+        assert passed is False
+        assert ".env" in msg or "PORT" in msg
+
+    def test_deploy_passes_when_artifacts_complete(self, tmp_path):
+        (tmp_path / "Dockerfile").write_text("FROM python:3.11-slim\n")
+        (tmp_path / "docker-compose.yaml").write_text(
+            "services:\n  app:\n    build: .\n    ports:\n      - \"${PORT}:8000\"\n"
+        )
+        passed, msg = _check_completion(tmp_path, "deploy")
+        assert passed is True
+        assert "VALIDATION PASSED" in msg

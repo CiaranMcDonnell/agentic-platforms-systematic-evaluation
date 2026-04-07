@@ -619,29 +619,50 @@ def _deploy_remote(
     branch = f"{platform_id}/{story_id}"
     remote_path = f"{base}/{platform_id}/{story_id}"
     port = _deploy_port(platform_id, story_id)
-    ssh_opts = f"ssh -i {shlex.quote(key)} -p {shlex.quote(ssh_port)} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+    # StrictModes=no is required because the deploy key is bind-mounted
+    # into the container from the host (see container_runner._ensure_container).
+    # On Windows hosts and on certain Linux bind-mount setups the file
+    # appears with permissions wider than 600 inside the container, which
+    # would otherwise cause OpenSSH to refuse to use it.  The actual
+    # privilege boundary is enforced by the restricted shell on the
+    # deploy server (see docs/spec/deploy-infrastructure.md), not by
+    # client-side mode bits.
+    ssh_opts = (
+        f"ssh -i {shlex.quote(key)} -p {shlex.quote(ssh_port)} "
+        f"-o IdentitiesOnly=yes "
+        f"-o StrictHostKeyChecking=accept-new "
+        f"-o StrictModes=no"
+    )
 
     if action == "push":
         # Stage, commit, and push workspace to the deploy repo branch.
         # Uses direct subprocess calls (not shell chaining) for cross-platform
         # compatibility.  The harness initialises the git remote before this.
+        #
+        # ``-c safe.directory=*`` is required because the workspace is
+        # bind-mounted from the host into a container running as the
+        # ``agent`` user.  Git's "dubious ownership" check would refuse
+        # to operate on the repo otherwise.  Limiting the override to
+        # the deploy command line (rather than git config --global) keeps
+        # the relaxation scoped to this single subprocess invocation.
+        git_safe = ["git", "-c", f"safe.directory={workspace}", "-c", "safe.directory=*"]
         try:
             subprocess.run(
-                ["git", "add", "-A"],
+                [*git_safe, "add", "-A"],
                 cwd=workspace, capture_output=True, timeout=30,
             )
             # Only commit if there are staged changes
             diff = subprocess.run(
-                ["git", "diff", "--cached", "--quiet"],
+                [*git_safe, "diff", "--cached", "--quiet"],
                 cwd=workspace, capture_output=True, timeout=10,
             )
             if diff.returncode != 0:
                 subprocess.run(
-                    ["git", "commit", "-m", "deploy from DESMET evaluation"],
+                    [*git_safe, "commit", "-m", "deploy from DESMET evaluation"],
                     cwd=workspace, capture_output=True, timeout=30,
                 )
             result = subprocess.run(
-                ["git", "push", "deploy", f"HEAD:{branch}", "--force"],
+                [*git_safe, "push", "deploy", f"HEAD:{branch}", "--force"],
                 cwd=workspace, capture_output=True, text=True, timeout=120,
             )
             output = result.stdout + result.stderr
@@ -778,7 +799,12 @@ def _check_completion(workspace: Path, stage: str) -> tuple[bool, str]:
             "Ensure test_*.py or *_test.py files exist containing "
             "def test_ functions."
         ),
-        "deploy": "Ensure docker-compose.yaml exists in the workspace root.",
+        "deploy": (
+            "Ensure both `Dockerfile` and `docker-compose.yaml` exist in the "
+            "workspace root, and that docker-compose.yaml uses `${PORT}` "
+            "literally on the host side of the port mapping (e.g. "
+            '`"${PORT}:8000"`). The harness injects PORT via .env at deploy time.'
+        ),
     }
     return False, f"VALIDATION FAILED: {hints.get(stage, 'Required artifacts not found.')}"
 
