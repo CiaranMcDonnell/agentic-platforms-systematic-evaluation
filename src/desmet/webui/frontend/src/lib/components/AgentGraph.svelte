@@ -98,10 +98,16 @@
     return result;
   }
 
-  // Threshold for switching from layered DOWN to rectpacking when a container
-  // has many leaf children. Tunable.
+  // Threshold for switching from layered DOWN to rectpacking. Compares against
+  // the direct child count, which equals the leaf count only because compound
+  // children always force the layered branch in pickLayoutOptions. Tunable.
   const PACK_THRESHOLD = 6;
 
+  // DFS positional walkers used for cross-cluster transition edges. They assume
+  // children are in temporal (start_time) order — currently true because the
+  // Langfuse client appends children as it iterates the observation list, which
+  // the API returns chronologically. If that assumption breaks, the cross-cluster
+  // arrows will point at the wrong leaves.
   function firstLeaf(obs: LangfuseObservation): LangfuseObservation {
     let cur = obs;
     while (cur.children.length > 0) cur = cur.children[0];
@@ -131,6 +137,9 @@
     }
     return {
       'elk.algorithm': 'rectpacking',
+      // Widescreen-ish target. If the bundled elkjs build doesn't honour
+      // elk.aspectRatio, fall back to elk.rectpacking.targetWidth (see spec
+      // risks section).
       'elk.aspectRatio': '1.6',
       'elk.spacing.nodeNode': '12',
       'elk.padding': `[top=${headerPad},left=24,bottom=24,right=24]`,
