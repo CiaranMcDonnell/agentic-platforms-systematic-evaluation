@@ -294,20 +294,49 @@ services:
     image: langgenius/dify-plugin-daemon:0.5.4-local
     container_name: desmet-dify-plugin-daemon
     environment:
+      # Core server
       SERVER_PORT: ${PLUGIN_DAEMON_PORT:-5002}
       SERVER_KEY: ${PLUGIN_DAEMON_KEY:-plugin-daemon-change-me}
+      PLATFORM: local
+      MODE: full
+      # Dify inner API
       DIFY_INNER_API_URL: ${PLUGIN_DIFY_INNER_API_URL:-http://dify-api:5001}
       DIFY_INNER_API_KEY: ${PLUGIN_DIFY_INNER_API_KEY:-inner-api-change-me}
+      # Plugin storage & runtime
       PLUGIN_WORKING_PATH: ${PLUGIN_WORKING_PATH:-/app/storage/cwd}
+      PLUGIN_STORAGE_TYPE: local
+      PLUGIN_STORAGE_LOCAL_ROOT: /app/storage
+      PLUGIN_INSTALLED_PATH: plugin
+      PLUGIN_PACKAGE_CACHE_PATH: plugin_packages
+      PLUGIN_MEDIA_CACHE_PATH: assets
+      PLUGIN_PYTHON_ENV_INIT_TIMEOUT: 120
+      PLUGIN_MAX_EXECUTION_TIMEOUT: 600
+      MAX_PLUGIN_PACKAGE_SIZE: 52428800
+      # Remote plugin install (required even when unused — panic on empty)
+      PLUGIN_REMOTE_INSTALLING_HOST: 0.0.0.0
+      PLUGIN_REMOTE_INSTALLING_PORT: 5003
+      PLUGIN_REMOTE_INSTALL_SERVER_ENABLED: "true"
+      # Force-install plugin pkgs on startup (none for fresh install)
+      FORCE_VERIFYING_SIGNATURE: "false"
+      # Python runtime for plugins
+      PYTHON_INTERPRETER_PATH: /usr/bin/python3
+      # Database
       DB_USERNAME: ${POSTGRES_USER:-desmet}
       DB_PASSWORD: ${POSTGRES_PASSWORD:-desmet_pass}
       DB_HOST: postgres
       DB_PORT: 5432
-      DB_DATABASE: dify
+      DB_DATABASE: dify_plugin
+      DB_SSL_MODE: disable
+      # Redis (for plugin task queue)
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
     volumes:
       - dify_plugin_data:/app/storage
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: unless-stopped
     profiles:
