@@ -15,6 +15,8 @@
   let model = $state('');
   let customModel = $state('');
   let dryRun = $state(false);
+  let deployMode = $state<'local' | 'remote'>('local');
+  let deployConfigured = $derived(store.config?.deploy_status === 'configured');
   let submitting = $state(false);
   let startError = $state<string | null>(null);
 
@@ -37,8 +39,7 @@
 
   onMount(async () => {
     const runsRes = await fetchRuns();
-    const allRuns = (runsRes as any).runs || [];
-    recentRuns = allRuns.slice(-5).reverse();
+    recentRuns = (runsRes.runs ?? []).slice(-5).reverse();
   });
 
   function togglePlatform(id: string) {
@@ -81,6 +82,7 @@
         stages: selectedStages,
         model: (model === '__custom__' ? customModel : model) || null,
         dry_run: dryRun,
+        deploy_mode: deployMode,
       });
       if (res.run_id) {
         selectedRunId.set(res.run_id);
@@ -185,7 +187,7 @@
           <div
             class="checkbox-card {selectedPlatforms.includes(p.id) ? 'selected' : ''}"
             onclick={() => togglePlatform(p.id)}
-            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') togglePlatform(p.id); }}
+            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); togglePlatform(p.id); } }}
             role="button"
             tabindex="0"
           >
@@ -323,10 +325,30 @@
 
   <!-- ── Row 3: Submit bar ──────────────────────────────────── -->
   <div class="submit-bar">
-    <div class="checkbox-card" style="flex-shrink: 0;" onclick={() => dryRun = !dryRun} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') dryRun = !dryRun; }} role="button" tabindex="0">
+    <div class="checkbox-card" style="flex-shrink: 0;" onclick={() => dryRun = !dryRun} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); dryRun = !dryRun; } }} role="button" tabindex="0">
       <input type="checkbox" checked={dryRun} />
       <div>
         <div style="font-weight: 500; font-size: 13px;">Dry Run</div>
+      </div>
+    </div>
+
+    <div class="deploy-mode-group" style="flex-shrink: 0;">
+      <span class="filter-label">Deploy</span>
+      <div class="filter-pills">
+        <button
+          class="toggle-pill {deployMode === 'local' ? 'toggle-active' : ''}"
+          onclick={() => deployMode = 'local'}
+        >
+          Local
+        </button>
+        <button
+          class="toggle-pill {deployMode === 'remote' ? 'toggle-active' : ''}"
+          disabled={!deployConfigured}
+          title={!deployConfigured ? 'Configure DEPLOY_HOST, DEPLOY_USER, DEPLOY_KEY_PATH, DEPLOY_REPO to enable' : ''}
+          onclick={() => deployMode = 'remote'}
+        >
+          Remote
+        </button>
       </div>
     </div>
 
@@ -608,6 +630,15 @@
     background: rgba(212, 168, 83, 0.15);
     color: var(--text-0);
     box-shadow: 0 0 0 1px rgba(212, 168, 83, 0.3);
+  }
+  .toggle-pill:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .deploy-mode-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
   }
   .toggle-dot {
     width: 8px;

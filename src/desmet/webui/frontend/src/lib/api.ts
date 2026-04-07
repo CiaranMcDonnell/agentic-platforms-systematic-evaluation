@@ -58,6 +58,7 @@ export interface RunConfig {
   stages: string[];
   dry_run: boolean;
   model?: string | null;
+  deploy_mode?: string;
 }
 
 export interface DashboardStats {
@@ -285,9 +286,18 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
+  const { headers: extraHeaders, ...restOpts } = opts;
+  const headers: Record<string, string> = {
+    ...(restOpts.body ? { 'Content-Type': 'application/json' } : {}),
+    ...(extraHeaders instanceof Headers
+      ? Object.fromEntries(extraHeaders.entries())
+      : Array.isArray(extraHeaders)
+        ? Object.fromEntries(extraHeaders)
+        : (extraHeaders as Record<string, string> | undefined) ?? {}),
+  };
   const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...opts,
+    ...restOpts,
+    headers,
   });
   if (!res.ok) {
     let body: unknown;
@@ -376,6 +386,7 @@ export interface InfraService {
   name: string;
   description: string;
   status: string;
+  managed?: boolean;
 }
 
 export const fetchInfrastructure = () =>
