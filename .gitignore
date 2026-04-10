@@ -80,6 +80,8 @@ nul
 # Generated files
 *.pdf
 *.png
+# Allow report figures
+!docs/report/figures/**/*.png
 *.duckdb
 *.duckdb.wal
 

@@ -138,7 +138,12 @@ Each platform undergoes the following evaluation process:
 + *Layer 3 Benchmarking*: Four user stories executed through the four-stage pipeline using the management console. Quantitative metrics (token usage, timing, costs) captured automatically; qualitative rubric scores assigned post-execution via the scoring panel.
 + *Result recording*: All results logged to structured JSON output in `results/{platform}/{story_id}/` for analysis.
 
-In practice, the management console (described in @sec-webui) serves as the primary execution instrument. The evaluator uses the _New Run_ page to select platforms, stories, and model configuration; monitors execution progress via the live WebSocket log stream in the _Run Detail_ page; and assigns qualitative rubric scores via the _Scoring_ page with Langfuse trace evidence, LangSmith run trees, and the agent communication graph visible alongside the scoring form. This workflow ensures that qualitative scoring decisions are grounded in trace-level evidence rather than post-hoc recollection.
+In practice, the management console (described in @sec-webui) serves as the primary execution instrument. The evaluator uses the _New Run_ page to select platforms, stories, and model configuration; monitors execution progress via the live WebSocket log stream in the _Run Detail_ page (@fig-webui-run-detail); and assigns qualitative rubric scores via the _Scoring_ page with Langfuse trace evidence, LangSmith run trees, and the agent communication graph visible alongside the scoring form. This workflow ensures that qualitative scoring decisions are grounded in trace-level evidence rather than post-hoc recollection.
+
+#figure(
+  image("../figures/webui/run-detail.png", width: 95%),
+  caption: [Run Detail page showing live log stream during pipeline execution with stage progress and status tracking],
+) <fig-webui-run-detail>
 
 === Automation and Reproducibility
 

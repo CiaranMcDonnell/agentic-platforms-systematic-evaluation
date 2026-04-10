@@ -174,7 +174,12 @@ The console is organised into two navigation groups---_Manage_ (pipeline executi
 
 Five pages support the execution phase:
 
-- *Dashboard*: Provides an at-a-glance overview of the evaluation environment. Cards display infrastructure service health (Langfuse, Redis, Postgres), the number of implemented platform adapters, available LLM providers with per-provider model counts discovered at startup, and a summary of recent evaluation runs. Infrastructure services can be started and stopped directly from the dashboard.
+- *Dashboard*: Provides an at-a-glance overview of the evaluation environment. Cards display infrastructure service health (Langfuse, Redis, Postgres), the number of implemented platform adapters, available LLM providers with per-provider model counts discovered at startup, and a summary of recent evaluation runs. Infrastructure services can be started and stopped directly from the dashboard. @fig-webui-dashboard shows the dashboard layout.
+
+#figure(
+  image("../figures/webui/dashboard.png", width: 95%),
+  caption: [Management console dashboard showing infrastructure health, LLM provider discovery, and recent evaluation runs],
+) <fig-webui-dashboard>
 
 - *Platforms*: Lists all nine platforms with their adapter implementation status, category, and Docker container state. For platforms backed by Docker services (visual/workflow platforms), start and stop controls are provided. The page also surfaces platform-level developer metrics where available.
 
@@ -198,11 +203,21 @@ Four pages support the results analysis phase:
 
   + _Agent graph_: A directed graph visualisation of the multi-agent communication topology (described in detail below).
 
-  The scoring form presents each of the six rubric dimensions (pipeline completeness, tool integration, error recovery, time efficiency, autonomy, trace quality) with a 0--3 slider and a free-text notes field. Scores are persisted via the `ResultStore` and immediately reflected in the comparison charts. Previously submitted scores are pre-loaded when revisiting a platform--story combination, enabling iterative refinement.
+  The scoring form presents each of the six rubric dimensions (pipeline completeness, tool integration, error recovery, time efficiency, autonomy, trace quality) with a 0--3 slider and a free-text notes field. Scores are persisted via the `ResultStore` and immediately reflected in the comparison charts. Previously submitted scores are pre-loaded when revisiting a platform--story combination, enabling iterative refinement. @fig-webui-scoring shows the scoring page layout.
+
+#figure(
+  image("../figures/webui/scoring.png", width: 95%),
+  caption: [Scoring page with rubric form (left) and Langfuse trace evidence panel (right), enabling evidence-grounded qualitative scoring],
+) <fig-webui-scoring>
 
 - *Story Detail*: Provides a per-story cross-platform view. For a selected story, displays each platform's execution metrics (tokens, time, cost, iterations, tool calls) and scoring status. A _Score this_ link navigates directly to the Scoring page with the platform and story pre-selected, streamlining the evaluator's workflow through the story set.
 
-- *Comparison*: The synthesis page that produces the cross-platform analysis. A radar chart overlays all scored platforms on the four cross-cutting dimensions (Pipeline Completeness, Efficiency, Orchestration, Autonomy). A bar chart ranks platforms by overall score. A score matrix heatmap shows per-platform per-dimension scores with colour intensity encoding magnitude. Dimension-specific bar charts can be selected from a dropdown for detailed single-dimension comparison.
+- *Comparison*: The synthesis page that produces the cross-platform analysis. A radar chart overlays all scored platforms on the four cross-cutting dimensions (Pipeline Completeness, Efficiency, Orchestration, Autonomy). A bar chart ranks platforms by overall score. A score matrix heatmap shows per-platform per-dimension scores with colour intensity encoding magnitude. Dimension-specific bar charts can be selected from a dropdown for detailed single-dimension comparison. @fig-webui-comparison shows the comparison page.
+
+#figure(
+  image("../figures/webui/comparison.png", width: 95%),
+  caption: [Comparison page with radar chart overlay of cross-cutting dimensions and platform rankings],
+) <fig-webui-comparison>
 
 === Agent Communication Graph
 
@@ -218,7 +233,12 @@ The graph is constructed from Langfuse trace data via a server-side endpoint (`/
 
 + *Interactive rendering*: The laid-out graph is rendered using `@xyflow/svelte` with custom node components (`AgentNode` for leaf agents, `AgentClusterNode` for containers) and custom edge components (`TransitionEdge` with animated message flow). Clicking a node opens an `ObservationDrawer` showing the full LLM call detail (prompt, response, token usage, timing). A `TimelineCard` component shows the chronological execution sequence alongside the spatial graph.
 
-This visualisation directly supports the evaluation methodology: the graph reveals whether a platform's agents actually collaborated (multiple agents with bidirectional edges) or merely executed sequentially (linear chain), whether the reviewer agent received the executor's output, and whether error recovery involved re-planning or simple retry. These observations inform the qualitative scoring of Orchestration and Autonomy dimensions.
+This visualisation directly supports the evaluation methodology: the graph reveals whether a platform's agents actually collaborated (multiple agents with bidirectional edges) or merely executed sequentially (linear chain), whether the reviewer agent received the executor's output, and whether error recovery involved re-planning or simple retry. These observations inform the qualitative scoring of Orchestration and Autonomy dimensions. @fig-webui-agent-graph shows the agent graph for a representative multi-agent execution.
+
+#figure(
+  image("../figures/webui/agent-graph.png", width: 95%),
+  caption: [Agent communication graph showing multi-agent orchestration topology with cluster containers, message edges, and observation detail drawer],
+) <fig-webui-agent-graph>
 
 === Observability Integration
 
@@ -229,8 +249,6 @@ The console integrates with two observability providers to give the evaluator co
 - *LangSmith*: A secondary provider enabled for LangGraph evaluations. The `LangSmithTraceViewer` component renders the LangGraph-specific run tree, including state checkpoint data and graph node transitions. Availability is checked lazily on first access and indicated in the Scoring page tab bar.
 
 Dual-provider support allows the evaluator to cross-reference traces---for example, comparing Langfuse's framework-agnostic span tree with LangSmith's LangGraph-specific state transitions to verify that checkpoint data is being recorded correctly.
-
-// TODO: Consider adding a figure showing the Scoring page layout with the three evidence tabs and scoring form side by side.
 
 == Extending the Framework
 
