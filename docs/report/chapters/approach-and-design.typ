@@ -16,7 +16,7 @@ This section presents the platforms selected for evaluation and the criteria gui
 
 === Selected Platforms
 
-Nine platforms are included in this evaluation, spanning three architectural categories. Additionally, the A2A (Agent-to-Agent) interoperability protocol is examined as a cross-cutting capability rather than a standalone platform:
+Nine platforms are included in this evaluation, spanning three architectural categories:
 
 #figure(
   table(
@@ -41,8 +41,6 @@ Nine platforms are included in this evaluation, spanning three architectural cat
     [LangFlow], [Visual IDE for LangChain applications],
     [Dify], [LLM application development platform @dify2024],
     [N8n], [Workflow automation with AI capabilities],
-
-    [Interoperability Protocol], [A2A (Agent-to-Agent)], [Google's agent interoperability protocol],
   ),
   caption: [Selected Agentic Platforms by Category],
 )
@@ -55,7 +53,7 @@ Platforms were selected based on the following criteria:
 
 - *Maturity*: Preference for platforms with stable releases, active maintenance, and established documentation.
 - *Industry adoption*: Consideration of community size, GitHub activity, and real-world usage evidence.
-- *Category coverage*: Ensuring representation across multi-agent frameworks, SDK runtimes, workflow builders, and interoperability protocols.
+- *Category coverage*: Ensuring representation across multi-agent frameworks, SDK runtimes, and workflow builders.
 - *SDK availability*: Platforms must provide programmatic access for consistent benchmark execution.
 - *Accessibility*: Preference for open-source tools or those with accessible free tiers for evaluation purposes.
 - *Relevance to software engineering*: Platforms must support tasks representative of software development workflows.
@@ -68,7 +66,7 @@ The three-category taxonomy reflects distinct architectural approaches to agenti
 - *Agent SDK Runtimes* offer vendor-supported development kits optimised for their respective LLM providers, emphasising integration and developer experience.
 - *Visual / Workflow Platforms* prioritise accessibility through no-code or low-code interfaces, enabling rapid prototyping and non-developer usage.
 
-Agent-to-Agent (A2A) interoperability is assessed as a cross-cutting feature in the Layer 2 feature matrix rather than as a standalone platform category.
+Agent-to-Agent (A2A) interoperability is assessed as a cross-cutting feature in the Layer 2 feature matrix rather than as a standalone platform category, alongside Model Context Protocol (MCP) support.
 
 == Evaluation Pipeline and Benchmark Design
 
