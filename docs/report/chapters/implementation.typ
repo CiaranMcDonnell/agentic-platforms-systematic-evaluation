@@ -72,20 +72,33 @@ All platform adapters extend `BasePlatformAdapter` and implement four methods co
 
 === Stage 1: Requirements \& Design
 
-// TODO: Describe the requirements agent, schema definitions (input/output),
-// PlantUML template generation. Reference stage2_requirements/ module.
-// Cite: @cheng2024genai_re for GenAI requirements engineering approaches
+The first pipeline stage transforms a user story into structured requirements and a UML design artefact. The story definition is loaded from YAML by `StoryLoader`, which validates the schema and prepares a `StageContext` containing the story metadata, workspace path, allowed tools, and a progress callback for live reporting.
+
+The stage follows the shared three-agent pattern (planner → executor → reviewer) provided by `ToolAgentAdapter._execute_stage`. The planner agent receives the story description and acceptance criteria via `build_requirements_prompt` and produces an `ImplementationPlan`---a Pydantic model specifying implementation steps, file paths, and dependencies. If the LLM's response cannot be parsed as valid JSON, a plaintext fallback parser extracts numbered steps from the raw output, ensuring robustness across models with varying structured-output fidelity.
+
+The executor agent receives enriched instructions constructed by `build_executor_instructions`, which injects a `## Plan` section (the parsed plan steps) and a `## Files` inventory (target files from the story definition) into the system prompt. The executor writes structured requirements to the workspace via the `write_file` tool and generates PlantUML diagram source via the `generate_uml` tool. The reviewer agent then validates that the workspace contains the expected artefacts; if validation fails, the executor retries with the reviewer's feedback appended to its conversation history.
+
+The stage output is a `RequirementsResult` containing the structured requirements JSON, PlantUML source string, and execution metadata (iterations, tool calls, token usage).
 
 === Stage 2: Code Generation
 
-// TODO: Describe how requirements + UML are passed to the platform for code generation.
-// Reference stage3_codegen/ module (stub status).
+The code generation stage receives the requirements and UML design from Stage~1 via the `StageContext` chaining mechanism: `context.get_prior_result("requirements")` retrieves the preceding stage's output, which `build_codegen_prompt` incorporates into the executor's prompt alongside the original story description. This chaining ensures the code generation agent has full context without re-deriving requirements.
+
+The executor agent writes source files to an isolated workspace directory using the `write_file` tool. Each platform--story combination receives a clean workspace initialised from a baseline project template (`data/baseline/`), providing a consistent starting point (e.g., `pyproject.toml`, directory structure) without constraining the agent's implementation choices. The `read_file` and `list_files` tools enable the agent to inspect its own output and the baseline structure.
+
+Tool dispatch, retry logic, and result construction are handled entirely by the `_execute_stage` template method. The adapter-specific `_run_agent` implementation manages only the platform SDK invocation---for example, LangGraph compiles and invokes its `StateGraph`, while CrewAI kicks off a sequential `Crew`. After execution, the base class runs a workspace audit (`audit_workspace`) that checks for out-of-scope file modifications, logging warnings if the agent wrote files outside the expected target paths.
+
+The stage output is a `CodeResult` recording the files produced, tool call count, and execution metadata.
 
 === Stage 3: Test Generation
 
-// TODO: Describe how requirements + generated code are passed for test generation.
-// Reference stage4_testing/ module (stub status).
-// Cite: @garousi2024ai_testing for AI-powered testing tools survey
+The test generation stage receives the requirements and generated source code from prior stages and produces a test suite. The executor agent is provided with the full workspace contents (source files from Stage~2) and tasked with writing tests that exercise the acceptance criteria defined in the story.
+
+This stage introduces two capabilities not present in earlier stages. First, the `run_tests` tool enables the agent to invoke a test runner (pytest for Python projects, jest for JavaScript) and receive structured output including pass/fail counts, failure messages, and coverage data where available. Second, an error-recovery loop allows the agent to iteratively fix failing tests: when `run_tests` reports failures, the agent can read the failing test output, modify the test or source code, and re-invoke the runner---continuing until tests pass or the iteration budget is exhausted.
+
+The reviewer agent in this stage operates under asymmetric tool distribution: it receives only inspection tools (`read_file`, `list_files`) and cannot modify the workspace. This design ensures the reviewer provides an independent assessment of test adequacy without the ability to ``fix'' issues itself, preserving the separation between generation and review that the scoring rubric evaluates under the _Orchestration_ dimension.
+
+The stage output is a `TestResult` recording tests run, tests passed, coverage delta, and execution metadata.
 
 === Stage 4: Build \& Deploy
 
