@@ -136,20 +136,25 @@ This stage contributes to multiple evaluation dimensions: _Orchestration_ (corre
 
 == Metrics Collection and Token Tracking
 
-=== Automatic Instrumentation
+=== Automatic Instrumentation <sec-metrics>
 
-The harness automatically captures resource consumption metrics at each pipeline stage:
+The harness captures resource consumption metrics at each pipeline stage through three mechanisms:
 
-// TODO: Describe how token usage is tracked — LLM config centralisation,
-// provider-specific extraction (OpenAI usage objects, CrewAI UsageMetrics),
-// wall-clock timing via context managers, API cost estimation.
+- *Token tracking*: The `_execute_stage` template method wraps each stage invocation in an `ObservationCollector` that records per-LLM-call token counts. Each adapter feeds provider-specific usage data into the collector---for example, OpenAI-compatible adapters extract `usage.prompt_tokens` and `usage.completion_tokens` from response objects, while CrewAI uses a native `OpenAICompletion` callback registered on the event bus, and the Agent Framework inserts a `UsageTrackingMiddleware` into the chat pipeline. The collector aggregates these per-call counts into stage-level totals.
+
+- *Wall-clock timing*: The `EvaluationRunner` records `datetime.now(timezone.utc)` before and after each stage invocation, yielding `wall_clock_seconds` per stage. Stage-level timings are aggregated into story-level totals for efficiency scoring.
+
+- *Cost estimation*: API costs are estimated from token counts using per-provider pricing tables. Since pricing varies by model and provider, costs are recorded as estimates and flagged as such in the results.
+
+All metrics are persisted to a DuckDB-backed `ResultStore` (`harness/store.py`) that maintains two tables: `runs` (run-level metadata including model, temperature, platform/story filters) and `executions` (per-platform-per-story execution records with all quantitative metrics and rubric scores). The store supports both programmatic querying (via DuckDB SQL) and DataFrame export (via Pandas), enabling the dashboard data layer to generate charts and summary tables without re-parsing JSON artefacts.
 
 === Cross-cutting Dimension Computation
 
-The four cross-cutting dimensions (Pipeline Completeness, Efficiency, Orchestration, Autonomy) are computed from per-stage metrics using the formulas defined in the Project Approach and Design chapter. The implementation in `harness/metrics.py` directly encodes these formulas. All dimensions measure framework capability, not LLM output quality.
+The `MetricsCollector` class (`harness/metrics.py`) computes the four cross-cutting dimension scores defined in the Design chapter. The `calculate_dimension_scores` method operates on a list of `StoryMetrics` facades (each wrapping a `StoryResult` with additional metrics-only fields) and produces `DimensionScore` entries on a 1--5 Likert scale.
 
-// TODO: Reference the specific formula implementations. Briefly describe
-// the fallback behaviour when stage-level data is unavailable.
+Pipeline Completeness combines the story completion ratio with the average pipeline completeness rubric score (0--3). Efficiency combines three components---time ratio (wall-clock relative to budget), token ratio (total tokens relative to a 100,000-token budget), and cost ratio (API cost relative to a \$0.50-per-story budget)---falling back to a two-component average when cost data is unavailable. Orchestration averages the three orchestration-related rubric scores (tool integration, error recovery, trace quality) and rescales from 0--3 to 1--5. Autonomy is computed as $5 - min(4, overline(I))$ where $overline(I)$ is the mean human interventions per stage, ensuring that fewer interventions yield higher scores.
+
+When repeated runs are configured (`RunnerConfig.repeats > 1`), the collector also computes `VarianceMetrics`---mean and population standard deviation for wall-clock time, token usage, cost, tool calls, iterations, and success rate---enabling assessment of result stability across non-deterministic LLM outputs.
 
 == Web-Based Management Console <sec-webui>
 
@@ -275,8 +280,14 @@ The deploy stage requires a target server with Docker and git. The framework con
 
 == Technical Challenges
 
-// TODO: Document significant implementation challenges encountered:
-// - Platform API differences and normalisation
-// - Token tracking across different LLM providers
-// - Async execution and error handling
-// - Ensuring reproducibility across runs
+Several significant implementation challenges were encountered during adapter development. These are documented both as technical contributions and as evidence of the depth of platform-specific adaptation required.
+
+*CrewAI token tracking breakage.* CrewAI version 1.6 removed its `litellm` dependency, breaking the token usage callback mechanism that earlier versions relied on. The fix required switching to CrewAI's native `OpenAICompletion` callback combined with a `BaseInterceptor` registered through the event bus, which intercepts LLM responses before they reach the agent and records usage data into the `ObservationCollector`. This highlights the fragility of depending on internal framework APIs that change without deprecation warnings.
+
+*CrewAI early termination.* Without explicit termination control, CrewAI agents would exhaust their 50-iteration budget even after producing valid output, consuming tokens on increasingly circular reasoning. The solution was a `check_completion` tool with `result_as_answer=True`---when the agent calls this tool, CrewAI treats the tool's return value as the agent's final answer and terminates the iteration loop. This reduced token consumption per stage by approximately 60\% for the CrewAI adapter.
+
+*CrewAI native function calling.* CrewAI's native function calling mode (where tool definitions are passed to the LLM's function calling API) is broken for non-OpenAI providers at the time of writing. When using Anthropic or Google models via CrewAI, the framework falls back to ReAct-style text parsing, where tool invocations are extracted from the LLM's textual output using regex patterns. This forced the adapter to support both code paths and introduces a confound: CrewAI's orchestration overhead differs depending on whether the underlying provider supports native function calling.
+
+*Adapter parity vs.\ idiomatic usage.* Achieving a controlled comparison requires shared structure (same prompts, same tools, same scoring) while preserving each platform's native patterns. The solution was a layered architecture: the `ToolAgentAdapter` base class provides the shared template (prompt construction, tool creation, retry policy, result building), while each adapter's `_run_agent` method uses the platform's idiomatic orchestration. For example, LangGraph uses compiled subgraphs with checkpointing, CrewAI uses sequential crews with role-based agents, and the Agent Framework uses MagenticOne manager-driven teams. This design ensures that measured differences reflect genuine platform capabilities rather than adapter implementation choices.
+
+*Deploy stage security model.* The deploy stage requires agents to execute commands on a remote server via SSH---a significant security surface. The mitigation is a defence-in-depth approach: the target server runs a restricted user (`desmet`) with a whitelisted shell permitting only `git pull`, `docker compose up`, `docker ps`, and `curl`; SSH access is restricted to a Tailscale VPN mesh; and each platform--story combination pushes to a dedicated git branch, providing isolation within a single deploy repository. This model prevents any agent-initiated action from affecting other services while still providing a realistic deployment environment for evaluation.
