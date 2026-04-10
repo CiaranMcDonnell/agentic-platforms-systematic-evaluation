@@ -62,11 +62,17 @@ All platform adapters extend `BasePlatformAdapter` and implement four methods co
   caption: [Platform Adapter Implementation Status],
 )
 
-// TODO: For each implemented adapter, describe:
-// - How the platform's API/SDK is invoked
-// - How token usage is captured (e.g., CrewAI's UsageMetrics from litellm)
-// - Any platform-specific challenges or workarounds
-// Cite: @wu2023autogen @duan2024exploration @crewai2024 for platform-specific details
+Each implemented adapter extends `ToolAgentAdapter` and provides a single method---`_run_agent`---containing the platform-specific agent execution logic. The shared base class handles prompt construction, tool creation, trace lifecycle, retry orchestration, and result building. The descriptions below focus on each adapter's idiomatic use of its platform's native capabilities.
+
+*LangGraph* (`adapters/langgraph.py`): Implements a three-node `StateGraph` with `InMemorySaver` checkpointing. The parent graph threads `ParentState` (plan text, retry count, validator feedback) through planner → executor → reviewer nodes, with a conditional edge from the reviewer back to the executor on validation failure. Each node is a compiled subgraph with private `SubgraphState` accumulating `BaseMessage` history via LangGraph's `add_messages` reducer. This architecture exploits LangGraph's native state persistence: conversation history survives across retries without manual serialisation, and the checkpoint mechanism enables post-hoc replay of agent interactions for trace analysis @langchain2024langgraph.
+
+*CrewAI* (`adapters/crewai.py`): Constructs a sequential `Crew` with three role-based agents (planner, executor, reviewer), each configured with a backstory, goal, and tool set. CrewAI's iteration budget is distributed across agents using a 20/60/20 split (planner/executor/reviewer) on first attempt, shifting to 0/80/20 on retry to allocate more capacity to the executor. A `check_completion` tool with `result_as_answer=True` enables the executor to signal early completion, preventing the 50-iteration token burn that occurs when CrewAI agents exhaust their iteration limit without producing a final answer @crewai2024. Token usage is captured via a native `OpenAICompletion` callback registered through CrewAI's event bus.
+
+*OpenAI Agents SDK* (`adapters/openai_agents.py`): Uses a three-agent handoff chain where each agent is defined with a system prompt, tool set, and optional structured output schema. The planner agent produces an `ImplementationPlan` via Pydantic-validated structured output. Agent transitions use the SDK's native handoff mechanism, passing conversation context forward. The reviewer agent carries an output guardrail---a workspace validator that checks for expected artefacts---which triggers a retry loop on failure, using the SDK's built-in guardrail-to-retry pipeline @openai2025agents_sdk.
+
+*Google ADK* (`adapters/google_adk.py`): Orchestrates agents using ADK's compositional primitives: a `SequentialAgent` chains planner → `LoopAgent` → validation, where the `LoopAgent` wraps the executor--reviewer pair with a native `exit_loop` tool that the reviewer invokes when validation passes. Non-Gemini models are supported via LiteLLM format strings (e.g., `openai/gpt-4o`), enabling the same adapter to evaluate ADK's orchestration with different LLM providers. Per-call token and tool usage is captured through ADK callbacks registered on each agent @google2025adk.
+
+*Microsoft Agent Framework* (`adapters/agent_framework.py`): Employs `MagenticBuilder` to construct a manager-driven team with built-in stall detection and round-count limits. The manager agent delegates tasks to specialist agents (planner, executor, reviewer), monitors progress, and triggers automatic re-planning when stall detection fires after `MAX_STALL_COUNT` consecutive unproductive rounds. Token usage is intercepted by a `UsageTrackingMiddleware` layer inserted into the chat pipeline, which records per-call usage from the LLM response objects before forwarding them to the `ObservationCollector` @microsoft2025agent_framework.
 
 == Pipeline Stage Implementation
 
