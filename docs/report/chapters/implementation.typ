@@ -132,11 +132,81 @@ The four cross-cutting dimensions (Pipeline Completeness, Efficiency, Orchestrat
 // TODO: Reference the specific formula implementations. Briefly describe
 // the fallback behaviour when stage-level data is unavailable.
 
-== Web-Based Management Console
+== Web-Based Management Console <sec-webui>
 
-A FastAPI-based web UI (`src/desmet/webui/`) serves as the management console for the evaluation harness, launched via the `desmet` CLI on port 8042 (see @appendix-getting-started). The backend exposes REST endpoints for platform management, benchmark execution, and results visualisation, alongside WebSocket support for live execution logs. The dashboard data layer (`dashboard/data.py`, `dashboard/charts.py`) provides chart generation and platform summary DataFrames consumed by the web UI.
+The evaluation harness includes a purpose-built web-based management console that serves as the primary instrument for conducting evaluations. Rather than a convenience wrapper around CLI commands, the console operationalises the evaluation methodology: it embeds the scoring rubric, provides trace-level evidence for qualitative judgements, visualises multi-agent orchestration patterns, and produces the cross-platform comparison analysis. This section describes its architecture, capabilities, and role in the evaluation workflow.
 
-// TODO: Describe the web UI pages and functionality in more detail.
+=== Architecture
+
+The console follows a two-tier architecture. The backend is a FastAPI application (`src/desmet/webui/api.py`) exposing approximately 45 REST endpoints and two WebSocket channels---one for live log streaming during pipeline execution, one for Docker image build progress. The frontend is a Svelte~5 single-page application compiled to static assets and served by the backend on port~8042. Reactive state management uses Svelte~5 runes (`$state`, `$derived`) with a centralised data layer (`data.svelte`) that polls the backend for infrastructure health, platform status, and run progress.
+
+The console launches automatically via the `desmet` CLI (see @appendix-getting-started) and starts the Langfuse tracing infrastructure as a core dependency on startup. All evaluation data flows through the same `ResultStore` (DuckDB-backed, see @sec-metrics) used by the CLI, ensuring consistency between console-driven and programmatic evaluations.
+
+=== Evaluation Workflow Pages
+
+The console is organised into two navigation groups---_Manage_ (pipeline execution) and _Results_ (analysis and scoring)---reflecting the two phases of an evaluation session.
+
+==== Pipeline Execution
+
+Five pages support the execution phase:
+
+- *Dashboard*: Provides an at-a-glance overview of the evaluation environment. Cards display infrastructure service health (Langfuse, Redis, Postgres), the number of implemented platform adapters, available LLM providers with per-provider model counts discovered at startup, and a summary of recent evaluation runs. Infrastructure services can be started and stopped directly from the dashboard.
+
+- *Platforms*: Lists all nine platforms with their adapter implementation status, category, and Docker container state. For platforms backed by Docker services (visual/workflow platforms), start and stop controls are provided. The page also surfaces platform-level developer metrics where available.
+
+- *Stories*: Displays all user stories loaded from `data/stories/`, filterable by difficulty level (basic, intermediate, advanced). Each story card shows the title, description, acceptance criteria count, time budget, and maximum iteration limit. Selecting a story navigates to a detail view with the full acceptance criteria list.
+
+- *New Run*: The launch page for pipeline execution. The evaluator selects one or more platforms, one or more stories, and optionally overrides the LLM model and temperature. Clicking _Start_ creates a run record in the `ResultStore`, initialises the `EvaluationRunner`, and redirects to the Run Detail page for live monitoring.
+
+- *Run Detail*: Displays real-time execution progress via a WebSocket connection. A live log viewer streams structured log output from the runner, including stage transitions, tool invocations, token usage snapshots, and error events. A status badge tracks the run lifecycle (queued → running → completed / failed / cancelled). A cancel button sends a stop signal to the runner, enabling early termination of runs that are consuming excessive tokens or time.
+
+==== Analysis and Scoring
+
+Four pages support the results analysis phase:
+
+- *Results Overview*: Presents aggregate metrics across all completed runs. ECharts-rendered visualisations include completion rate bar charts (per platform), dimension score bar charts (per dimension across platforms), efficiency breakdowns (time vs.\ token vs.\ cost components), and story-level comparison charts. All charts are generated server-side and delivered as ECharts option JSON, ensuring consistent rendering.
+
+- *Scoring*: The centrepiece of the evaluation workflow. This page operationalises the 0--3 scoring rubric defined in the Design chapter. The evaluator selects a platform--story combination and is presented with three tabbed evidence panels alongside the scoring form:
+
+  + _Langfuse trace_: A hierarchical span tree rendered from Langfuse observation data, showing each LLM call, tool invocation, and agent transition with token counts, timing, and input/output content. Spans are rendered as a nested timeline with expandable detail drawers.
+
+  + _LangSmith trace_: For LangGraph runs, a complementary run tree fetched from LangSmith, providing LangGraph-specific state snapshots and checkpoint data.
+
+  + _Agent graph_: A directed graph visualisation of the multi-agent communication topology (described in detail below).
+
+  The scoring form presents each of the six rubric dimensions (pipeline completeness, tool integration, error recovery, time efficiency, autonomy, trace quality) with a 0--3 slider and a free-text notes field. Scores are persisted via the `ResultStore` and immediately reflected in the comparison charts. Previously submitted scores are pre-loaded when revisiting a platform--story combination, enabling iterative refinement.
+
+- *Story Detail*: Provides a per-story cross-platform view. For a selected story, displays each platform's execution metrics (tokens, time, cost, iterations, tool calls) and scoring status. A _Score this_ link navigates directly to the Scoring page with the platform and story pre-selected, streamlining the evaluator's workflow through the story set.
+
+- *Comparison*: The synthesis page that produces the cross-platform analysis. A radar chart overlays all scored platforms on the four cross-cutting dimensions (Pipeline Completeness, Efficiency, Orchestration, Autonomy). A bar chart ranks platforms by overall score. A score matrix heatmap shows per-platform per-dimension scores with colour intensity encoding magnitude. Dimension-specific bar charts can be selected from a dropdown for detailed single-dimension comparison.
+
+=== Agent Communication Graph
+
+The agent graph is a novel visualisation component that makes multi-agent orchestration patterns directly observable. During qualitative scoring, the evaluator can inspect how agents communicated, delegated, and coordinated---information that is critical for scoring the _Orchestration_ dimension but difficult to extract from raw trace logs.
+
+The graph is constructed from Langfuse trace data via a server-side endpoint (`/api/dashboard/graph/{platform_id}/{story_id}`) that extracts agent nodes and message edges from the observation tree. The frontend renders this as an interactive directed graph using the following pipeline:
+
++ *Trace parsing*: The backend traverses the Langfuse observation hierarchy, identifying agent-level spans (generations and chains) and extracting parent--child relationships and message content.
+
++ *Graph construction*: Agent nodes are grouped into cluster containers reflecting the platform's orchestration topology---for example, a CrewAI sequential crew appears as a container with planner, executor, and reviewer nodes arranged in sequence, while a MagenticOne team shows a central manager node with edges to specialist agents.
+
++ *ELK layout*: The graph input is passed to ELK (Eclipse Layout Kernel) via `elkjs` for automatic hierarchical layout, producing positioned nodes and routed edges that minimise crossings.
+
++ *Interactive rendering*: The laid-out graph is rendered using `@xyflow/svelte` with custom node components (`AgentNode` for leaf agents, `AgentClusterNode` for containers) and custom edge components (`TransitionEdge` with animated message flow). Clicking a node opens an `ObservationDrawer` showing the full LLM call detail (prompt, response, token usage, timing). A `TimelineCard` component shows the chronological execution sequence alongside the spatial graph.
+
+This visualisation directly supports the evaluation methodology: the graph reveals whether a platform's agents actually collaborated (multiple agents with bidirectional edges) or merely executed sequentially (linear chain), whether the reviewer agent received the executor's output, and whether error recovery involved re-planning or simple retry. These observations inform the qualitative scoring of Orchestration and Autonomy dimensions.
+
+=== Observability Integration
+
+The console integrates with two observability providers to give the evaluator comprehensive trace evidence:
+
+- *Langfuse*: The primary tracing backend, started automatically on console launch. The `TraceViewer` component renders the full observation tree with expandable spans. The `SpanNode` component shows per-span token counts, duration, and a truncated preview of input/output content. The `TimelineView` provides a horizontal timeline of all spans for temporal analysis. Trace data is fetched via the Langfuse client SDK (`webui/langfuse_client.py`), which handles authentication, pagination, and observation tree assembly.
+
+- *LangSmith*: A secondary provider enabled for LangGraph evaluations. The `LangSmithTraceViewer` component renders the LangGraph-specific run tree, including state checkpoint data and graph node transitions. Availability is checked lazily on first access and indicated in the Scoring page tab bar.
+
+Dual-provider support allows the evaluator to cross-reference traces---for example, comparing Langfuse's framework-agnostic span tree with LangSmith's LangGraph-specific state transitions to verify that checkpoint data is being recorded correctly.
+
+// TODO: Consider adding a figure showing the Scoring page layout with the three evidence tabs and scoring form side by side.
 
 == Extending the Framework
 
