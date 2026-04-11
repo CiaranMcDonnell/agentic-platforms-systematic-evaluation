@@ -86,8 +86,6 @@ These three formats form a pipeline: YAML story definitions provide the structur
 
 === Output Artefacts
 
-Each pipeline stage produces structured output stored in `results/{platform}/{story_id}/`:
-
 Each pipeline stage produces a `StageResult` object (defined in `harness/results.py`) serialised to JSON in the results directory. Stage-specific result types extend the base: `RequirementsResult` stores structured requirements JSON and PlantUML source; `CodeResult` records files written and tool call metadata; `TestResult` captures test pass/fail counts, coverage data, and test runner output; `DeployResult` records push, restart, and health check outcomes. All result types include common fields: `platform_id`, `stage_name`, `success`, `iterations`, `tool_calls`, `tokens_input`, `tokens_output`, `wall_clock_seconds`, and `langfuse_trace_id` for trace cross-referencing. Generated artefacts (source code, test files, build logs) are retained in the workspace directory for manual inspection.
 
 == Ground Truth and Baselines

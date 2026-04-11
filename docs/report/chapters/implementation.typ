@@ -88,7 +88,7 @@ The four visual/workflow platform adapters share a different base class---`Visua
 
 === Stage 1: Requirements \& Design
 
-The first pipeline stage transforms a user story into structured requirements and a UML design artefact. The story definition is loaded from YAML by `StoryLoader`, which validates the schema and prepares a `StageContext` containing the story metadata, workspace path, allowed tools, and a progress callback for live reporting.
+The first pipeline stage transforms a user story into structured requirements and a UML design artefact. The story definition is loaded from YAML by the story loader (`harness/loader.py`), which validates the schema and prepares a `StageContext` containing the story metadata, workspace path, allowed tools, and a progress callback for live reporting.
 
 The stage follows the shared three-agent pattern (planner → executor → reviewer) provided by `ToolAgentAdapter._execute_stage`. The planner agent receives the story description and acceptance criteria via `build_requirements_prompt` and produces an `ImplementationPlan`---a Pydantic model specifying implementation steps, file paths, and dependencies. If the LLM's response cannot be parsed as valid JSON, a plaintext fallback parser extracts numbered steps from the raw output, ensuring robustness across models with varying structured-output fidelity.
 
