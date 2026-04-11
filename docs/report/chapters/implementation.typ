@@ -207,7 +207,7 @@ Four pages support the results analysis phase:
 
 #figure(
   image("../figures/webui/scoring.png", width: 95%),
-  caption: [Scoring page with rubric form (left) and Langfuse trace evidence panel (right), enabling evidence-grounded qualitative scoring],
+  caption: [Scoring page showing per-dimension rubric sliders (top) and Langfuse execution trace with timeline, messages, and tool calls (bottom)],
 ) <fig-webui-scoring>
 
 - *Story Detail*: Provides a per-story cross-platform view. For a selected story, displays each platform's execution metrics (tokens, time, cost, iterations, tool calls) and scoring status. A _Score this_ link navigates directly to the Scoring page with the platform and story pre-selected, streamlining the evaluator's workflow through the story set.
@@ -216,7 +216,7 @@ Four pages support the results analysis phase:
 
 #figure(
   image("../figures/webui/comparison.png", width: 95%),
-  caption: [Comparison page with radar chart overlay of cross-cutting dimensions and platform rankings],
+  caption: [Comparison page showing efficiency breakdown bar charts and per-story wall-clock time comparison across platforms],
 ) <fig-webui-comparison>
 
 === Agent Communication Graph
