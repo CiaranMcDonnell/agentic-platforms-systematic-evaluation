@@ -49,15 +49,15 @@ All platform adapters extend `BasePlatformAdapter` and implement four methods co
     table.header(
       [*Platform*], [*Adapter Status*], [*Notes*],
     ),
-    [LangGraph], [Implemented], [],
-    [CrewAI], [Implemented], [],
+    [LangGraph], [Implemented], [Three-node StateGraph with InMemorySaver checkpointing],
+    [CrewAI], [Implemented], [Sequential Crew with role-based agents and iteration budget control],
     [OpenAI Agents SDK], [Implemented], [3-agent handoff chain with output guardrails],
     [Google ADK], [Implemented], [SequentialAgent + LoopAgent orchestration],
     [Microsoft Agent Framework], [Implemented], [MagenticOne manager-driven orchestration],
-    [Flowise], [Stub], [],
-    [LangFlow], [Stub], [],
-    [Dify], [Stub], [],
-    [N8n], [Stub], [],
+    [Flowise], [Implemented], [REST API chatflow creation and execution via Docker],
+    [LangFlow], [Implemented], [REST API flow creation and execution via Docker],
+    [Dify], [Implemented], [Dual Console/Service API with app lifecycle management],
+    [N8n], [Implemented], [REST API v1 workflow creation with credential provisioning],
   ),
   caption: [Platform Adapter Implementation Status],
 )
@@ -73,6 +73,16 @@ Each implemented adapter extends `ToolAgentAdapter` and provides a single method
 *Google ADK* (`adapters/google_adk.py`): Orchestrates agents using ADK's compositional primitives: a `SequentialAgent` chains planner → `LoopAgent` → validation, where the `LoopAgent` wraps the executor--reviewer pair with a native `exit_loop` tool that the reviewer invokes when validation passes. Non-Gemini models are supported via LiteLLM format strings (e.g., `openai/gpt-4o`), enabling the same adapter to evaluate ADK's orchestration with different LLM providers. Per-call token and tool usage is captured through ADK callbacks registered on each agent @google2025adk.
 
 *Microsoft Agent Framework* (`adapters/agent_framework.py`): Employs `MagenticBuilder` to construct a manager-driven team with built-in stall detection and round-count limits. The manager agent delegates tasks to specialist agents (planner, executor, reviewer), monitors progress, and triggers automatic re-planning when stall detection fires after `MAX_STALL_COUNT` consecutive unproductive rounds. Token usage is intercepted by a `UsageTrackingMiddleware` layer inserted into the chat pipeline, which records per-call usage from the LLM response objects before forwarding them to the `ObservationCollector` @microsoft2025agent_framework.
+
+The four visual/workflow platform adapters share a different base class---`VisualAgentAdapter` (`adapters/_visual_base.py`)---which provides the `_execute_visual_stage` retry loop and result building. Unlike the SDK-based adapters that invoke platform libraries in-process, visual adapters communicate with their platforms over REST APIs, with each platform running as a Docker container managed by the harness infrastructure.
+
+*Flowise* (`adapters/flowise.py`): Communicates with Flowise via its REST API to programmatically create AI Agent chatflows for each pipeline stage. The adapter constructs chatflow definitions from JSON templates (`adapters/flowise_templates.py`) that wire together an Agent node with the appropriate tool nodes and an LLM configuration. Each stage creates a chatflow, sends the stage prompt via the `/api/v1/prediction` endpoint, extracts the response and any tool call metadata, then deletes the chatflow to maintain isolation between stages.
+
+*LangFlow* (`adapters/langflow.py`): Follows the same pattern as Flowise but targets LangFlow's flow API. Flow definitions are constructed from templates (`adapters/langflow_templates.py`) that assemble component graphs---including an Agent component, tool components, and an LLM provider component---matching LangFlow's internal graph representation. Flows are created, executed via the `/api/v1/run` endpoint, and cleaned up after each stage.
+
+*Dify* (`adapters/dify.py`): Differs from the other visual adapters by requiring two APIs: the Console API (`/console/api/`) for app management (creating agent apps, configuring model providers, publishing) and the Service API (`/v1/`) for execution using per-app API keys. The adapter lifecycle for each stage is: authenticate → create agent app → configure the model provider → publish the app → generate an API key → execute via the Service API → delete the app @dify2024. This dual-API architecture adds complexity but reflects Dify's design as a multi-tenant platform where app management and execution are separated.
+
+*N8n* (`adapters/n8n.py`): Communicates with n8n's REST API v1 to create and execute AI Agent workflows. The adapter provisions LLM credentials in n8n's credential store before workflow creation, then constructs workflow definitions containing an AI Agent node wired to tool nodes. Workflows are activated, triggered via the `/api/v1/workflows/{id}/run` endpoint, and deactivated after execution. N8n's execution model is polling-based: the adapter submits the trigger and polls the execution endpoint until the workflow completes or times out.
 
 == Pipeline Stage Implementation
 
