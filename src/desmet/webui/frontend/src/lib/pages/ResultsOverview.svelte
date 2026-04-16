@@ -1,13 +1,13 @@
 <script lang="ts">
-  import { fetchOverview, fetchFrameworkMetrics } from '../api';
-  import type { OverviewData, FrameworkMetricsPlatform } from '../api';
+  import { fetchOverview } from '../api';
+  import type { OverviewData } from '../api';
   import EChart from '../components/EChart.svelte';
   import DimScorePills from '../components/DimScorePills.svelte';
   import RunSelector from '../components/RunSelector.svelte';
+  import FrameworkMetricsTable from '../components/comparison/FrameworkMetricsTable.svelte';
   import { selectedResultsRunId } from '../stores';
 
   let data = $state<OverviewData | null>(null);
-  let fmPlatforms = $state<FrameworkMetricsPlatform[]>([]);
 
   let currentRunId = $state<string | null>(null);
   selectedResultsRunId.subscribe((v) => (currentRunId = v));
@@ -15,42 +15,11 @@
   $effect(() => {
     const rid = currentRunId;
     fetchOverview(rid).then((d) => (data = d));
-    fetchFrameworkMetrics().then((fm) => (fmPlatforms = fm.platforms)).catch(() => (fmPlatforms = []));
   });
 
   function hasAnyScore(dimScores: Record<string, number | null | undefined> | undefined): boolean {
     if (!dimScores) return false;
     return Object.values(dimScores).some(v => v !== null && v !== undefined);
-  }
-
-  const FM_KEYS = [
-    'tokens_per_stage',
-    'iteration_ratio',
-    'first_action_latency_ms',
-    'redundant_tool_call_rate',
-    'tool_failure_rate',
-    'framework_overhead_ms',
-  ] as const;
-
-  const FM_LABELS: Record<string, string> = {
-    tokens_per_stage: 'Tokens / Stage',
-    iteration_ratio: 'Iteration Ratio',
-    first_action_latency_ms: 'First-Action Latency',
-    redundant_tool_call_rate: 'Redundant Calls',
-    tool_failure_rate: 'Tool Failure Rate',
-    framework_overhead_ms: 'Framework Overhead',
-  };
-
-  function fmFormat(key: string, val: number | null | undefined): string {
-    if (val === null || val === undefined) return 'N/A';
-    if (key === 'tokens_per_stage') return val.toLocaleString();
-    if (key === 'iteration_ratio' || key === 'redundant_tool_call_rate' || key === 'tool_failure_rate') {
-      return (val * 100).toFixed(1) + '%';
-    }
-    if (key === 'first_action_latency_ms' || key === 'framework_overhead_ms') {
-      return val.toLocaleString() + ' ms';
-    }
-    return String(val);
   }
 </script>
 
@@ -141,41 +110,9 @@
     <EChart endpoint="/api/dashboard/charts/efficiency" />
 
     <!-- Framework Metrics -->
-    {#if fmPlatforms.length > 0}
-      <div class="card" style="margin-top: 28px;">
-        <h2 style="font-size: 14px; font-weight: 600; margin-bottom: 16px;">Framework Metrics (per-stage averages)</h2>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Metric</th>
-                {#each fmPlatforms as p}
-                  <th style="text-align: right;">{p.platform_name}</th>
-                {/each}
-              </tr>
-            </thead>
-            <tbody>
-              {#each FM_KEYS as key}
-                <tr>
-                  <td style="font-size: 12px; font-weight: 500;">{FM_LABELS[key]}</td>
-                  {#each fmPlatforms as p}
-                    <td class="mono" style="text-align: right; font-size: 12px;">
-                      {fmFormat(key, p.metrics[key])}
-                    </td>
-                  {/each}
-                </tr>
-              {/each}
-              <tr style="border-top: 1px solid var(--border);">
-                <td style="font-size: 11px; color: var(--text-2);">Stories</td>
-                {#each fmPlatforms as p}
-                  <td class="mono text-muted" style="text-align: right; font-size: 11px;">{p.story_count}</td>
-                {/each}
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    {/if}
+    <div style="margin-top: 28px;">
+      <FrameworkMetricsTable runId={currentRunId} />
+    </div>
   {/if}
 </div>
 
