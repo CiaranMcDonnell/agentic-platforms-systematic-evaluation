@@ -52,6 +52,7 @@ def _parse_size(s: str) -> int:
 # Data models
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ResourceSample:
     """A single point-in-time resource observation for a container."""
@@ -96,6 +97,7 @@ class ResourceSummary:
 # Docker stats JSON parsing
 # ---------------------------------------------------------------------------
 
+
 def _parse_docker_stats_json(raw: dict[str, str]) -> ResourceSample:
     """Parse one line of ``docker stats --format '{{json .}}'`` output.
 
@@ -135,6 +137,7 @@ def _parse_docker_stats_json(raw: dict[str, str]) -> ResourceSample:
 # Background resource monitor
 # ---------------------------------------------------------------------------
 
+
 class ResourceMonitor:
     """Polls docker stats for a container in a background thread."""
 
@@ -166,8 +169,11 @@ class ResourceMonitor:
             try:
                 result = subprocess.run(
                     [
-                        "docker", "stats", "--no-stream",
-                        "--format", "{{json .}}",
+                        "docker",
+                        "stats",
+                        "--no-stream",
+                        "--format",
+                        "{{json .}}",
                         self._container,
                     ],
                     capture_output=True,

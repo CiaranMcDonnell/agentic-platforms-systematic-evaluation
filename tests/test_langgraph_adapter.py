@@ -66,3 +66,86 @@ class TestPlanParsing:
         steps = parse_plan("- First step\n- Second step")
         assert len(steps) == 2
         assert steps[0]["text"] == "First step"
+
+
+class TestStreamHeartbeat:
+    """The _aiter_with_heartbeat helper races each chunk against an
+    asyncio sleep so a slow LLM call inside an executor node still
+    emits 'waiting on LLM' progress every few seconds.
+
+    Regression target: a deploy-stage benchmark sat at
+    '[executor] step 12 (45s, 41,506 tokens)' for 2m43s before the user
+    cancelled, because LangGraph's astream(stream_mode='updates')
+    doesn't emit anything until a node completes.
+    """
+
+    async def test_heartbeat_fires_during_slow_chunk(self):
+        import asyncio
+        from desmet.adapters.langgraph import _aiter_with_heartbeat
+
+        class FakeProgress:
+            def __init__(self):
+                self.calls: list[tuple[str, int]] = []
+            def waiting(self, label: str, seconds: int) -> None:
+                self.calls.append((label, seconds))
+
+        async def slow_stream():
+            await asyncio.sleep(0.6)
+            yield "chunk-1"
+            yield "chunk-2"
+
+        progress = FakeProgress()
+        chunks = []
+        async for chunk in _aiter_with_heartbeat(
+            slow_stream(), "executor", progress, interval=0.2,
+        ):
+            chunks.append(chunk)
+
+        assert chunks == ["chunk-1", "chunk-2"]
+        # We expect at least 2 heartbeats during the 0.6s sleep at 0.2s intervals
+        assert len(progress.calls) >= 2, (
+            f"expected ≥2 heartbeats during slow chunk, got {progress.calls}"
+        )
+        assert all(label == "executor" for label, _ in progress.calls)
+
+    async def test_heartbeat_silent_when_stream_is_fast(self):
+        """Fast streams should NOT emit heartbeats — that would spam
+        progress on healthy runs."""
+        import asyncio
+        from desmet.adapters.langgraph import _aiter_with_heartbeat
+
+        class FakeProgress:
+            def __init__(self):
+                self.calls = []
+            def waiting(self, label, seconds):
+                self.calls.append((label, seconds))
+
+        async def fast_stream():
+            yield "a"
+            yield "b"
+            yield "c"
+
+        progress = FakeProgress()
+        chunks = [
+            c async for c in _aiter_with_heartbeat(
+                fast_stream(), "executor", progress, interval=1.0,
+            )
+        ]
+        assert chunks == ["a", "b", "c"]
+        assert progress.calls == []
+
+    async def test_heartbeat_works_with_none_progress(self):
+        """Helper must not crash when progress=None (early init paths)."""
+        import asyncio
+        from desmet.adapters.langgraph import _aiter_with_heartbeat
+
+        async def stream():
+            await asyncio.sleep(0.3)
+            yield "x"
+
+        chunks = [
+            c async for c in _aiter_with_heartbeat(
+                stream(), "executor", None, interval=0.1,
+            )
+        ]
+        assert chunks == ["x"]

@@ -92,3 +92,9 @@ data/baseline/docs/design/diagrams/
 
 # Internal notes
 docs/report/papers-to-add.md
+
+# Runtime evaluation outputs
+infrastructure/results/
+
+# Regenerated typst fragments
+docs/report/generated/

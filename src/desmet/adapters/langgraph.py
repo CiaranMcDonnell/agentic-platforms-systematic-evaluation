@@ -8,9 +8,11 @@ Architecture:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 import uuid
+from collections.abc import AsyncIterator
 from typing import Annotated, Any
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
@@ -50,6 +52,7 @@ class ParentState(TypedDict):
     workspace: str
     retry_count: int
     validator_passed: bool
+    last_validator_feedback: str
     iterations: int
 
 
@@ -72,6 +75,40 @@ def parse_plan(plan_text: str) -> list[dict]:
         return []
     plan, flags = parse_plan_text(plan_text, include_parallel=True)
     return [{"text": s, "parallel": p} for s, p in zip(plan.steps, flags)]
+
+
+async def _aiter_with_heartbeat(
+    stream: AsyncIterator[Any],
+    label: str,
+    progress: ProgressReporter | None,
+    interval: float = 5.0,
+) -> AsyncIterator[Any]:
+    """Yield from *stream*, emitting a wall-clock heartbeat between chunks.
+
+    LangGraph's ``astream(stream_mode="updates")`` only yields when a
+    node finishes executing.  When a single LLM call inside an executor
+    node takes 60+ seconds (Gemini rate-limit retry, large context, slow
+    model), no chunk is produced and the UI looks frozen.  This wrapper
+    races each chunk against an ``asyncio.sleep(interval)`` and emits
+    ``progress.waiting(label, elapsed)`` whenever the sleep wins,
+    *without* cancelling the underlying stream task.
+    """
+    aiter = stream.__aiter__()
+    while True:
+        next_task = asyncio.ensure_future(aiter.__anext__())
+        chunk_t0 = time.monotonic()
+        while not next_task.done():
+            done, _ = await asyncio.wait({next_task}, timeout=interval)
+            if next_task in done:
+                break
+            if progress is not None:
+                elapsed = max(1, int(time.monotonic() - chunk_t0))
+                progress.waiting(label, elapsed)
+        try:
+            chunk = next_task.result()
+        except StopAsyncIteration:
+            return
+        yield chunk
 
 
 # ── Adapter ────────────────────────────────────────────────────────────────
@@ -125,10 +162,18 @@ class LangGraphAdapter(ToolAgentAdapter):
                 model=cfg.model,
                 temperature=cfg.temperature,
                 api_key=cfg.api_key,
+                timeout=cfg.timeout_seconds,
+                max_retries=cfg.max_retries,
             )
         from langchain_openai import ChatOpenAI
 
-        kwargs: dict = dict(model=cfg.model, temperature=cfg.temperature, api_key=cfg.api_key)
+        kwargs: dict = dict(
+            model=cfg.model,
+            temperature=cfg.temperature,
+            api_key=cfg.api_key,
+            timeout=cfg.timeout_seconds,
+            max_retries=cfg.max_retries,
+        )
         if cfg.base_url:
             kwargs["base_url"] = cfg.base_url
         return ChatOpenAI(**kwargs)
@@ -322,6 +367,7 @@ class LangGraphAdapter(ToolAgentAdapter):
             workspace = state.get("workspace", "")
             system_msg = state.get("system_msg")
             retry_count = state.get("retry_count", 0)
+            last_feedback = state.get("last_validator_feedback", "")
 
             executor_persona = get_stage_persona(stage)
 
@@ -338,18 +384,30 @@ class LangGraphAdapter(ToolAgentAdapter):
                 )
             max_retries = policy.max_retries if policy else 3
             if retry_count > 0:
-                sys_content += f"\n\nThis is retry attempt {retry_count}/{max_retries}. Address any issues from the previous attempt."
+                sys_content += (
+                    f"\n\nThis is retry attempt {retry_count}/{max_retries}. "
+                    f"The previous attempt failed validation with this feedback:\n"
+                    f"{last_feedback or '(no feedback available)'}\n"
+                    f"Address the specific issue above before stopping."
+                )
 
             messages: list[BaseMessage] = [
                 SystemMessage(content=sys_content),
                 HumanMessage(content=state["prompt"]),
             ]
 
-            # Stream the executor subgraph so we can emit per-tool progress
+            # Stream the executor subgraph so we can emit per-tool progress.
+            # Wrap the stream in _aiter_with_heartbeat so a long-running
+            # LLM call inside executor_node still emits "[executor]
+            # waiting on LLM (Ns)..." every 5 seconds — otherwise the
+            # UI looks frozen for the whole duration of the call (e.g.
+            # Gemini rate-limit retries during the deploy stage).
             llm_call_count = 0
-            executor_t0 = time.monotonic()
-            async for chunk in executor_sg.astream(
+            base_stream = executor_sg.astream(
                 {"messages": messages}, config=config, stream_mode="updates",
+            )
+            async for chunk in _aiter_with_heartbeat(
+                base_stream, "executor", progress,
             ):
                 for node_name, node_update in chunk.items():
                     if not node_update or not isinstance(node_update, dict):
@@ -383,10 +441,6 @@ class LangGraphAdapter(ToolAgentAdapter):
                     if progress is not None and node_name == "executor_node":
                         progress.heartbeat(llm_call_count, "executor")
 
-            executor_duration = (time.monotonic() - executor_t0) * 1000
-            if collector is not None:
-                collector.record_llm_response(raw_usage=None, duration_ms=executor_duration)
-
             passed, feedback = policy.validate() if policy else (False, "")
             new_retry = retry_count + 1
 
@@ -400,6 +454,7 @@ class LangGraphAdapter(ToolAgentAdapter):
 
             return {
                 "validator_passed": passed,
+                "last_validator_feedback": feedback,
                 "retry_count": new_retry,
                 "iterations": state.get("iterations", 0) + max(llm_call_count, 1),
             }
@@ -519,14 +574,23 @@ class LangGraphAdapter(ToolAgentAdapter):
             "workspace": str(context.workspace),
             "retry_count": 0,
             "validator_passed": False,
+            "last_validator_feedback": "",
             "iterations": 0,
         }
 
         iteration = 0
-        hit_limit = False
+        # Tracks whether ANY executor cycle reported a passing validator.
+        # If True, exhausting the iteration budget afterwards must NOT
+        # flip success to failure (the work is already done).
+        validation_succeeded = False
         final_state: dict[str, Any] = {}
 
-        async for chunk in graph.astream(initial_state, config=config, stream_mode="updates"):
+        # Wrap the parent stream too: planner and reviewer subgraphs are
+        # invoked from this loop and a slow LLM call inside either of
+        # them produces no chunk for the duration.  The executor stream
+        # is wrapped separately inside executor_wrapper().
+        parent_base = graph.astream(initial_state, config=config, stream_mode="updates")
+        async for chunk in _aiter_with_heartbeat(parent_base, stage_name, progress):
             iteration += 1
 
             for node_name, node_update in chunk.items():
@@ -538,19 +602,32 @@ class LangGraphAdapter(ToolAgentAdapter):
                     passed = node_update.get("validator_passed", False)
                     retry = node_update.get("retry_count", 0)
                     if passed:
+                        validation_succeeded = True
                         progress.validation_passed()
                     else:
                         _, feedback = policy.validate()
                         progress.validation_failed(retry, policy.total_attempts(), feedback)
 
-            if final_state.get("iterations", 0) >= context.max_iterations:
-                hit_limit = True
+            if (
+                not validation_succeeded
+                and final_state.get("iterations", 0) >= context.max_iterations
+            ):
                 break
 
         collector.mark_iterations(final_state.get("iterations", iteration))
         collector.trace.final_state = final_state
         self._last_langsmith_run_id = str(run_id) if self._langsmith_enabled() else None
-        return iteration, hit_limit
+
+        # Final success requires the workspace to actually pass validation.
+        # validation_succeeded covers the case where it passed mid-run; a
+        # final policy.validate() catches the case where the workspace was
+        # made valid late (e.g. inside the last executor cycle that we
+        # broke out of).
+        if validation_succeeded:
+            success = True
+        else:
+            success, _ = policy.validate()
+        return iteration, success
 
     # ── SDLC stage override (attaches LangSmith run ID) ───────────────────
 

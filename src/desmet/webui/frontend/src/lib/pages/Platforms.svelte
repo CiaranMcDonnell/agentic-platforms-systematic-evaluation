@@ -7,7 +7,7 @@
 
   async function onDockerAction(action: string, target: string): Promise<{ success: boolean; message?: string }> {
     try {
-      const res: any = action === 'up' ? await dockerUp(target) : await dockerDown(target);
+      const res = action === 'up' ? await dockerUp(target) : await dockerDown(target);
       await refreshPlatformStatuses();
       return res || { success: true };
     } catch (err: any) {

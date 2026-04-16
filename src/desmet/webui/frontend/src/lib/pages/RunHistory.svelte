@@ -12,7 +12,7 @@
 
   async function load() {
     const [rRes, st] = await Promise.all([fetchRuns(), fetchDashboardStats()]);
-    runs = (rRes as any).runs || [];
+    runs = rRes.runs ?? [];
     stats = st;
   }
 

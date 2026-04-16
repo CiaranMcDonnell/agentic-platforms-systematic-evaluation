@@ -64,6 +64,7 @@ from desmet.dashboard.data import (
     update_story_scores,
 )
 from desmet.harness.graph import build_graph, build_timeline
+from desmet.harness.metrics import recompute_platform_likert_from_store
 from desmet.harness.store import ResultStore
 from desmet.harness.loader import StoryLoadError, load_all_stories, resolve_baseline_dir
 from desmet.harness.runner import EvaluationRunner, RunnerConfig
@@ -76,6 +77,7 @@ from desmet.infra import (
     compose_down,
     compose_up,
     get_config_status,
+    get_container_status,
     get_docker_platform_statuses,
     get_infra_statuses,
     get_platform_statuses,
@@ -277,7 +279,7 @@ class ScoreSubmission(BaseModel):
 
 @app.get("/api/platforms")
 async def get_platforms():
-    """Return all platforms with registry data (no docker calls)."""
+    """Return all platforms with registry data and live container status."""
     implemented = set(list_available_platforms())
 
     platforms = []
@@ -295,7 +297,12 @@ async def get_platforms():
                 status = "ready" if installed else "not built"
                 infra_type = "Docker (isolated)" if not installed else "Python SDK"
         else:
-            status = "unknown"
+            container = PLATFORM_CONTAINERS.get(pid)
+            if container:
+                cstatus = get_container_status(container)
+                status = "ready" if cstatus == "running" else cstatus
+            else:
+                status = "unknown"
             infra_type = "Docker"
 
         platforms.append(
@@ -805,14 +812,29 @@ async def _execute_run(run: RunState, req: RunRequest):
 
         if req.stories and len(req.stories) == 1:
             story_id = req.stories[0]
-            for pid in adapters:
-                await _broadcast_log(run.run_id, f"  Running {story_id} on {pid}...")
-                result = await runner.run_single_story(pid, story_id)
-                await _broadcast_log(
-                    run.run_id,
-                    f"  {pid}/{story_id}: {result.status.value} ({result.wall_clock_seconds:.1f}s)",
-                )
-            run.summary = {"mode": "single_story", "story": story_id}
+            # Create a single persistent run BEFORE the per-platform loop
+            # so all platform executions share the same DuckDB run_id.
+            # Otherwise the Scoring page (which loads "latest run") only
+            # sees the last platform that ran.
+            shared_run_id = runner.store.create_run(
+                model=os.environ.get("DESMET_MODEL"),
+                temperature=float(os.environ.get("DESMET_TEMPERATURE", "0")),
+                platforms_filter=list(adapters.keys()),
+                stories_filter=[story_id],
+            )
+            try:
+                for pid in adapters:
+                    await _broadcast_log(run.run_id, f"  Running {story_id} on {pid}...")
+                    result = await runner.run_single_story(
+                        pid, story_id, run_id=shared_run_id,
+                    )
+                    await _broadcast_log(
+                        run.run_id,
+                        f"  {pid}/{story_id}: {result.status.value} ({result.wall_clock_seconds:.1f}s)",
+                    )
+            finally:
+                runner.store.finish_run(shared_run_id)
+            run.summary = {"mode": "single_story", "story": story_id, "run_id": shared_run_id}
         else:
             summary = await runner.run_full_evaluation()
             run.summary = summary
@@ -1197,9 +1219,26 @@ async def get_agent_graph(platform_id: str, story_id: str):
     return result
 
 
+def _story_budgets() -> dict[str, float]:
+    """Map ``story_id`` to ``time_budget_seconds`` for every discoverable story.
+
+    Used by the Likert recompute path so efficiency's time component
+    is normalised the same way it was during the run.
+    """
+    try:
+        return {s.id: float(s.time_budget_seconds) for s in load_all_stories()}
+    except StoryLoadError:
+        return {}
+
+
 @app.post("/api/dashboard/scoring/submit")
 async def submit_score(submission: ScoreSubmission, run_id: str | None = None):
-    """Submit dimension scores for a platform/story pair."""
+    """Submit rubric scores for a platform/story pair.
+
+    Writes rubric (0-3) columns to DuckDB, then recomputes the four
+    Likert (1-5) dimension scores and ``overall_score`` for the platform
+    so downstream exports stay in sync.
+    """
     data = load_results_raw(run_id)
     update_story_scores(
         data,
@@ -1210,9 +1249,9 @@ async def submit_score(submission: ScoreSubmission, run_id: str | None = None):
     )
     save_results(data)
 
-    # Also persist rubric scores to DuckDB so they survive reload
     store = _get_result_store()
     target_run = run_id or store.latest_run_id()
+    recomputed: dict[str, float] = {}
     if target_run:
         store.update_rubric_scores_by_story(
             target_run,
@@ -1220,8 +1259,38 @@ async def submit_score(submission: ScoreSubmission, run_id: str | None = None):
             submission.story_id,
             submission.scores,
         )
+        recomputed = recompute_platform_likert_from_store(
+            store,
+            target_run,
+            submission.platform_id,
+            _story_budgets(),
+        )
 
-    return {"success": True}
+    return {"success": True, "likert": recomputed}
+
+
+@app.post("/api/dashboard/scoring/recompute")
+async def recompute_scores(run_id: str | None = None):
+    """Rebuild Likert scores for every platform in a run from stored rubric data.
+
+    Useful after importing legacy runs, bulk-editing rubric scores, or
+    changing the aggregation formulas in ``calculate_dimension_scores``.
+    """
+    store = _get_result_store()
+    target_run = run_id or store.latest_run_id()
+    if not target_run:
+        raise HTTPException(status_code=404, detail="No run found")
+
+    budgets = _story_budgets()
+    exec_df = store.get_executions(target_run)
+    platforms = sorted({str(pid) for pid in exec_df["platform_id"].unique()})
+
+    updated: dict[str, dict[str, float]] = {}
+    for pid in platforms:
+        updated[pid] = recompute_platform_likert_from_store(
+            store, target_run, pid, budgets
+        )
+    return {"run_id": target_run, "platforms": updated}
 
 
 @app.get("/api/dashboard/scoring/progress")

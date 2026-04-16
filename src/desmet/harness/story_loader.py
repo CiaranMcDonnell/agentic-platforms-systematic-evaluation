@@ -1,9 +1,10 @@
 """
-Stage 1: Story Loading and Context Preparation
+Story Loading and Context Preparation
 
 Loads user stories from YAML and prepares StageContext for downstream stages.
 This is a harness-only stage — no adapter call.
 """
+
 from pathlib import Path
 
 from desmet.harness.context import StageContext

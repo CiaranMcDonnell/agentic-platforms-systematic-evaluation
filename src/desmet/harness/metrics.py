@@ -23,6 +23,7 @@ class EvaluationDimension(Enum):
     SE pipelines, not LLM output quality.  Each is normalised to a 1-5
     Likert scale and aggregated from the per-story 0-3 rubric scores.
     """
+
     PIPELINE_COMPLETENESS = "pipeline_completeness"
     EFFICIENCY = "efficiency"
     ORCHESTRATION = "orchestration"
@@ -32,6 +33,7 @@ class EvaluationDimension(Enum):
 @dataclass
 class DimensionScore:
     """Score for a single evaluation dimension."""
+
     dimension: EvaluationDimension
     score: float  # 1-5 Likert scale
     confidence: float = 1.0  # 0-1, how confident we are in this score
@@ -43,6 +45,7 @@ class DimensionScore:
 @dataclass
 class SetupMetrics:
     """Metrics from Stage 0: Framework Setup & Onboarding."""
+
     platform_id: str
 
     # Timing
@@ -76,6 +79,7 @@ class StageMetrics:
     StageMetrics entry and recorded via ``MetricsCollector.record_stage_metrics``
     (see ``runner.py`` stage execution loop).
     """
+
     story_id: str
     platform_id: str
     stage_name: str  # "requirements", "codegen", "testing", "deploy"
@@ -224,6 +228,7 @@ class StoryMetrics:
 @dataclass
 class VarianceMetrics:
     """Statistical variance across repeated runs of the same story."""
+
     repeats: int
     wall_clock_mean: float
     wall_clock_std: float
@@ -260,12 +265,17 @@ def compute_variance_metrics(results: list) -> VarianceMetrics:
     if n == 0:
         return VarianceMetrics(
             repeats=0,
-            wall_clock_mean=0, wall_clock_std=0,
-            tokens_mean=0, tokens_std=0,
-            cost_mean=0, cost_std=0,
+            wall_clock_mean=0,
+            wall_clock_std=0,
+            tokens_mean=0,
+            tokens_std=0,
+            cost_mean=0,
+            cost_std=0,
             success_rate=0,
-            tool_calls_mean=0, tool_calls_std=0,
-            iterations_mean=0, iterations_std=0,
+            tool_calls_mean=0,
+            tool_calls_std=0,
+            iterations_mean=0,
+            iterations_std=0,
         )
 
     from desmet.harness.story import StoryStatus
@@ -298,6 +308,7 @@ class EvaluationMetrics:
     """
     Complete metrics for a platform evaluation.
     """
+
     platform_id: str
     platform_name: str
     evaluation_date: datetime = field(default_factory=datetime.now)
@@ -366,23 +377,20 @@ class EvaluationMetrics:
         completion_ratio = (
             self.stories_completed / self.stories_total if self.stories_total > 0 else 0.0
         )
-        avg_pipeline_score = (
-            sum(m.pipeline_completeness_score for m in self.story_metrics) / n
-        )
-        pipeline_raw = (
-            completion_ratio * 0.5
-            + (avg_pipeline_score / 3.0) * 0.5
-        )
+        avg_pipeline_score = sum(m.pipeline_completeness_score for m in self.story_metrics) / n
+        pipeline_raw = completion_ratio * 0.5 + (avg_pipeline_score / 3.0) * 0.5
         pipeline_completeness_score = 1.0 + pipeline_raw * 4.0
 
-        self.dimension_scores.append(DimensionScore(
-            dimension=EvaluationDimension.PIPELINE_COMPLETENESS,
-            score=min(5.0, max(1.0, pipeline_completeness_score)),
-            metrics={
-                "completion_ratio": completion_ratio,
-                "avg_pipeline_completeness_rubric": avg_pipeline_score,
-            }
-        ))
+        self.dimension_scores.append(
+            DimensionScore(
+                dimension=EvaluationDimension.PIPELINE_COMPLETENESS,
+                score=min(5.0, max(1.0, pipeline_completeness_score)),
+                metrics={
+                    "completion_ratio": completion_ratio,
+                    "avg_pipeline_completeness_rubric": avg_pipeline_score,
+                },
+            )
+        )
 
         # ------------------------------------------------------------------
         # Efficiency
@@ -404,17 +412,13 @@ class EvaluationMetrics:
         else:
             avg_time_ratio = 1.0  # neutral assumption when no budget is set
 
-        avg_tokens_per_story = sum(
-            m.tokens_input + m.tokens_output for m in self.story_metrics
-        ) / n
+        avg_tokens_per_story = sum(m.tokens_input + m.tokens_output for m in self.story_metrics) / n
 
         total_cost = sum(m.api_cost_usd for m in self.story_metrics)
         avg_cost_per_story = total_cost / n if total_cost > 0 else 0.0
 
         time_component = max(1.0, 5.0 - (avg_time_ratio - 1.0) * 2.0)
-        token_component = max(
-            1.0, 5.0 - (avg_tokens_per_story / token_budget - 1.0) * 2.0
-        )
+        token_component = max(1.0, 5.0 - (avg_tokens_per_story / token_budget - 1.0) * 2.0)
 
         # Resource component (from container monitoring)
         memory_budget_mb = 512.0
@@ -426,17 +430,13 @@ class EvaluationMetrics:
         resource_values = [v for v in resource_values if v is not None and v > 0]
         if resource_values:
             avg_peak_mb = (sum(resource_values) / len(resource_values)) / (1024 * 1024)
-            resource_component = max(
-                1.0, 5.0 - (avg_peak_mb / memory_budget_mb - 1.0) * 2.0
-            )
+            resource_component = max(1.0, 5.0 - (avg_peak_mb / memory_budget_mb - 1.0) * 2.0)
         else:
             resource_component = None
 
         components = [time_component, token_component]
         if avg_cost_per_story > 0:
-            cost_component = max(
-                1.0, 5.0 - (avg_cost_per_story / cost_budget - 1.0) * 2.0
-            )
+            cost_component = max(1.0, 5.0 - (avg_cost_per_story / cost_budget - 1.0) * 2.0)
             components.append(cost_component)
         else:
             cost_component = None
@@ -446,22 +446,24 @@ class EvaluationMetrics:
 
         efficiency_score = sum(components) / len(components)
 
-        self.dimension_scores.append(DimensionScore(
-            dimension=EvaluationDimension.EFFICIENCY,
-            score=min(5.0, max(1.0, efficiency_score)),
-            metrics={
-                "avg_time_ratio": avg_time_ratio,
-                "avg_tokens_per_story": avg_tokens_per_story,
-                "token_budget": token_budget,
-                "avg_cost_per_story": avg_cost_per_story,
-                "cost_budget": cost_budget,
-                "time_component": time_component,
-                "token_component": token_component,
-                "cost_component": cost_component,
-                "resource_component": resource_component,
-                "memory_budget_mb": memory_budget_mb,
-            }
-        ))
+        self.dimension_scores.append(
+            DimensionScore(
+                dimension=EvaluationDimension.EFFICIENCY,
+                score=min(5.0, max(1.0, efficiency_score)),
+                metrics={
+                    "avg_time_ratio": avg_time_ratio,
+                    "avg_tokens_per_story": avg_tokens_per_story,
+                    "token_budget": token_budget,
+                    "avg_cost_per_story": avg_cost_per_story,
+                    "cost_budget": cost_budget,
+                    "time_component": time_component,
+                    "token_component": token_component,
+                    "cost_component": cost_component,
+                    "resource_component": resource_component,
+                    "memory_budget_mb": memory_budget_mb,
+                },
+            )
+        )
 
         # ------------------------------------------------------------------
         # Orchestration
@@ -471,62 +473,86 @@ class EvaluationMetrics:
         # ------------------------------------------------------------------
         all_orchestration_scores: list[float] = []
         for m in self.story_metrics:
-            all_orchestration_scores.extend([
-                m.tool_integration_score,
-                m.error_recovery_score,
-                m.trace_quality_score,
-            ])
+            all_orchestration_scores.extend(
+                [
+                    m.tool_integration_score,
+                    m.error_recovery_score,
+                    m.trace_quality_score,
+                ]
+            )
 
         avg_orchestration = (
             sum(all_orchestration_scores) / len(all_orchestration_scores)
-            if all_orchestration_scores else 0.0
+            if all_orchestration_scores
+            else 0.0
         )
         orchestration_score = avg_orchestration * (5.0 / 3.0)
 
-        self.dimension_scores.append(DimensionScore(
-            dimension=EvaluationDimension.ORCHESTRATION,
-            score=min(5.0, max(1.0, orchestration_score)),
-            metrics={
-                "avg_orchestration_rubric": avg_orchestration,
-                "rubric_fields_used": [
-                    "tool_integration",
-                    "error_recovery",
-                    "trace_quality",
-                ],
-                "rubric_samples": len(all_orchestration_scores),
-            }
-        ))
+        self.dimension_scores.append(
+            DimensionScore(
+                dimension=EvaluationDimension.ORCHESTRATION,
+                score=min(5.0, max(1.0, orchestration_score)),
+                metrics={
+                    "avg_orchestration_rubric": avg_orchestration,
+                    "rubric_fields_used": [
+                        "tool_integration",
+                        "error_recovery",
+                        "trace_quality",
+                    ],
+                    "rubric_samples": len(all_orchestration_scores),
+                },
+            )
+        )
 
         # ------------------------------------------------------------------
         # Autonomy
-        # Measures: how much human intervention the framework requires.
-        # Formula: 5 - min(4, avg(interventions_per_stage))
+        # Primary source: rubric_autonomy (manual 0-3) — the evaluator's
+        # judgement after reviewing the trace.
+        # Optional augment: avg_interventions_per_stage (automatic) — only
+        # blended in when adapters actually logged interventions > 0.
+        # Formula: rubric alone, scaled 0-3 → 1-5; or 50/50 blend with the
+        # intervention counter when it has signal.
         # ------------------------------------------------------------------
+        avg_autonomy_rubric = sum(m.autonomy_score for m in self.story_metrics) / n
+        rubric_normalized = avg_autonomy_rubric / 3.0  # 0-1
+
         if self.stage_metrics:
-            avg_interventions_per_stage = (
-                sum(sm.human_interventions for sm in self.stage_metrics) / len(self.stage_metrics)
-            )
+            avg_interventions_per_stage = sum(
+                sm.human_interventions for sm in self.stage_metrics
+            ) / len(self.stage_metrics)
+            intervention_source = "stage_metrics"
         else:
-            avg_story_interventions = (
-                sum(m.human_interventions for m in self.story_metrics) / n
-            )
+            avg_story_interventions = sum(m.human_interventions for m in self.story_metrics) / n
             avg_interventions_per_stage = avg_story_interventions / 4.0
+            intervention_source = "story_metrics_fallback"
 
-        autonomy_score = 5.0 - min(4.0, avg_interventions_per_stage)
+        if avg_interventions_per_stage > 0:
+            auto_normalized = (4.0 - min(4.0, avg_interventions_per_stage)) / 4.0
+            autonomy_raw = rubric_normalized * 0.5 + auto_normalized * 0.5
+            blended = True
+        else:
+            autonomy_raw = rubric_normalized
+            blended = False
 
-        self.dimension_scores.append(DimensionScore(
-            dimension=EvaluationDimension.AUTONOMY,
-            score=min(5.0, max(1.0, autonomy_score)),
-            metrics={
-                "avg_interventions_per_stage": avg_interventions_per_stage,
-                "source": "stage_metrics" if self.stage_metrics else "story_metrics_fallback",
-            }
-        ))
+        autonomy_score = 1.0 + autonomy_raw * 4.0
+
+        self.dimension_scores.append(
+            DimensionScore(
+                dimension=EvaluationDimension.AUTONOMY,
+                score=min(5.0, max(1.0, autonomy_score)),
+                metrics={
+                    "avg_autonomy_rubric": avg_autonomy_rubric,
+                    "avg_interventions_per_stage": avg_interventions_per_stage,
+                    "intervention_source": intervention_source,
+                    "blended_with_interventions": blended,
+                },
+            )
+        )
 
         # Overall score: average of the four Layer 3 dimensions
         if self.dimension_scores:
-            self.overall_score = (
-                sum(d.score for d in self.dimension_scores) / len(self.dimension_scores)
+            self.overall_score = sum(d.score for d in self.dimension_scores) / len(
+                self.dimension_scores
             )
 
     def to_dict(self) -> dict[str, Any]:
@@ -540,7 +566,9 @@ class EvaluationMetrics:
                 "time_to_first_agent_minutes": self.setup_metrics.time_to_first_agent_minutes,
                 "manual_steps_count": self.setup_metrics.manual_steps_count,
                 "documentation_clarity_score": self.setup_metrics.documentation_clarity_score,
-            } if self.setup_metrics else None,
+            }
+            if self.setup_metrics
+            else None,
             "stories_total": self.stories_total,
             "stories_completed": self.stories_completed,
             "stories_failed": self.stories_failed,
@@ -574,11 +602,95 @@ class EvaluationMetrics:
                 }
                 for m in self.story_metrics
             ],
-            "variance_metrics": {
-                sid: vm.to_dict()
-                for sid, vm in self.variance_metrics.items()
-            } if self.variance_metrics else {},
+            "variance_metrics": {sid: vm.to_dict() for sid, vm in self.variance_metrics.items()}
+            if self.variance_metrics
+            else {},
         }
+
+
+def recompute_platform_likert_from_store(
+    store: Any,
+    run_id: str,
+    platform_id: str,
+    story_budgets: dict[str, float],
+) -> dict[str, float]:
+    """Rebuild Likert dimension scores for one platform from persisted data.
+
+    Reads executions from DuckDB, synthesises ``StoryResult`` +
+    ``StoryMetrics`` objects, calls ``calculate_dimension_scores`` and
+    persists the resulting 1-5 scores via ``store.update_platform_scores``.
+
+    Needed because ``submit_score`` writes only rubric columns;
+    ``score_*`` / ``overall_score`` stay stale until this runs.
+
+    *story_budgets* maps ``story_id`` to ``time_budget_seconds``.
+    Stories not in the map use 600s (the harness default).
+    """
+    import pandas as _pd
+
+    from desmet.harness.story import StoryResult, StoryStatus
+
+    exec_df = store.get_executions(run_id)
+    group = exec_df[exec_df["platform_id"] == platform_id]
+    if group.empty:
+        return {}
+
+    em = EvaluationMetrics(platform_id=platform_id, platform_name=platform_id)
+
+    for _, row in group.iterrows():
+        story_id = str(row["story_id"])
+        try:
+            status = StoryStatus(row["status"])
+        except (KeyError, ValueError):
+            status = StoryStatus.PENDING
+
+        result = StoryResult(
+            story_id=story_id,
+            platform_id=platform_id,
+            execution_id=str(row["execution_id"]),
+            status=status,
+            wall_clock_seconds=float(row["wall_clock_seconds"] or 0),
+            iterations=int(row["iterations"] or 0),
+            tool_calls=int(row["tool_calls"] or 0),
+            tokens_input=int(row["tokens_input"] or 0),
+            tokens_output=int(row["tokens_output"] or 0),
+            api_cost_usd=float(row["cost_usd"] or 0),
+            human_interventions=int(row["human_interventions"] or 0),
+        )
+
+        for dim in (
+            "pipeline_completeness",
+            "tool_integration",
+            "error_recovery",
+            "trace_quality",
+            "time_efficiency",
+            "autonomy",
+        ):
+            val = row.get(f"rubric_{dim}")
+            if val is not None and not _pd.isna(val):
+                result.add_score(dim, float(val))
+
+        resource: dict[str, Any] = {}
+        if _pd.notna(row.get("resource_peak_memory_bytes")):
+            resource["peak_memory_bytes"] = int(row["resource_peak_memory_bytes"])
+        if _pd.notna(row.get("resource_avg_cpu_percent")):
+            resource["avg_cpu_percent"] = float(row["resource_avg_cpu_percent"])
+        if _pd.notna(row.get("resource_net_tx_bytes")):
+            resource["net_tx_total_bytes"] = int(row["resource_net_tx_bytes"])
+        result.resource_metrics = resource
+
+        budget = float(story_budgets.get(story_id, 600))
+        em.add_story_metrics(
+            StoryMetrics.from_story_result(result, time_budget_seconds=budget)
+        )
+
+    em.calculate_dimension_scores()
+
+    scores: dict[str, float] = {"overall_score": em.overall_score}
+    for ds in em.dimension_scores:
+        scores[f"score_{ds.dimension.value}"] = ds.score
+    store.update_platform_scores(run_id, platform_id, scores)
+    return scores
 
 
 class MetricsCollector:
@@ -651,12 +763,10 @@ class MetricsCollector:
         output_path = self.output_dir / filename
         data = {
             "evaluation_date": datetime.now().isoformat(),
-            "platforms": {
-                pid: metrics.to_dict()
-                for pid, metrics in self.platform_metrics.items()
-            }
+            "platforms": {pid: metrics.to_dict() for pid, metrics in self.platform_metrics.items()},
         }
         from desmet.harness.dev_metrics import compute_all_dev_metrics, get_shared_loc
+
         all_dev = compute_all_dev_metrics()
         data["dev_metrics"] = {
             "platforms": {pid: dm.to_dict() for pid, dm in all_dev.items()},
@@ -677,24 +787,33 @@ class MetricsCollector:
                 "platform_name": metrics.platform_name,
                 "stories_total": metrics.stories_total,
                 "stories_completed": metrics.stories_completed,
-                "completion_rate": metrics.stories_completed / metrics.stories_total if metrics.stories_total > 0 else 0,
+                "completion_rate": metrics.stories_completed / metrics.stories_total
+                if metrics.stories_total > 0
+                else 0,
                 "overall_score": metrics.overall_score,
             }
             for dim_score in metrics.dimension_scores:
                 row[f"score_{dim_score.dimension.value}"] = dim_score.score
             resource_stories = [
-                sm for sm in metrics.story_metrics
-                if sm._result.resource_metrics and sm._result.resource_metrics.get("peak_memory_bytes")
+                sm
+                for sm in metrics.story_metrics
+                if sm._result.resource_metrics
+                and sm._result.resource_metrics.get("peak_memory_bytes")
             ]
             if resource_stories:
-                row["resource_peak_memory_mb"] = round(max(
-                    sm._result.resource_metrics["peak_memory_bytes"]
-                    for sm in resource_stories
-                ) / (1024 * 1024), 1)
-                row["resource_avg_cpu_pct"] = round(sum(
-                    sm._result.resource_metrics.get("avg_cpu_percent", 0)
-                    for sm in resource_stories
-                ) / len(resource_stories), 1)
+                row["resource_peak_memory_mb"] = round(
+                    max(sm._result.resource_metrics["peak_memory_bytes"] for sm in resource_stories)
+                    / (1024 * 1024),
+                    1,
+                )
+                row["resource_avg_cpu_pct"] = round(
+                    sum(
+                        sm._result.resource_metrics.get("avg_cpu_percent", 0)
+                        for sm in resource_stories
+                    )
+                    / len(resource_stories),
+                    1,
+                )
             rows.append(row)
 
         if rows:
@@ -723,9 +842,7 @@ class MetricsCollector:
         ]
 
         for pid, metrics in sorted(
-            self.platform_metrics.items(),
-            key=lambda x: x[1].overall_score,
-            reverse=True
+            self.platform_metrics.items(), key=lambda x: x[1].overall_score, reverse=True
         ):
             lines.append(f"\n{'─' * 70}")
             lines.append(f"Platform: {metrics.platform_name} ({pid})")
@@ -739,24 +856,26 @@ class MetricsCollector:
                 lines.append(f"  {dim.dimension.value:20} {bar} {dim.score:.1f}/5")
 
             resource_stories = [
-                sm for sm in metrics.story_metrics
-                if sm._result.resource_metrics and sm._result.resource_metrics.get("peak_memory_bytes")
+                sm
+                for sm in metrics.story_metrics
+                if sm._result.resource_metrics
+                and sm._result.resource_metrics.get("peak_memory_bytes")
             ]
             if resource_stories:
                 peak_mem = max(
-                    sm._result.resource_metrics["peak_memory_bytes"]
-                    for sm in resource_stories
+                    sm._result.resource_metrics["peak_memory_bytes"] for sm in resource_stories
                 )
                 avg_cpu = sum(
-                    sm._result.resource_metrics.get("avg_cpu_percent", 0)
-                    for sm in resource_stories
+                    sm._result.resource_metrics.get("avg_cpu_percent", 0) for sm in resource_stories
                 ) / len(resource_stories)
                 lines.append(f"\nResource Consumption:")
-                lines.append(f"  Peak Memory: {peak_mem / (1024*1024):.0f} MB")
+                lines.append(f"  Peak Memory: {peak_mem / (1024 * 1024):.0f} MB")
                 lines.append(f"  Avg CPU:     {avg_cpu:.1f}%")
 
             if metrics.variance_metrics:
-                lines.append(f"\nRun Variance ({next(iter(metrics.variance_metrics.values())).repeats} repeats):")
+                lines.append(
+                    f"\nRun Variance ({next(iter(metrics.variance_metrics.values())).repeats} repeats):"
+                )
                 for sid, vm in metrics.variance_metrics.items():
                     cv = vm.wall_clock_std / vm.wall_clock_mean if vm.wall_clock_mean > 0 else 0
                     lines.append(
@@ -765,13 +884,14 @@ class MetricsCollector:
                     )
 
         from desmet.harness.dev_metrics import compute_all_dev_metrics, get_shared_loc
+
         all_dev = compute_all_dev_metrics()
         if all_dev:
             lines.append(f"\n{'─' * 70}")
             lines.append("Developer Experience")
             lines.append(f"{'─' * 70}")
             lines.append(f"{'Platform':<20} {'LOC':>6} {'SLOC':>6} {'Deps':>5} {'Size MB':>8}")
-            lines.append(f"{'─'*20} {'─'*6} {'─'*6} {'─'*5} {'─'*8}")
+            lines.append(f"{'─' * 20} {'─' * 6} {'─' * 6} {'─' * 5} {'─' * 8}")
             for pid, dm in sorted(all_dev.items()):
                 size_str = f"{dm.install_size_mb:.0f}" if dm.install_size_mb is not None else "—"
                 lines.append(

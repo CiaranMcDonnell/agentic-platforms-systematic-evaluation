@@ -22,6 +22,10 @@ dependencies = [
 asyncio_mode = "auto"
 testpaths = ["tests"]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+# This baseline is an evaluation fixture, not a publishable package.
+# Telling uv it's not a package skips the hatchling wheel build during
+# `uv sync` — without this, `uv run pytest` fails on a fresh workspace
+# with "Unable to determine which files to ship inside the wheel"
+# because the project name (sample-app) doesn't match any directory.
+[tool.uv]
+package = false

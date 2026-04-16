@@ -12,8 +12,14 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _PYPROJECT = _PROJECT_ROOT / "pyproject.toml"
 
 _SHARED_MODULES = [
-    "_base.py", "_tools.py", "_prompts.py", "_tracing.py",
-    "_validation.py", "_planning.py", "_observation.py", "_retry.py",
+    "_base.py",
+    "_tools.py",
+    "_prompts.py",
+    "_tracing.py",
+    "_validation.py",
+    "_planning.py",
+    "_observation.py",
+    "_retry.py",
 ]
 
 
@@ -101,7 +107,7 @@ def _parse_optional_deps() -> dict[str, list[str]]:
         if not in_section:
             continue
 
-        m = re.match(r'^(\w[\w-]*)\s*=\s*\[', stripped)
+        m = re.match(r"^(\w[\w-]*)\s*=\s*\[", stripped)
         if m:
             current_extra = m.group(1)
             extras[current_extra] = []
@@ -114,7 +120,7 @@ def _parse_optional_deps() -> dict[str, list[str]]:
             req_match = re.match(r'"([^"]+)"', stripped)
             if req_match:
                 req = req_match.group(1)
-                pkg_name = re.split(r'[>=<!\[;]', req)[0].strip()
+                pkg_name = re.split(r"[>=<!\[;]", req)[0].strip()
                 if pkg_name:
                     extras[current_extra].append(pkg_name)
 
@@ -123,6 +129,7 @@ def _parse_optional_deps() -> dict[str, list[str]]:
 
 def _get_platform_extra(platform_id: str) -> str | None:
     from desmet.platforms_config import get_platform_field
+
     return get_platform_field(platform_id, "pip_extra", None)
 
 
@@ -149,15 +156,19 @@ def compute_dev_metrics(platform_id: str) -> DevMetrics:
 
     # Install size from Docker image (if built)
     try:
-        from desmet.harness.container_runner import get_image_details, _BASE_IMAGE
-        import subprocess, json as _json
+        import json as _json
+        import subprocess
+
+        from desmet.harness.container_runner import _BASE_IMAGE, get_image_details
 
         platform_details = get_image_details(platform_id)
         if platform_details:
             platform_size = platform_details["size_bytes"]
             base_probe = subprocess.run(
                 ["docker", "image", "inspect", _BASE_IMAGE],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             base_size = 0
             if base_probe.returncode == 0:

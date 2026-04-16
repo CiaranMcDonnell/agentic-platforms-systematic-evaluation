@@ -10,6 +10,7 @@ Usage:
     desmet --port 9000              # Custom port
     desmet --reload                 # Dev mode with auto-reload
     desmet --clean-on-exit          # Remove platform images on shutdown (forces rebuild)
+    desmet export-typst             # Emit report tables from the latest run
 """
 
 from __future__ import annotations
@@ -54,6 +55,7 @@ def _cleanup_images() -> None:
 
 @app.callback(invoke_without_command=True)
 def main_command(
+    ctx: typer.Context,
     host: str = typer.Option("127.0.0.1", help="Host to bind to"),
     port: int = typer.Option(8042, help="Port to listen on"),
     reload: bool = typer.Option(False, help="Enable auto-reload for development"),
@@ -70,6 +72,9 @@ def main_command(
     ),
 ):
     """Launch the DESMET Management Console (browser UI)."""
+    if ctx.invoked_subcommand is not None:
+        return
+
     import atexit
     import uvicorn
 
@@ -103,6 +108,41 @@ def main_command(
         # during startup before uvicorn's handler is wired up, we land
         # here.  Cleanup still runs via atexit.
         pass
+
+
+@app.command("export-typst")
+def export_typst_command(
+    run_id: str = typer.Option(
+        None, "--run-id", help="Source run ID (default: latest run in the DuckDB store)."
+    ),
+    out_dir: str = typer.Option(
+        None,
+        "--out-dir",
+        help="Output directory for generated .typ files (default: docs/report/generated/).",
+    ),
+):
+    """Emit Typst figure files from a run's scoring data.
+
+    Generates ``per-story.typ``, ``capability-tiers.typ``,
+    ``cross-cutting.typ`` and ``resource.typ`` so the evaluation
+    chapter can ``#include`` them instead of hand-entering numbers.
+    """
+    from pathlib import Path
+
+    from desmet.harness.typst_export import export_all
+
+    try:
+        outputs = export_all(
+            run_id=run_id,
+            out_dir=Path(out_dir) if out_dir else None,
+        )
+    except ValueError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(code=1)
+
+    console.print(f"[green]Exported {len(outputs)} tables:[/green]")
+    for name, path in outputs.items():
+        console.print(f"  [cyan]{name}[/cyan]: {path}")
 
 
 def main():

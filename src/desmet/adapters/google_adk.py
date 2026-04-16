@@ -7,6 +7,7 @@ Architecture:
   LoopAgent provides native retry via exit_loop tool.
   Callbacks capture per-call token/tool usage for ObservationCollector.
 """
+
 from __future__ import annotations
 
 import logging
@@ -42,6 +43,7 @@ class GoogleADKAdapter(ToolAgentAdapter):
         super().__init__(config)
         self._model_id: str | None = None
         self._model_name: str | None = None
+        self._timeout_seconds: float = 120.0
 
     @property
     def platform_info(self) -> PlatformInfo:
@@ -52,6 +54,7 @@ class GoogleADKAdapter(ToolAgentAdapter):
     def _get_version(self) -> str:
         try:
             import google.adk
+
             return getattr(google.adk, "__version__", "unknown")
         except ImportError:
             return "not installed"
@@ -77,13 +80,17 @@ class GoogleADKAdapter(ToolAgentAdapter):
 
     async def initialize(self) -> None:
         try:
-            from google.adk.agents import Agent  # noqa: F401
-            from google.adk.agents import SequentialAgent, LoopAgent  # noqa: F401
+            from google.adk.agents import (  # noqa: F401
+                Agent,  # noqa: F401
+                LoopAgent,
+                SequentialAgent,
+            )
             from google.adk.runners import Runner  # noqa: F401
 
             cfg = get_llm_config(model=self.config.get("model"))
             self._model_id = self._resolve_model_id(cfg)
             self._model_name = cfg.model
+            self._timeout_seconds = cfg.timeout_seconds
             self._initialized = True
         except ImportError as e:
             raise RuntimeError(
@@ -118,13 +125,15 @@ class GoogleADKAdapter(ToolAgentAdapter):
                 session_service=InMemorySessionService(),
             )
             session = await runner.session_service.create_session(
-                app_name="desmet_health", user_id="health",
+                app_name="desmet_health",
+                user_id="health",
             )
             async for event in runner.run_async(
                 user_id="health",
                 session_id=session.id,
                 new_message=types.Content(
-                    role="user", parts=[types.Part(text="Say 'ok'")],
+                    role="user",
+                    parts=[types.Part(text="Say 'ok'")],
                 ),
             ):
                 if event.is_final_response() and event.content:
@@ -177,7 +186,8 @@ class GoogleADKAdapter(ToolAgentAdapter):
                 session_service=session_svc,
             )
             session = await session_svc.create_session(
-                app_name="desmet_planner", user_id="eval",
+                app_name="desmet_planner",
+                user_id="eval",
             )
 
             t0 = time.monotonic()
@@ -185,7 +195,8 @@ class GoogleADKAdapter(ToolAgentAdapter):
                 user_id="eval",
                 session_id=session.id,
                 new_message=types.Content(
-                    role="user", parts=[types.Part(text=prompt)],
+                    role="user",
+                    parts=[types.Part(text=prompt)],
                 ),
             ):
                 if event.content and event.content.parts:
@@ -194,7 +205,8 @@ class GoogleADKAdapter(ToolAgentAdapter):
                     )
                     if text:
                         collector.record_message(
-                            "assistant", text,
+                            "assistant",
+                            text,
                             metadata={"agent": "planner"},
                         )
                 # Extract usage from event
@@ -241,7 +253,8 @@ class GoogleADKAdapter(ToolAgentAdapter):
                     session_service=session_svc,
                 )
                 session = await session_svc.create_session(
-                    app_name="desmet_planner_fallback", user_id="eval",
+                    app_name="desmet_planner_fallback",
+                    user_id="eval",
                 )
 
                 plan_text = ""
@@ -250,18 +263,19 @@ class GoogleADKAdapter(ToolAgentAdapter):
                     user_id="eval",
                     session_id=session.id,
                     new_message=types.Content(
-                        role="user", parts=[types.Part(text=prompt)],
+                        role="user",
+                        parts=[types.Part(text=prompt)],
                     ),
                 ):
                     if event.content and event.content.parts:
                         text = "".join(
-                            p.text for p in event.content.parts
-                            if hasattr(p, "text") and p.text
+                            p.text for p in event.content.parts if hasattr(p, "text") and p.text
                         )
                         if text:
                             plan_text += text
                             collector.record_message(
-                                "assistant", text,
+                                "assistant",
+                                text,
                                 metadata={"agent": "planner"},
                             )
 
@@ -293,7 +307,8 @@ class GoogleADKAdapter(ToolAgentAdapter):
     ) -> tuple[int, bool]:
         """Run SequentialAgent pipeline: planner → LoopAgent[executor, reviewer].
 
-        Returns (total_iterations, hit_limit).
+        Returns (total_iterations, success) where success is True iff the
+        workspace passes validation at the end of the run.
         """
         from google.adk.agents import Agent, LoopAgent, SequentialAgent
         from google.adk.runners import Runner
@@ -302,13 +317,15 @@ class GoogleADKAdapter(ToolAgentAdapter):
         from google.genai import types
 
         total_iterations = 0
-        hit_limit = False
 
         collector.record_message("user", prompt)
 
         # ── Step 1: Planner ──────────────────────────────────────────────
         plan = await self._run_planner(
-            stage_name, prompt, collector, progress,
+            stage_name,
+            prompt,
+            collector,
+            progress,
             temperature=context.temperature,
         )
         total_iterations += 1
@@ -318,13 +335,21 @@ class GoogleADKAdapter(ToolAgentAdapter):
         reviewer_persona = get_sub_persona("reviewer")
 
         executor_instructions = build_executor_instructions(
-            executor_persona, plan, system_msg,
+            executor_persona,
+            plan,
+            system_msg,
         )
 
         executor_tools, reviewer_tools = split_tools(tools, self.TOOL_FORMAT)
 
+        # ADK HttpOptions.timeout is in milliseconds.  Convert from the
+        # seconds-based LLMConfig so a hung Gemini call surfaces as a
+        # transport error instead of waiting forever.
         gen_config = types.GenerateContentConfig(
             temperature=context.temperature,
+            http_options=types.HttpOptions(
+                timeout=int(self._timeout_seconds * 1000),
+            ),
         )
 
         # Callback closures for observation tracking
@@ -399,7 +424,8 @@ class GoogleADKAdapter(ToolAgentAdapter):
             session_service=session_svc,
         )
         session = await session_svc.create_session(
-            app_name=f"desmet_{stage_name}", user_id="eval",
+            app_name=f"desmet_{stage_name}",
+            user_id="eval",
         )
 
         # Hard ceiling on total LLM calls — RunConfig is ADK's built-in
@@ -412,7 +438,8 @@ class GoogleADKAdapter(ToolAgentAdapter):
                 user_id="eval",
                 session_id=session.id,
                 new_message=types.Content(
-                    role="user", parts=[types.Part(text=prompt)],
+                    role="user",
+                    parts=[types.Part(text=prompt)],
                 ),
                 run_config=run_config,
             ):
@@ -422,12 +449,12 @@ class GoogleADKAdapter(ToolAgentAdapter):
                 is_final = event.is_final_response()
                 if not is_final and event.content and event.content.parts:
                     text = "".join(
-                        p.text for p in event.content.parts
-                        if hasattr(p, "text") and p.text
+                        p.text for p in event.content.parts if hasattr(p, "text") and p.text
                     )
                     if text:
                         collector.record_message(
-                            "assistant", text,
+                            "assistant",
+                            text,
                             metadata={"agent": author},
                         )
 
@@ -440,15 +467,17 @@ class GoogleADKAdapter(ToolAgentAdapter):
                     collector.record_message(
                         "assistant",
                         "".join(
-                            p.text for p in (event.content.parts if event.content else [])
+                            p.text
+                            for p in (event.content.parts if event.content else [])
                             if hasattr(p, "text") and p.text
-                        ) or "(final)",
+                        )
+                        or "(final)",
                         metadata={"event": "final_output"},
                     )
 
-                # Check iteration limit
+                # Check iteration limit — break out of the streaming loop;
+                # final success state is decided by policy.validate() below.
                 if total_iterations >= context.max_iterations:
-                    hit_limit = True
                     break
 
         except Exception as e:
@@ -463,14 +492,17 @@ class GoogleADKAdapter(ToolAgentAdapter):
         collector.record_llm_response(raw_usage=None, duration_ms=llm_time_estimate)
 
         # ── Step 5: Final validation ─────────────────────────────────────
-        passed, feedback = policy.validate()
-        if passed:
+        # Final success requires the workspace to actually pass validation.
+        # Same invariant as the other adapters: artifacts present == success,
+        # regardless of iteration count.
+        success, feedback = policy.validate()
+        if success:
             progress.validation_passed()
         else:
             progress.validation_failed(1, 1, feedback)
 
         collector.mark_iterations(total_iterations)
-        return total_iterations, hit_limit
+        return total_iterations, success
 
     # ── Metadata ──────────────────────────────────────────────────────
 

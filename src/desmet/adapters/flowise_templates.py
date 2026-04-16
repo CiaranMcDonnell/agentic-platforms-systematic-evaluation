@@ -1,143 +1,193 @@
-"""Flowise chatflow template definitions for SDLC stages.
+"""Flowise chatflow template builder.
 
-Each template is a Python dict representing a Flowise chatflow JSON
-structure with an agent node, LLM node, and tool nodes.  The
-``build_chatflow`` function deep-copies and parameterises a template
-for a specific stage execution.
+Flowise's runtime expects each node in ``flowData.nodes`` to carry the
+full React Flow node shape — ``inputAnchors``, ``inputParams``,
+``outputAnchors``, ``baseClasses``, and related metadata — not just the
+subset the UI exposes for editing.  Hand-synthesising that shape is
+fragile and breaks on Flowise upgrades.
 
-Node layout per chatflow
-------------------------
-- ``agent_0``      — Tool Agent (toolAgent / AgentFlow)
-- ``llm_0``        — ChatOpenAI model
-- ``tool_exec_0``  — execute_shell custom tool
-- ``tool_read_0``  — read_file custom tool
-- ``tool_write_0`` — write_file custom tool
+This module instead builds nodes from the **live node specs** exposed
+by ``GET /api/v1/nodes/{name}``.  Each spec's ``inputs`` list is
+classified into params vs anchors using Flowise's own
+``INPUT_PARAMS_TYPE`` constant, and the React Flow structure is
+synthesised mechanically.
 
-Edges wire the LLM and all three tools into the agent's inputs.
+Per-chatflow graph
+------------------
+* ``chatOpenRouter_0`` — LLM, bound to an openRouterApi credential ID
+* ``customTool_{0,1,2}`` — execute_shell / read_file / write_file,
+  referencing tool IDs created via ``POST /api/v1/tools``
+* ``bufferMemory_0`` — short-term session memory
+* ``toolAgent_0`` — the agent that ties model + tools + memory together
 """
+
 from __future__ import annotations
 
-import copy
 from typing import Any
 
+# Flowise's own classification — an input is an ``inputParam`` (i.e. a
+# form field with a literal value) if its ``type`` is in this set, and
+# an ``inputAnchor`` (i.e. a connection point wired to another node)
+# otherwise.  Sourced from
+# ``/usr/local/lib/node_modules/flowise/dist/utils/constants.js``.
+_INPUT_PARAM_TYPES = frozenset(
+    {
+        "asyncOptions",
+        "asyncMultiOptions",
+        "options",
+        "multiOptions",
+        "datagrid",
+        "string",
+        "number",
+        "boolean",
+        "password",
+        "json",
+        "code",
+        "date",
+        "file",
+        "folder",
+        "tabs",
+    }
+)
 
-def _make_base_template(stage_name: str) -> dict[str, Any]:
-    """Build the base chatflow template structure for any SDLC stage."""
+
+# ── Node construction ─────────────────────────────────────────────────
+
+
+def _build_node(
+    node_id: str,
+    spec: dict[str, Any],
+    position: dict[str, int],
+    input_values: dict[str, Any],
+    credential_id: str | None = None,
+) -> dict[str, Any]:
+    """Turn a node spec from ``/api/v1/nodes/{name}`` into a React Flow node.
+
+    ``spec`` is the JSON returned by Flowise's nodes endpoint.  This
+    function classifies each entry in ``spec["inputs"]`` as either an
+    ``inputParam`` or ``inputAnchor`` and assigns the handle IDs that
+    Flowise's runtime uses to match edges against.
+    """
+    name = spec["name"]
+    base_classes: list[str] = spec.get("baseClasses", [])
+
+    input_params: list[dict[str, Any]] = []
+    input_anchors: list[dict[str, Any]] = []
+
+    # Credential is surfaced as a pseudo-param at the top of ``inputParams``
+    # when the node declares one.
+    cred = spec.get("credential")
+    if cred:
+        input_params.append(
+            {
+                **cred,
+                "id": f"{node_id}-input-{cred['name']}-{cred['type']}",
+            }
+        )
+
+    for inp in spec.get("inputs", []):
+        inp_type = inp.get("type", "")
+        entry = {**inp, "id": f"{node_id}-input-{inp['name']}-{inp_type}"}
+        if inp_type in _INPUT_PARAM_TYPES:
+            input_params.append(entry)
+        else:
+            input_anchors.append(entry)
+
+    # Flowise stores actual values in ``inputs`` keyed by param/anchor name.
+    # Every param/anchor must appear (even if blank) — we seed defaults
+    # first, then overlay the caller-supplied values.
+    inputs: dict[str, Any] = {}
+    for p in input_params:
+        if p.get("name") == "credential":
+            continue  # credential goes on the node itself, not in ``inputs``
+        inputs[p["name"]] = p.get("default", "")
+    for a in input_anchors:
+        inputs[a["name"]] = [] if a.get("list") else ""
+    inputs.update(input_values)
+
+    # One output anchor per node, synthesised from baseClasses.
+    output_type = " | ".join(base_classes)
+    output_anchors = [
+        {
+            "id": f"{node_id}-output-{name}-{'|'.join(base_classes)}",
+            "name": name,
+            "label": spec.get("label", name),
+            "type": output_type,
+        }
+    ]
+
+    node_data: dict[str, Any] = {
+        "id": node_id,
+        "label": spec.get("label", name),
+        "version": spec.get("version", 1),
+        "name": name,
+        "type": spec.get("type", name),
+        "baseClasses": base_classes,
+        "category": spec.get("category", ""),
+        "description": spec.get("description", ""),
+        "inputParams": input_params,
+        "inputAnchors": input_anchors,
+        "inputs": inputs,
+        "outputAnchors": output_anchors,
+        "outputs": {},
+        "selected": False,
+    }
+    if credential_id:
+        node_data["credential"] = credential_id
+
     return {
-        "name": f"desmet-{stage_name}",
-        "deployed": False,
-        "isPublic": False,
-        "type": "CHATFLOW",
-        "nodes": [
-            {
-                "id": "agent_0",
-                "data": {
-                    "id": "agent_0",
-                    "label": "Tool Agent",
-                    "name": "toolAgent",
-                    "type": "AgentFlow",
-                    "category": "Agents",
-                    "inputs": {
-                        "systemMessage": "",
-                        "maxIterations": "25",
-                    },
-                },
-                "position": {"x": 450, "y": 300},
-                "type": "customNode",
-            },
-            {
-                "id": "llm_0",
-                "data": {
-                    "id": "llm_0",
-                    "label": "ChatOpenAI",
-                    "name": "chatOpenAI",
-                    "type": "ChatOpenAI",
-                    "category": "Chat Models",
-                    "inputs": {
-                        "modelName": "",
-                        "temperature": "0",
-                    },
-                },
-                "position": {"x": 200, "y": 500},
-                "type": "customNode",
-            },
-            {
-                "id": "tool_exec_0",
-                "data": {
-                    "id": "tool_exec_0",
-                    "label": "Execute Shell",
-                    "name": "customTool",
-                    "type": "CustomTool",
-                    "category": "Tools",
-                    "inputs": {
-                        "toolName": "execute_shell",
-                        "toolDesc": "Execute a shell command in the workspace directory.",
-                        "toolFunc": "",
-                    },
-                },
-                "position": {"x": 600, "y": 500},
-                "type": "customNode",
-            },
-            {
-                "id": "tool_read_0",
-                "data": {
-                    "id": "tool_read_0",
-                    "label": "Read File",
-                    "name": "customTool",
-                    "type": "CustomTool",
-                    "category": "Tools",
-                    "inputs": {
-                        "toolName": "read_file",
-                        "toolDesc": "Read the contents of a file in the workspace. Input: relative file path.",
-                        "toolFunc": "",
-                    },
-                },
-                "position": {"x": 750, "y": 500},
-                "type": "customNode",
-            },
-            {
-                "id": "tool_write_0",
-                "data": {
-                    "id": "tool_write_0",
-                    "label": "Write File",
-                    "name": "customTool",
-                    "type": "CustomTool",
-                    "category": "Tools",
-                    "inputs": {
-                        "toolName": "write_file",
-                        "toolDesc": "Write content to a file in the workspace. Input: JSON with 'path' and 'content' fields.",
-                        "toolFunc": "",
-                    },
-                },
-                "position": {"x": 900, "y": 500},
-                "type": "customNode",
-            },
-        ],
-        "edges": [
-            {"source": "llm_0", "target": "agent_0", "sourceHandle": "llm_0-output-chatOpenAI-ChatOpenAI", "targetHandle": "agent_0-input-model-ChatModel"},
-            {"source": "tool_exec_0", "target": "agent_0", "sourceHandle": "tool_exec_0-output-customTool-CustomTool", "targetHandle": "agent_0-input-tools-Tool"},
-            {"source": "tool_read_0", "target": "agent_0", "sourceHandle": "tool_read_0-output-customTool-CustomTool", "targetHandle": "agent_0-input-tools-Tool"},
-            {"source": "tool_write_0", "target": "agent_0", "sourceHandle": "tool_write_0-output-customTool-CustomTool", "targetHandle": "agent_0-input-tools-Tool"},
-        ],
+        "id": node_id,
+        "position": position,
+        "type": "customNode",
+        "data": node_data,
+        "width": 300,
+        "height": 400,
+        "selected": False,
+        "positionAbsolute": position,
+        "dragging": False,
     }
 
 
-def _tool_js_execute(workspace: str) -> str:
-    """JS code for the execute_shell custom tool."""
+def _build_edge(
+    source_id: str,
+    source_spec: dict[str, Any],
+    target_id: str,
+    target_anchor_name: str,
+    target_anchor_type: str,
+) -> dict[str, Any]:
+    """Build a React Flow edge with the handle IDs Flowise's runtime expects."""
+    source_name = source_spec["name"]
+    source_base = "|".join(source_spec.get("baseClasses", []))
+    source_handle = f"{source_id}-output-{source_name}-{source_base}"
+    target_handle = f"{target_id}-input-{target_anchor_name}-{target_anchor_type}"
+    return {
+        "source": source_id,
+        "sourceHandle": source_handle,
+        "target": target_id,
+        "targetHandle": target_handle,
+        "type": "buttonedge",
+        "id": f"{source_handle}-{target_handle}",
+    }
+
+
+# ── Tool JS code (baked into the tool definitions at creation time) ───
+
+
+def tool_js_execute(workspace: str) -> str:
+    """JS source for the ``execute_shell`` custom tool."""
     return (
         'const { execSync } = require("child_process");\n'
         "try {\n"
-        f'  const result = execSync($input, {{ cwd: "{workspace}", timeout: 120000,'
+        f'  return execSync($input, {{ cwd: "{workspace}", timeout: 120000,'
         ' encoding: "utf-8", maxBuffer: 1024 * 1024 }});\n'
-        "  return result;\n"
         "} catch (e) {\n"
         "  return e.stderr || e.message;\n"
         "}"
     )
 
 
-def _tool_js_read(workspace: str) -> str:
-    """JS code for the read_file custom tool."""
+def tool_js_read(workspace: str) -> str:
+    """JS source for the ``read_file`` custom tool."""
     return (
         'const fs = require("fs");\n'
         'const path = require("path");\n'
@@ -151,8 +201,8 @@ def _tool_js_read(workspace: str) -> str:
     )
 
 
-def _tool_js_write(workspace: str) -> str:
-    """JS code for the write_file custom tool."""
+def tool_js_write(workspace: str) -> str:
+    """JS source for the ``write_file`` custom tool."""
     return (
         'const fs = require("fs");\n'
         'const path = require("path");\n'
@@ -169,32 +219,138 @@ def _tool_js_write(workspace: str) -> str:
     )
 
 
-STAGE_TEMPLATES: dict[str, dict[str, Any]] = {
-    stage: _make_base_template(stage)
-    for stage in ("requirements", "codegen", "testing", "deploy")
-}
+_SCHEMA_SINGLE_INPUT = (
+    '[{"property":"input","type":"string",'
+    '"description":"%s","required":true}]'
+)
+
+TOOL_DEFS: list[dict[str, str]] = [
+    {
+        "name": "execute_shell",
+        "description": "Execute a shell command in the workspace directory.",
+        "schema_json": _SCHEMA_SINGLE_INPUT % "The shell command to execute.",
+    },
+    {
+        "name": "read_file",
+        "description": "Read the contents of a file in the workspace.",
+        "schema_json": _SCHEMA_SINGLE_INPUT % "Relative file path to read.",
+    },
+    {
+        "name": "write_file",
+        "description": (
+            "Write content to a file in the workspace. Input must be a JSON "
+            "string with 'path' and 'content' fields."
+        ),
+        "schema_json": _SCHEMA_SINGLE_INPUT % (
+            "JSON string: {\\\"path\\\":\\\"<rel-path>\\\",\\\"content\\\":\\\"<text>\\\"}"
+        ),
+    },
+]
+
+
+# ── Chatflow assembly ─────────────────────────────────────────────────
 
 
 def build_chatflow(
     stage_name: str,
-    prompt: str,
     system_msg: str,
-    workspace: str,
     model_name: str,
+    credential_id: str,
+    tool_id_by_name: dict[str, str],
+    specs: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    """Deep-copy a stage template and inject runtime parameters."""
-    if stage_name not in STAGE_TEMPLATES:
-        raise ValueError(f"Unknown stage: {stage_name!r}. Valid stages: {sorted(STAGE_TEMPLATES)}")
+    """Assemble a complete chatflow JSON for a stage.
 
-    cf = copy.deepcopy(STAGE_TEMPLATES[stage_name])
-    cf["name"] = f"desmet-{stage_name}"
+    ``specs`` must contain entries for ``chatOpenRouter``, ``customTool``,
+    ``bufferMemory``, and ``toolAgent`` — fetched once from
+    ``GET /api/v1/nodes/{name}`` by the caller and reused across stages.
+    ``tool_id_by_name`` maps each of ``execute_shell``/``read_file``/
+    ``write_file`` to the tool ID returned by ``POST /api/v1/tools``.
+    """
+    required = {"chatOpenRouter", "customTool", "bufferMemory", "toolAgent"}
+    missing = required - set(specs)
+    if missing:
+        raise ValueError(f"Missing node specs for Flowise chatflow: {sorted(missing)}")
 
-    nodes_by_id = {n["id"]: n for n in cf["nodes"]}
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
 
-    nodes_by_id["agent_0"]["data"]["inputs"]["systemMessage"] = system_msg
-    nodes_by_id["llm_0"]["data"]["inputs"]["modelName"] = model_name
-    nodes_by_id["tool_exec_0"]["data"]["inputs"]["toolFunc"] = _tool_js_execute(workspace)
-    nodes_by_id["tool_read_0"]["data"]["inputs"]["toolFunc"] = _tool_js_read(workspace)
-    nodes_by_id["tool_write_0"]["data"]["inputs"]["toolFunc"] = _tool_js_write(workspace)
+    # LLM (bound to credential).  Streaming is disabled so that the
+    # prediction response carries full ``tokenUsage`` — streaming
+    # responses in Flowise drop usage metadata.
+    llm_spec = specs["chatOpenRouter"]
+    llm_node = _build_node(
+        "chatOpenRouter_0",
+        llm_spec,
+        position={"x": 200, "y": 100},
+        input_values={
+            "modelName": model_name,
+            "temperature": 0,
+            "streaming": False,
+        },
+        credential_id=credential_id,
+    )
+    nodes.append(llm_node)
 
-    return cf
+    # Tools (referencing pre-registered IDs)
+    tool_spec = specs["customTool"]
+    tool_order = ["execute_shell", "read_file", "write_file"]
+    for i, tool_name in enumerate(tool_order):
+        tool_id = tool_id_by_name[tool_name]
+        t_node = _build_node(
+            f"customTool_{i}",
+            tool_spec,
+            position={"x": 200 + i * 320, "y": 500},
+            input_values={"selectedTool": tool_id, "returnDirect": False},
+        )
+        nodes.append(t_node)
+
+    # Memory
+    memory_spec = specs["bufferMemory"]
+    memory_node = _build_node(
+        "bufferMemory_0",
+        memory_spec,
+        position={"x": 200, "y": 900},
+        input_values={},
+    )
+    nodes.append(memory_node)
+
+    # Agent.  Flowise resolves connected-node values at runtime by
+    # substituting ``{{nodeId.data.instance}}`` references in the
+    # target's ``inputs`` dict — the edges themselves are UI state,
+    # not the data path.  So anchor inputs must carry reference
+    # strings, not empty placeholders.
+    agent_spec = specs["toolAgent"]
+    tool_refs = [
+        f"{{{{customTool_{i}.data.instance}}}}" for i in range(len(tool_order))
+    ]
+    agent_node = _build_node(
+        "toolAgent_0",
+        agent_spec,
+        position={"x": 900, "y": 400},
+        input_values={
+            "systemMessage": system_msg,
+            "maxIterations": 25,
+            "model": "{{chatOpenRouter_0.data.instance}}",
+            "memory": "{{bufferMemory_0.data.instance}}",
+            "tools": tool_refs,
+        },
+    )
+    nodes.append(agent_node)
+
+    # Edges: LLM → agent.model, each tool → agent.tools, memory → agent.memory
+    edges.append(_build_edge("chatOpenRouter_0", llm_spec, "toolAgent_0", "model", "BaseChatModel"))
+    for i in range(len(tool_order)):
+        edges.append(_build_edge(f"customTool_{i}", tool_spec, "toolAgent_0", "tools", "Tool"))
+    edges.append(
+        _build_edge("bufferMemory_0", memory_spec, "toolAgent_0", "memory", "BaseChatMemory")
+    )
+
+    return {
+        "name": f"desmet-{stage_name}",
+        "deployed": False,
+        "isPublic": False,
+        "type": "CHATFLOW",
+        "nodes": nodes,
+        "edges": edges,
+    }

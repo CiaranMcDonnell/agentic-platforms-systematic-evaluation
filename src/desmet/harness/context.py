@@ -92,10 +92,7 @@ class StageContext:
 
         def _asdict(obj: Any) -> Any:
             if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-                return {
-                    k: _asdict(v)
-                    for k, v in dataclasses.asdict(obj).items()
-                }
+                return {k: _asdict(v) for k, v in dataclasses.asdict(obj).items()}
             if isinstance(obj, list):
                 return [_asdict(i) for i in obj]
             if isinstance(obj, dict):
@@ -124,7 +121,7 @@ class StageContext:
         and leaves ``artifacts`` as plain dicts (sufficient for prompt
         building inside the container).
         """
-        from .story import UserStory, DifficultyLevel, AcceptanceCriterion
+        from .story import AcceptanceCriterion, DifficultyLevel, UserStory
 
         story_data = data["story"]
         story_data["difficulty"] = DifficultyLevel(story_data["difficulty"])

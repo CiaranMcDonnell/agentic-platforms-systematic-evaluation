@@ -82,15 +82,12 @@ class ResultStore:
         tables = {
             t[0]
             for t in self._conn.execute(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema = 'main'"
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
             ).fetchall()
         }
         if "store_meta" not in tables:
             self._conn.execute(_CREATE_SQL)
-            self._conn.execute(
-                "INSERT INTO store_meta VALUES (?)", [_SCHEMA_VERSION]
-            )
+            self._conn.execute("INSERT INTO store_meta VALUES (?)", [_SCHEMA_VERSION])
             return
 
         version = self._conn.execute("SELECT version FROM store_meta").fetchone()
@@ -104,9 +101,7 @@ class ResultStore:
                     "ALTER TABLE executions ADD COLUMN IF NOT EXISTS resource_net_tx_bytes BIGINT",
                 ]:
                     self._conn.execute(col_sql)
-            self._conn.execute(
-                "UPDATE store_meta SET version = ?", [_SCHEMA_VERSION]
-            )
+            self._conn.execute("UPDATE store_meta SET version = ?", [_SCHEMA_VERSION])
 
     # ------------------------------------------------------------------
     # Write path
@@ -134,9 +129,7 @@ class ResultStore:
     def finish_run(self, run_id: str) -> None:
         """Set finished_at on a run."""
         now = datetime.now(timezone.utc)
-        self._conn.execute(
-            "UPDATE runs SET finished_at = ? WHERE run_id = ?", [now, run_id]
-        )
+        self._conn.execute("UPDATE runs SET finished_at = ? WHERE run_id = ?", [now, run_id])
 
     def save_execution(
         self,
@@ -211,15 +204,11 @@ class ResultStore:
 
     def list_runs(self) -> pd.DataFrame:
         """All runs, newest first."""
-        return self._conn.execute(
-            "SELECT * FROM runs ORDER BY started_at DESC"
-        ).df()
+        return self._conn.execute("SELECT * FROM runs ORDER BY started_at DESC").df()
 
     def get_run(self, run_id: str) -> pd.DataFrame:
         """Single run row as a DataFrame."""
-        return self._conn.execute(
-            "SELECT * FROM runs WHERE run_id = ?", [run_id]
-        ).df()
+        return self._conn.execute("SELECT * FROM runs WHERE run_id = ?", [run_id]).df()
 
     def get_platform_history(self, platform_id: str) -> pd.DataFrame:
         """All executions for a platform across all runs, oldest first.
@@ -241,11 +230,17 @@ class ResultStore:
         'score_orchestration').
         """
         valid_columns = {
-            "score_pipeline_completeness", "score_efficiency",
-            "score_orchestration", "score_autonomy", "overall_score",
-            "rubric_pipeline_completeness", "rubric_tool_integration",
-            "rubric_error_recovery", "rubric_trace_quality",
-            "rubric_time_efficiency", "rubric_autonomy",
+            "score_pipeline_completeness",
+            "score_efficiency",
+            "score_orchestration",
+            "score_autonomy",
+            "overall_score",
+            "rubric_pipeline_completeness",
+            "rubric_tool_integration",
+            "rubric_error_recovery",
+            "rubric_trace_quality",
+            "rubric_time_efficiency",
+            "rubric_autonomy",
         }
         updates = {k: v for k, v in scores.items() if k in valid_columns}
         if not updates:
@@ -271,13 +266,14 @@ class ResultStore:
         updated.
         """
         valid_dims = {
-            "pipeline_completeness", "tool_integration",
-            "error_recovery", "trace_quality",
-            "time_efficiency", "autonomy",
+            "pipeline_completeness",
+            "tool_integration",
+            "error_recovery",
+            "trace_quality",
+            "time_efficiency",
+            "autonomy",
         }
-        updates = {
-            f"rubric_{k}": v for k, v in scores.items() if k in valid_dims
-        }
+        updates = {f"rubric_{k}": v for k, v in scores.items() if k in valid_dims}
         if not updates:
             return False
         set_clause = ", ".join(f"{col} = ?" for col in updates)
@@ -302,8 +298,11 @@ class ResultStore:
         row for that platform.
         """
         valid_columns = {
-            "score_pipeline_completeness", "score_efficiency",
-            "score_orchestration", "score_autonomy", "overall_score",
+            "score_pipeline_completeness",
+            "score_efficiency",
+            "score_orchestration",
+            "score_autonomy",
+            "overall_score",
         }
         updates = {k: v for k, v in scores.items() if k in valid_columns}
         if not updates:
@@ -311,8 +310,7 @@ class ResultStore:
         set_clause = ", ".join(f"{col} = ?" for col in updates)
         values = list(updates.values()) + [run_id, platform_id]
         self._conn.execute(
-            f"UPDATE executions SET {set_clause} "
-            f"WHERE run_id = ? AND platform_id = ?",
+            f"UPDATE executions SET {set_clause} WHERE run_id = ? AND platform_id = ?",
             values,
         )
 
@@ -347,8 +345,12 @@ class ResultStore:
                     "trace_quality_score": row["rubric_trace_quality"],
                     "time_efficiency_score": row["rubric_time_efficiency"],
                     "autonomy_score": row["rubric_autonomy"],
-                    "resource_peak_memory_bytes": None if pd.isna(row["resource_peak_memory_bytes"]) else row["resource_peak_memory_bytes"],
-                    "resource_avg_cpu_percent": None if pd.isna(row["resource_avg_cpu_percent"]) else row["resource_avg_cpu_percent"],
+                    "resource_peak_memory_bytes": None
+                    if pd.isna(row["resource_peak_memory_bytes"])
+                    else row["resource_peak_memory_bytes"],
+                    "resource_avg_cpu_percent": None
+                    if pd.isna(row["resource_avg_cpu_percent"])
+                    else row["resource_avg_cpu_percent"],
                     "repeat_index": int(row["repeat_index"] or 0),
                 }
                 fm_raw = row["framework_metrics"]

@@ -14,7 +14,6 @@ from pydantic import BaseModel
 
 from desmet.adapters._prompts import AgentPersona
 
-
 # =========================================================================
 # Plan Model
 # =========================================================================
@@ -40,9 +39,7 @@ def format_plan_text(plan: ImplementationPlan) -> tuple[str, str]:
     comma-separated list of all files (create + modify), or
     ``"(none specified)"`` when both lists are empty.
     """
-    plan_text = "\n".join(
-        f"{i}. {step}" for i, step in enumerate(plan.steps, 1)
-    )
+    plan_text = "\n".join(f"{i}. {step}" for i, step in enumerate(plan.steps, 1))
 
     all_files = plan.files_to_create + plan.files_to_modify
     files_text = ", ".join(all_files) if all_files else "(none specified)"
@@ -93,9 +90,7 @@ _PARALLEL_TAG = "[PARALLEL]"
 
 
 @overload
-def parse_plan_text(
-    text: str, include_parallel: bool = False
-) -> ImplementationPlan: ...
+def parse_plan_text(text: str, include_parallel: bool = False) -> ImplementationPlan: ...
 
 
 @overload
@@ -119,9 +114,7 @@ def parse_plan_text(
     if not matches:
         # Fallback: treat the whole text as a single step.
         step = text.strip() or text
-        plan = ImplementationPlan(
-            steps=[step], files_to_create=[], files_to_modify=[]
-        )
+        plan = ImplementationPlan(steps=[step], files_to_create=[], files_to_modify=[])
         if include_parallel:
             return plan, [False]
         return plan
@@ -135,9 +128,7 @@ def parse_plan_text(
         steps.append(cleaned)
         parallel_flags.append(is_parallel)
 
-    plan = ImplementationPlan(
-        steps=steps, files_to_create=[], files_to_modify=[]
-    )
+    plan = ImplementationPlan(steps=steps, files_to_create=[], files_to_modify=[])
 
     if include_parallel:
         return plan, parallel_flags

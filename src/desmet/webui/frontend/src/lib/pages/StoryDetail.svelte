@@ -19,11 +19,18 @@
   let selectedStory = $state('');
   let detail = $state<StoryDetailData | null>(null);
   let expandedTrace = $state<string | null>(null);
+  let loadError = $state('');
 
   async function loadDetail() {
     if (!selectedStory) return;
     expandedTrace = null;
-    detail = await fetchStoryDetail(selectedStory);
+    loadError = '';
+    try {
+      detail = await fetchStoryDetail(selectedStory);
+    } catch {
+      detail = null;
+      loadError = 'Failed to load story details';
+    }
   }
 
   function dimScores(platform: Record<string, unknown>): Record<string, number | null> {
@@ -154,6 +161,8 @@
     <div class="card" style="padding: 48px; color: var(--text-2); text-align: center;">
       No evaluation results for this story yet. Run a benchmark that includes it first.
     </div>
+  {:else if loadError}
+    <div class="card" style="padding: 40px; color: var(--red); text-align: center;">{loadError}</div>
   {:else if selectedStory && !detail}
     <div class="card" style="padding: 40px; color: var(--text-2); text-align: center;">Loading…</div>
   {/if}

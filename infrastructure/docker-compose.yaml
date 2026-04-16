@@ -7,6 +7,15 @@ services:
   # ============================================================================
 
   # PostgreSQL for platforms that need database
+  #
+  # Self-heal note: POSTGRES_PASSWORD is only honoured by initdb on a
+  # fresh volume.  If postgres_data was initialised with a different
+  # password earlier, subsequent starts keep the OLD password in the
+  # catalog, and every auth-using sidecar (postgres-init-databases,
+  # Dify, n8n, langflow) breaks.  The background block below detects
+  # the drift and runs ``ALTER USER`` via the in-container Unix
+  # socket (pg_hba.conf trusts local connections), so the healthcheck
+  # and sidecars always see a password matching the env var.
   postgres:
     image: postgres:16-alpine
     container_name: desmet-postgres
@@ -23,11 +32,38 @@ services:
       # Override with POSTGRES_PORT=5432 in .env if you want standard
       # psql access from the host.
       - "${POSTGRES_PORT:-5532}:5432"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        # Background: once pg is up, force the password to match the
+        # env var.  No-op on a fresh volume; self-heals a stale one.
+        (
+          for i in $$(seq 1 60); do
+            if pg_isready -h /var/run/postgresql -U "$$POSTGRES_USER" -q 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          psql -h /var/run/postgresql -U "$$POSTGRES_USER" -d postgres \
+            -v ON_ERROR_STOP=1 \
+            -c "ALTER USER \"$$POSTGRES_USER\" WITH PASSWORD '$$POSTGRES_PASSWORD';" \
+            >/dev/null 2>&1 || true
+        ) &
+        exec docker-entrypoint.sh postgres
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-desmet}"]
-      interval: 10s
+      # Connect via the container's routable hostname (172.x.x.x),
+      # NOT 127.0.0.1 — the default pg_hba.conf ``trust``-s loopback
+      # and would pass even with a stale catalog password.  Using the
+      # hostname hits the ``host all all all scram-sha-256`` rule and
+      # blocks sidecars until self-heal has aligned the password.
+      test:
+        - "CMD-SHELL"
+        - 'PGPASSWORD=$$POSTGRES_PASSWORD psql -h $$(hostname) -U $$POSTGRES_USER -d postgres -c "SELECT 1" >/dev/null 2>&1'
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 20
+      start_period: 10s
     profiles:
       - infrastructure
       - dify
@@ -126,11 +162,9 @@ services:
 
   # Flowise
   flowise:
-    image: flowiseai/flowise:latest
+    image: flowiseai/flowise:2.2.7
     container_name: desmet-flowise
     environment:
-      - FLOWISE_USERNAME=${FLOWISE_USERNAME:-admin}
-      - FLOWISE_PASSWORD=${FLOWISE_PASSWORD:-admin}
       - DATABASE_PATH=/root/.flowise
       - APIKEY_PATH=/root/.flowise
       - LOG_PATH=/root/.flowise/logs
@@ -138,6 +172,10 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - FLOWISE_SECRETKEY_OVERWRITE=${FLOWISE_API_KEY:-}
+      # DESMET custom tools need fs + child_process to read/write the
+      # per-stage workspace and execute shell commands.  Flowise's
+      # nodevm sandbox blocks both by default; this whitelists them.
+      - TOOL_FUNCTION_BUILTIN_DEP=fs,child_process
     volumes:
       - flowise_data:/root/.flowise
       - ${DESMET_RESULTS_DIR:-../results}:/desmet-results
@@ -152,6 +190,19 @@ services:
       - flowise
       - visual-platforms
 
+  # LangFlow - Init Permissions (one-shot setup)
+  langflow-init:
+    image: busybox:latest
+    container_name: desmet-langflow-init
+    command: >
+      sh -c "chown -R 1000:0 /app/langflow"
+    volumes:
+      - langflow_data:/app/langflow
+    restart: "no"
+    profiles:
+      - langflow
+      - visual-platforms
+
   # LangFlow
   langflow:
     image: langflowai/langflow:latest
@@ -159,6 +210,9 @@ services:
     environment:
       - LANGFLOW_DATABASE_URL=postgresql://${POSTGRES_USER:-desmet}:${POSTGRES_PASSWORD:-desmet_pass}@postgres:5432/langflow
       - LANGFLOW_CONFIG_DIR=/app/langflow
+      - LANGFLOW_SUPERUSER=${LANGFLOW_SUPERUSER:-langflow}
+      - LANGFLOW_SUPERUSER_PASSWORD=${LANGFLOW_SUPERUSER_PASSWORD:-langflow}
+      - LANGFLOW_AUTO_LOGIN=true
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     volumes:
@@ -173,6 +227,8 @@ services:
       postgres:
         condition: service_healthy
       postgres-init-databases:
+        condition: service_completed_successfully
+      langflow-init:
         condition: service_completed_successfully
     restart: unless-stopped
     profiles:
@@ -207,6 +263,7 @@ services:
     environment: &dify-shared-env
       # Core
       MODE: api
+      MIGRATION_ENABLED: "true"
       LOG_LEVEL: INFO
       SECRET_KEY: ${DIFY_SECRET_KEY:-sk-change-me}
       # Database
@@ -231,7 +288,8 @@ services:
       PLUGIN_DAEMON_URL: ${PLUGIN_DAEMON_URL:-http://dify-plugin-daemon:5002}
       PLUGIN_DAEMON_KEY: ${PLUGIN_DAEMON_KEY:-plugin-daemon-change-me}
       # DESMET: init credentials for admin user
-      INIT_PASSWORD: ${DIFY_INIT_PASSWORD:-desmet-admin}
+      # Password must contain letters + digits, length > 8 (Dify rule)
+      INIT_PASSWORD: ${DIFY_INIT_PASSWORD:-desmet-admin1}
     volumes:
       - dify_storage:/app/storage
       - ${DESMET_RESULTS_DIR:-../results}:/desmet-results
@@ -394,6 +452,10 @@ services:
       FORCE_VERIFYING_SIGNATURE: "false"
       # Python runtime for plugins
       PYTHON_INTERPRETER_PATH: /usr/bin/python3
+      # Dify's plugin daemon runs uv in sandbox mode that blocks
+      # network access by default.  Explicitly pointing at PyPI
+      # re-enables fetches for plugin deps (sniffio, httpx, etc.).
+      PIP_MIRROR_URL: https://pypi.org/simple/
       # Database
       DB_USERNAME: ${POSTGRES_USER:-desmet}
       DB_PASSWORD: ${POSTGRES_PASSWORD:-desmet_pass}
@@ -424,17 +486,16 @@ services:
     image: n8nio/n8n:latest
     container_name: desmet-n8n
     environment:
-      - N8N_BASIC_AUTH_ACTIVE=true
-      - N8N_BASIC_AUTH_USER=${N8N_USER:-admin}
-      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-admin}
+      # N8N_BASIC_AUTH_* removed — deprecated since n8n 1.x (replaced
+      # by internal user management).  The adapter auto-provisions an
+      # owner account via /rest/owner/setup on first run.
       - DB_TYPE=postgresdb
       - DB_POSTGRESDB_HOST=postgres
       - DB_POSTGRESDB_PORT=5432
       - DB_POSTGRESDB_DATABASE=n8n
       - DB_POSTGRESDB_USER=${POSTGRES_USER:-desmet}
       - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD:-desmet_pass}
-      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-change-me}
-      - N8N_API_KEY=${N8N_API_KEY:-desmet-n8n-api-key}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-n8n-encryption-key-change-me}
       - EXECUTIONS_DATA_SAVE_ON_SUCCESS=all
       - EXECUTIONS_DATA_SAVE_ON_ERROR=all
     volumes:

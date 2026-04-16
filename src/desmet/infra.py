@@ -13,13 +13,10 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
 from desmet.platforms_config import get_platforms_config
 
 COMPOSE_FILE = (
-    Path(__file__).resolve().parent.parent.parent
-    / "infrastructure"
-    / "docker-compose.yaml"
+    Path(__file__).resolve().parent.parent.parent / "infrastructure" / "docker-compose.yaml"
 )
 
 PROFILE_TARGETS: dict[str, list[str]] = {
@@ -43,9 +40,7 @@ PLATFORM_CONTAINERS: dict[str, str | None] = {
     pid: data.get("container_name") for pid, data in _platforms.items()
 }
 
-PLATFORM_NAMES: dict[str, str] = {
-    pid: data["name"] for pid, data in _platforms.items()
-}
+PLATFORM_NAMES: dict[str, str] = {pid: data["name"] for pid, data in _platforms.items()}
 
 # ── Infrastructure services (not evaluation targets) ───────────────────
 INFRA_SERVICES: dict[str, dict] = {
@@ -125,28 +120,34 @@ def get_platform_statuses() -> list[PlatformStatus]:
         if package is not None:
             # SDK platform: check for container image first, then local install
             if has_image(pid):
-                statuses.append(PlatformStatus(
-                    platform_id=pid,
-                    name=name,
-                    infra_type="Docker (isolated)",
-                    status="ready",
-                ))
+                statuses.append(
+                    PlatformStatus(
+                        platform_id=pid,
+                        name=name,
+                        infra_type="Docker (isolated)",
+                        status="ready",
+                    )
+                )
             else:
                 installed = is_package_importable(package)
-                statuses.append(PlatformStatus(
-                    platform_id=pid,
-                    name=name,
-                    infra_type="Docker (isolated)" if not installed else "Python SDK",
-                    status="ready" if installed else "not built",
-                ))
+                statuses.append(
+                    PlatformStatus(
+                        platform_id=pid,
+                        name=name,
+                        infra_type="Docker (isolated)" if not installed else "Python SDK",
+                        status="ready" if installed else "not built",
+                    )
+                )
         else:
             container_status = get_container_status(container) if container else "not started"
-            statuses.append(PlatformStatus(
-                platform_id=pid,
-                name=name,
-                infra_type="Docker",
-                status=container_status,
-            ))
+            statuses.append(
+                PlatformStatus(
+                    platform_id=pid,
+                    name=name,
+                    infra_type="Docker",
+                    status=container_status,
+                )
+            )
 
     return statuses
 
@@ -193,8 +194,7 @@ def get_infra_statuses() -> list[dict]:
             container_names = [info["container"]]
 
         per_container = [
-            {"name": name, "status": get_container_status(name)}
-            for name in container_names
+            {"name": name, "status": get_container_status(name)} for name in container_names
         ]
         running = sum(1 for c in per_container if c["status"] == "running")
         total = len(per_container)
@@ -208,21 +208,24 @@ def get_infra_statuses() -> list[dict]:
         else:
             status = "partial"
 
-        results.append({
-            "id": sid,
-            "name": info["name"],
-            "description": info["description"],
-            "status": status,
-            "managed": info.get("managed", False),
-            "containers": per_container,
-            "running_count": running,
-            "total_count": total,
-        })
+        results.append(
+            {
+                "id": sid,
+                "name": info["name"],
+                "description": info["description"],
+                "status": status,
+                "managed": info.get("managed", False),
+                "containers": per_container,
+                "running_count": running,
+                "total_count": total,
+            }
+        )
     return results
 
 
 def get_config_status() -> ConfigStatus:
     from desmet.llm_config import get_config
+
     model = get_config().model
 
     api_keys_set = [provider for var, provider in _API_KEY_VARS.items() if os.getenv(var)]
@@ -258,8 +261,7 @@ def get_config_status() -> ConfigStatus:
 def compose_up(target: str) -> subprocess.CompletedProcess:
     if target not in PROFILE_TARGETS:
         raise ValueError(
-            f"Unknown target '{target}'. "
-            f"Available: {', '.join(sorted(PROFILE_TARGETS))}"
+            f"Unknown target '{target}'. Available: {', '.join(sorted(PROFILE_TARGETS))}"
         )
 
     profiles = PROFILE_TARGETS[target]
@@ -274,11 +276,12 @@ def compose_up(target: str) -> subprocess.CompletedProcess:
 def compose_down(target: str | None = None) -> subprocess.CompletedProcess:
     if target and target not in PROFILE_TARGETS:
         raise ValueError(
-            f"Unknown target '{target}'. "
-            f"Available: {', '.join(sorted(PROFILE_TARGETS))}"
+            f"Unknown target '{target}'. Available: {', '.join(sorted(PROFILE_TARGETS))}"
         )
 
-    profiles = PROFILE_TARGETS.get(target, PROFILE_TARGETS["all"]) if target else PROFILE_TARGETS["all"]
+    profiles = (
+        PROFILE_TARGETS.get(target, PROFILE_TARGETS["all"]) if target else PROFILE_TARGETS["all"]
+    )
 
     cmd = ["docker", "compose", "-f", str(COMPOSE_FILE)]
     for p in profiles:
@@ -302,9 +305,7 @@ def cleanup_all_docker() -> None:
         if result.returncode == 0:
             _log.info("Stopped all Docker Compose services")
         else:
-            _log.warning(
-                "compose down returned %d: %s", result.returncode, result.stderr
-            )
+            _log.warning("compose down returned %d: %s", result.returncode, result.stderr)
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         _log.warning("Could not stop Compose services: %s", e)
 
@@ -324,8 +325,6 @@ def cleanup_all_docker() -> None:
                 text=True,
                 timeout=30,
             )
-            _log.info(
-                "Removed eval containers: %s", container_ids.replace("\n", ", ")
-            )
+            _log.info("Removed eval containers: %s", container_ids.replace("\n", ", "))
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         _log.warning("Could not clean eval containers: %s", e)

@@ -39,7 +39,9 @@ async def check_status() -> dict[str, Any]:
                 params={"limit": 1},
             )
             return {"available": r.status_code == 200, "project": project}
-    except Exception:
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("LangSmith health check failed: %s", exc)
         return {"available": False, "project": project}
 
 
@@ -152,5 +154,7 @@ async def fetch_run_tree(run_id: str) -> dict[str, Any] | None:
             },
             "children": roots,
         }
-    except Exception:
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("fetch_run_tree failed: %s", exc)
         return None

@@ -3,6 +3,7 @@
 Deterministic checks (no LLM call) that verify whether an SDLC stage
 produced the expected artefacts in the workspace directory.
 """
+
 from __future__ import annotations
 
 import os
@@ -93,10 +94,26 @@ def validate_workspace(stage: str, workspace: str) -> bool:
 # ---------------------------------------------------------------------------
 
 # File extensions that indicate code artifacts.
-_CODE_EXTENSIONS = frozenset({
-    ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".go", ".rs",
-    ".rb", ".c", ".cpp", ".h", ".hpp", ".cs", ".swift", ".kt",
-})
+_CODE_EXTENSIONS = frozenset(
+    {
+        ".py",
+        ".js",
+        ".ts",
+        ".jsx",
+        ".tsx",
+        ".java",
+        ".go",
+        ".rs",
+        ".rb",
+        ".c",
+        ".cpp",
+        ".h",
+        ".hpp",
+        ".cs",
+        ".swift",
+        ".kt",
+    }
+)
 
 _DEPLOY_ARTIFACT_NAMES = {"Dockerfile", "docker-compose.yaml", "docker-compose.yml"}
 
@@ -126,8 +143,7 @@ def audit_workspace(
                 continue
             if fpath.suffix in _CODE_EXTENSIONS:
                 warnings.append(
-                    f"Scope violation: {rel} — "
-                    f"code file created during requirements stage"
+                    f"Scope violation: {rel} — code file created during requirements stage"
                 )
             if fn in _DEPLOY_ARTIFACT_NAMES:
                 warnings.append(

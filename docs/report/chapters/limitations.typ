@@ -1,6 +1,6 @@
 #import "../template.typ": *
 
-= Limitations and Threats to Validity
+= Limitations and Threats to Validity <limitations>
 
 This chapter consolidates the limitations of the proposed approach and the threats to validity of the evaluation.
 
@@ -8,7 +8,7 @@ This chapter consolidates the limitations of the proposed approach and the threa
 
 Several limitations of the proposed approach should be acknowledged. First, the evaluation uses four user stories spanning three complexity tiers. While these stories were designed to exercise all pipeline stages and differentiate platform capabilities, four stories cannot represent the full diversity of software engineering tasks---results may not generalise to domains such as data engineering, mobile development, or systems programming.
 
-Second, Layer~3 pipeline benchmarking is conducted for five of the nine platforms (LangGraph, CrewAI, OpenAI Agents SDK, Google ADK, Microsoft Agent Framework). The remaining four visual/workflow platforms (Flowise, LangFlow, Dify, N8n) are assessed at Layers~1 and~2 only, as their REST API interfaces require a fundamentally different adapter architecture. The framework is designed for straightforward adapter extension (see @appendix-adding-adapter), but the current results provide limited Layer~3 insight into the visual platform category.
+Second, Layer~3 pipeline benchmarking is conducted for eight of the nine platforms: the five SDK-based platforms (LangGraph, CrewAI, OpenAI Agents SDK, Google ADK, Microsoft Agent Framework) and three of the four visual/workflow platforms (Flowise, LangFlow, N8n). Dify is included at Layers~1 and~2 but not at Layer~3, because Dify~1.13 moved its entire LLM provider and tool ecosystem into a marketplace-only plugin system: no model provider ships in-box, and each provider must be fetched from the Dify marketplace and installed per-workspace before any agent app can select a model. The harness automates Dify's initialisation, admin setup, authentication, and app creation cleanly, but end-to-end agent execution would require programmatic plugin install and adoption of a provider-scoped `model_config` shape that is still evolving. This gap is itself a finding rather than a missing feature: plugin-only ecosystems exhibit weaker automation affinity than component-catalogue ecosystems, where every provider ships in-box (cf. the Flowise and LangFlow adapters, which build agent flows entirely from live component catalogues via `GET /api/v1/nodes/{name}` and `GET /api/v1/all` respectively). The framework is designed for straightforward adapter extension (see @appendix-adding-adapter).
 
 Third, all evaluations use a single LLM model to isolate framework capability from model capability. While this is a deliberate methodological choice, it means results may not transfer to other models---a framework that performs well with one model's function-calling behaviour may struggle with another's.
 

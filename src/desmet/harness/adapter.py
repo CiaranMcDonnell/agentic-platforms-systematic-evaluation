@@ -159,11 +159,12 @@ class BasePlatformAdapter(ABC):
 
 
 class ContainerOnlyAdapter(BasePlatformAdapter):
-    """Lightweight adapter stub for platforms that run entirely in Docker.
+    """Adapter stub providing platform metadata for containerized execution.
 
-    Used when the platform's Docker image exists but the SDK isn't installed
-    locally.  All stage methods raise — the runner uses
-    ``container_runner.run_stage_in_container()`` instead.
+    Stage methods are never called — the runner executes stages via
+    ``container_runner.run_stage_in_container()`` inside the platform's
+    Docker image.  This class exists to supply :class:`PlatformInfo` and
+    health checks to the runner and web UI.
     """
 
     def __init__(self, platform_id: str):
@@ -243,7 +244,7 @@ class ContainerOnlyAdapter(BasePlatformAdapter):
         try:
             return await asyncio.wait_for(coro, timeout=timeout_seconds)
         except asyncio.TimeoutError:
-            raise TimeoutError(f"Execution exceeded {timeout_seconds}s timeout")
+            raise asyncio.TimeoutError(f"Execution exceeded {timeout_seconds}s timeout")
 
 
 class VisualPlatformAdapter(BasePlatformAdapter):

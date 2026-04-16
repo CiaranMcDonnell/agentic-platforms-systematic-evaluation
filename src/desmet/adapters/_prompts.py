@@ -13,10 +13,11 @@ here.
 
 from __future__ import annotations
 
-import yaml
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+import yaml
 
 if TYPE_CHECKING:
     from desmet.harness.results import RequirementsResult

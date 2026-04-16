@@ -212,3 +212,178 @@ class TestGetImageDetails:
         mock_run.side_effect = FileNotFoundError()
         details = get_image_details("langgraph")
         assert details is None
+
+
+class TestEnsureContainerDeployWiring:
+    """The deploy stage runs INSIDE the per-platform container, but the
+    DEPLOY_* env vars and the SSH key file live on the HOST.  These
+    tests pin the bridge between them: env passthrough + key bind-mount
+    + DEPLOY_KEY_PATH rewrite to the in-container path.
+
+    Regression target: a benchmark with deploy stage that ran fine on
+    the in-process adapter path returned an instant
+    "Error: DEPLOY_HOST..." once the new container architecture
+    landed, because none of the DEPLOY_* env vars were forwarded.
+    """
+
+    @patch("desmet.harness.container_runner.subprocess.run")
+    def test_deploy_env_vars_passed_through(self, mock_run, tmp_path, monkeypatch):
+        """When DEPLOY_HOST/USER/PORT/REPO/BASE_PATH/MODE are set on the
+        host, _ensure_container must add ``-e VAR=val`` flags for each.
+        """
+        import desmet.harness.container_runner as cr
+
+        # Stub docker probes: container not running, no stale, run succeeds
+        def fake_run(cmd, *args, **kwargs):
+            joined = " ".join(cmd) if isinstance(cmd, list) else cmd
+            if "inspect" in joined and "{{.State.Running}}" in joined:
+                return MagicMock(returncode=1, stdout="")  # not running
+            if "rm" in joined and "-f" in joined:
+                return MagicMock(returncode=0)  # stale removal
+            if "network" in joined and "inspect" in joined:
+                return MagicMock(returncode=1)  # no desmet-network
+            return MagicMock(returncode=0, stdout="container-id\n", stderr="")
+
+        mock_run.side_effect = fake_run
+
+        for var in (
+            "DEPLOY_HOST", "DEPLOY_PORT", "DEPLOY_USER",
+            "DEPLOY_REPO", "DEPLOY_BASE_PATH", "DESMET_DEPLOY_MODE",
+        ):
+            monkeypatch.setenv(var, f"value-{var}")
+        # No key file → mount path is skipped
+        monkeypatch.delenv("DEPLOY_KEY_PATH", raising=False)
+
+        cr._ensure_container("langgraph", "US-001", tmp_path)
+
+        # Find the docker run invocation
+        run_call = next(
+            c for c in mock_run.call_args_list
+            if isinstance(c.args[0], list) and "run" in c.args[0] and "-d" in c.args[0]
+        )
+        argv = run_call.args[0]
+        joined_argv = " ".join(argv)
+
+        for var in (
+            "DEPLOY_HOST", "DEPLOY_PORT", "DEPLOY_USER",
+            "DEPLOY_REPO", "DEPLOY_BASE_PATH", "DESMET_DEPLOY_MODE",
+        ):
+            assert f"{var}=value-{var}" in joined_argv, (
+                f"missing {var} in docker run argv: {joined_argv}"
+            )
+
+    @patch("desmet.harness.container_runner.subprocess.run")
+    def test_deploy_key_file_bind_mounted_when_present(
+        self, mock_run, tmp_path, monkeypatch,
+    ):
+        """When DEPLOY_KEY_PATH points at a real file, _ensure_container
+        bind-mounts it read-only at /run/secrets/deploy_key and rewrites
+        DEPLOY_KEY_PATH inside the container to that fixed path.
+        """
+        import desmet.harness.container_runner as cr
+
+        def fake_run(cmd, *args, **kwargs):
+            joined = " ".join(cmd) if isinstance(cmd, list) else cmd
+            if "inspect" in joined and "{{.State.Running}}" in joined:
+                return MagicMock(returncode=1, stdout="")
+            if "rm" in joined and "-f" in joined:
+                return MagicMock(returncode=0)
+            if "network" in joined and "inspect" in joined:
+                return MagicMock(returncode=1)
+            return MagicMock(returncode=0, stdout="container-id\n", stderr="")
+
+        mock_run.side_effect = fake_run
+
+        # Real key file on disk so the os.path.isfile check passes
+        key_file = tmp_path / "fake_deploy_key"
+        key_file.write_text("not-a-real-key")
+        monkeypatch.setenv("DEPLOY_KEY_PATH", str(key_file))
+        monkeypatch.setenv("DESMET_DEPLOY_MODE", "remote")
+
+        cr._ensure_container("langgraph", "US-001", tmp_path)
+
+        run_call = next(
+            c for c in mock_run.call_args_list
+            if isinstance(c.args[0], list) and "run" in c.args[0] and "-d" in c.args[0]
+        )
+        argv = run_call.args[0]
+        joined = " ".join(argv)
+
+        # Bind-mount present (read-only) at the fixed in-container path
+        assert "/run/secrets/deploy_key:ro" in joined, (
+            f"key bind-mount missing from argv: {joined}"
+        )
+        # Inside-container env var rewritten to the mount target
+        assert "DEPLOY_KEY_PATH=/run/secrets/deploy_key" in joined
+        # The host filesystem path must NOT be exposed as the env var value
+        assert f"DEPLOY_KEY_PATH={key_file}" not in joined
+
+    @patch("desmet.harness.container_runner.subprocess.run")
+    def test_deploy_key_skipped_when_local_mode(
+        self, mock_run, tmp_path, monkeypatch,
+    ):
+        """Local deploy mode never needs the SSH key, so no mount or
+        env var rewrite should happen even if DEPLOY_KEY_PATH is set."""
+        import desmet.harness.container_runner as cr
+
+        def fake_run(cmd, *args, **kwargs):
+            joined = " ".join(cmd) if isinstance(cmd, list) else cmd
+            if "inspect" in joined and "{{.State.Running}}" in joined:
+                return MagicMock(returncode=1, stdout="")
+            if "rm" in joined and "-f" in joined:
+                return MagicMock(returncode=0)
+            if "network" in joined and "inspect" in joined:
+                return MagicMock(returncode=1)
+            return MagicMock(returncode=0, stdout="container-id\n", stderr="")
+
+        mock_run.side_effect = fake_run
+
+        key_file = tmp_path / "fake_deploy_key"
+        key_file.write_text("not-a-real-key")
+        monkeypatch.setenv("DEPLOY_KEY_PATH", str(key_file))
+        monkeypatch.setenv("DESMET_DEPLOY_MODE", "local")
+
+        cr._ensure_container("langgraph", "US-001", tmp_path)
+
+        run_call = next(
+            c for c in mock_run.call_args_list
+            if isinstance(c.args[0], list) and "run" in c.args[0] and "-d" in c.args[0]
+        )
+        joined = " ".join(run_call.args[0])
+        assert "/run/secrets/deploy_key" not in joined, (
+            f"local mode should not bind-mount the deploy key: {joined}"
+        )
+
+    @patch("desmet.harness.container_runner.subprocess.run")
+    def test_deploy_key_skipped_when_file_missing(
+        self, mock_run, tmp_path, monkeypatch,
+    ):
+        """If DEPLOY_KEY_PATH points at a path that doesn't exist on the
+        host, the mount is skipped (and a warning is logged) rather than
+        passing a broken bind-mount to docker.
+        """
+        import desmet.harness.container_runner as cr
+
+        def fake_run(cmd, *args, **kwargs):
+            joined = " ".join(cmd) if isinstance(cmd, list) else cmd
+            if "inspect" in joined and "{{.State.Running}}" in joined:
+                return MagicMock(returncode=1, stdout="")
+            if "rm" in joined and "-f" in joined:
+                return MagicMock(returncode=0)
+            if "network" in joined and "inspect" in joined:
+                return MagicMock(returncode=1)
+            return MagicMock(returncode=0, stdout="container-id\n", stderr="")
+
+        mock_run.side_effect = fake_run
+
+        monkeypatch.setenv("DEPLOY_KEY_PATH", str(tmp_path / "does-not-exist"))
+        monkeypatch.setenv("DESMET_DEPLOY_MODE", "remote")
+
+        cr._ensure_container("langgraph", "US-001", tmp_path)
+
+        run_call = next(
+            c for c in mock_run.call_args_list
+            if isinstance(c.args[0], list) and "run" in c.args[0] and "-d" in c.args[0]
+        )
+        joined = " ".join(run_call.args[0])
+        assert "/run/secrets/deploy_key" not in joined

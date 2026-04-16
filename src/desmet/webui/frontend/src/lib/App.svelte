@@ -12,8 +12,24 @@
   import Scoring from './pages/Scoring.svelte';
   import Comparison from './pages/Comparison.svelte';
   import StoryDetail from './pages/StoryDetail.svelte';
+  import RunSelector from './components/RunSelector.svelte';
   import { onMount } from 'svelte';
   import { initData, store } from './data.svelte';
+  import { selectedResultsRunId } from './stores';
+
+  // Pages in the Results section — every fetch inside these pages
+  // honours the run picked via the global RunSelector.
+  const RESULTS_PAGES: Page[] = [
+    'results-overview',
+    'scoring',
+    'comparison',
+    'story-detail',
+  ];
+
+  // Track the selected run so we can remount Results pages when it
+  // changes — this forces every child (including EChart) to re-fetch.
+  let currentRunId = $state<string | null>(null);
+  selectedResultsRunId.subscribe((v) => (currentRunId = v));
 
   onMount(() => {
     initData();
@@ -89,6 +105,11 @@
 
   <!-- Main content -->
   <main class="main-content">
+    {#if RESULTS_PAGES.includes(page)}
+      <div class="results-toolbar">
+        <RunSelector />
+      </div>
+    {/if}
     {#if store.initError}
       <div style="padding: 48px; text-align: center; color: var(--text-2);">
         <p style="color: #ef4444; margin-bottom: 8px;">Failed to load</p>
@@ -109,13 +130,13 @@
     {:else if page === 'run-detail' && runId}
       <RunDetail runId={runId} onBack={() => nav('run-history')} />
     {:else if page === 'results-overview'}
-      <ResultsOverview />
+      {#key currentRunId}<ResultsOverview />{/key}
     {:else if page === 'scoring'}
-      <Scoring />
+      {#key currentRunId}<Scoring />{/key}
     {:else if page === 'comparison'}
-      <Comparison />
+      {#key currentRunId}<Comparison />{/key}
     {:else if page === 'story-detail'}
-      <StoryDetail />
+      {#key currentRunId}<StoryDetail />{/key}
     {/if}
   </main>
 </div>
@@ -196,5 +217,11 @@
     margin-left: 200px;
     padding: 32px 40px;
     min-height: 100vh;
+  }
+
+  .results-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 16px;
   }
 </style>

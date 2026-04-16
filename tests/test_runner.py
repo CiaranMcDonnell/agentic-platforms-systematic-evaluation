@@ -288,6 +288,48 @@ class TestRunnerStageExecution:
         adapter.build_and_deploy.assert_called_once()
         assert result.status == StoryStatus.COMPLETED
 
+    async def test_run_single_story_creates_new_run_when_no_id_passed(
+        self, runner_setup,
+    ):
+        """Backward compat: omitting run_id creates a fresh DuckDB run."""
+        runner, _ = runner_setup
+        await runner.run_single_story("test_platform", "US-001")
+        # The runner picked up an internally-generated run id
+        assert runner._current_run_id is not None
+        assert runner._owns_current_run is True
+
+    async def test_run_single_story_reuses_caller_run_id(self, runner_setup):
+        """Passing an existing run_id must NOT call store.create_run again
+        and must NOT call store.finish_run on exit — that's the caller's
+        responsibility when sharing a run across multiple platforms.
+
+        This is the contract that fixes the Scoring page bug where each
+        platform created its own DuckDB run, leaving the latest-run view
+        with only the last platform that finished.
+        """
+        runner, _ = runner_setup
+        # Caller creates the run first (the contract: shared runs are
+        # owned by the caller, not by run_single_story).
+        shared_id = runner.store.create_run(
+            model="test", temperature=0.0,
+            platforms_filter=["test_platform"], stories_filter=["US-001"],
+        )
+
+        from unittest.mock import patch
+        with patch.object(runner.store, "create_run") as mock_create, \
+             patch.object(runner.store, "finish_run") as mock_finish:
+            await runner.run_single_story(
+                "test_platform", "US-001", run_id=shared_id,
+            )
+            mock_create.assert_not_called()
+            mock_finish.assert_not_called()
+
+        assert runner._current_run_id == shared_id
+        assert runner._owns_current_run is False
+        # Foreign-key constraint would have raised by now if save_execution
+        # was called with an invalid run_id, so reaching here proves the
+        # row was actually inserted under the shared run.
+
 
 def test_stage_result_has_langsmith_run_id():
     from desmet.harness.results import StageResult

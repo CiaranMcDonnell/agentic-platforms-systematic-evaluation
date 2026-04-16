@@ -189,9 +189,7 @@ def _classify_topology(nodes: list[GraphNode], edges: list[GraphEdge]) -> str:
         if len(hub_connected) < min_required:
             continue
         # Hub edge count must exceed spoke-to-spoke edge count
-        spoke_edge_count = sum(
-            1 for e in edges if e.source in others and e.target in others
-        )
+        spoke_edge_count = sum(1 for e in edges if e.source in others and e.target in others)
         if hub_edge_count >= spoke_edge_count:
             return "hub-spoke"
 
@@ -216,9 +214,7 @@ def build_graph(trace: dict[str, Any]) -> CommunicationGraph:
                 role=n.get("role", n["id"]),
                 tokens_in=n.get("tokens_in", 0),
                 tokens_out=n.get("tokens_out", 0),
-                tool_calls=[
-                    ToolCallSummary(**tc) for tc in n.get("tool_calls", [])
-                ],
+                tool_calls=[ToolCallSummary(**tc) for tc in n.get("tool_calls", [])],
                 iterations=n.get("iterations", 0),
             )
             for n in explicit.get("nodes", [])
@@ -413,21 +409,23 @@ def build_timeline(trace: dict[str, Any]) -> list[TimelineEvent]:
             duration_ms = tc.get("duration_ms")
             tool_call_idx += 1
 
-        events.append(TimelineEvent(
-            index=i,
-            type=event_type,
-            raw_type=raw_node_str,
-            agent_id=agent_id,
-            role=role,
-            content=msg.get("content", ""),
-            timestamp=msg.get("timestamp", ""),
-            duration_ms=duration_ms,
-            tokens_in=metadata.get("tokens_in"),
-            tokens_out=metadata.get("tokens_out"),
-            model=metadata.get("model"),
-            tool_name=tool_name,
-            tool_success=tool_success,
-        ))
+        events.append(
+            TimelineEvent(
+                index=i,
+                type=event_type,
+                raw_type=raw_node_str,
+                agent_id=agent_id,
+                role=role,
+                content=msg.get("content", ""),
+                timestamp=msg.get("timestamp", ""),
+                duration_ms=duration_ms,
+                tokens_in=metadata.get("tokens_in"),
+                tokens_out=metadata.get("tokens_out"),
+                model=metadata.get("model"),
+                tool_name=tool_name,
+                tool_success=tool_success,
+            )
+        )
 
     # Infer target_agent_id: set on the LAST message from an agent
     # before the agent changes to a different one.

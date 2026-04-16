@@ -86,6 +86,7 @@ def record_usage(
         trace.total_cost_usd += cost_usd
     elif model and (input_tokens or output_tokens):
         from desmet.cost_calculator import estimate_cost
+
         trace.total_cost_usd += estimate_cost(model, input_tokens, output_tokens)
 
 
@@ -179,26 +180,53 @@ def normalize_usage(raw: Any) -> tuple[int, int]:
 
     if isinstance(raw, dict):
         inp = next(
-            (raw[k] for k in ("prompt_tokens", "input_tokens", "input_token_count", "prompt_token_count")
-             if raw.get(k) is not None),
+            (
+                raw[k]
+                for k in (
+                    "prompt_tokens",
+                    "input_tokens",
+                    "input_token_count",
+                    "prompt_token_count",
+                )
+                if raw.get(k) is not None
+            ),
             0,
         )
         out = next(
-            (raw[k] for k in ("completion_tokens", "output_tokens", "output_token_count", "candidates_token_count")
-             if raw.get(k) is not None),
+            (
+                raw[k]
+                for k in (
+                    "completion_tokens",
+                    "output_tokens",
+                    "output_token_count",
+                    "candidates_token_count",
+                )
+                if raw.get(k) is not None
+            ),
             0,
         )
         return (int(inp), int(out))
 
     # Attribute-based object
     inp = next(
-        (getattr(raw, k) for k in ("prompt_tokens", "input_tokens", "input_token_count", "prompt_token_count")
-         if getattr(raw, k, None)),
+        (
+            getattr(raw, k)
+            for k in ("prompt_tokens", "input_tokens", "input_token_count", "prompt_token_count")
+            if getattr(raw, k, None)
+        ),
         0,
     )
     out = next(
-        (getattr(raw, k) for k in ("completion_tokens", "output_tokens", "output_token_count", "candidates_token_count")
-         if getattr(raw, k, None)),
+        (
+            getattr(raw, k)
+            for k in (
+                "completion_tokens",
+                "output_tokens",
+                "output_token_count",
+                "candidates_token_count",
+            )
+            if getattr(raw, k, None)
+        ),
         0,
     )
     return (int(inp), int(out))
@@ -227,10 +255,7 @@ def compute_framework_metrics(
     tokens_per_stage = float(total_tokens)
 
     # Iteration ratio
-    iteration_ratio = (
-        trace.total_iterations / max_iterations
-        if max_iterations > 0 else 0.0
-    )
+    iteration_ratio = trace.total_iterations / max_iterations if max_iterations > 0 else 0.0
 
     # First-action latency
     first_action_latency_ms: float | None = None
@@ -240,10 +265,7 @@ def compute_framework_metrics(
         first_action_latency_ms = max(0.0, delta * 1000.0)
 
     # Redundant tool call rate
-    checkable = [
-        tc for tc in tool_calls
-        if tc.tool_name in _DUPLICATE_CHECK_TOOLS
-    ]
+    checkable = [tc for tc in tool_calls if tc.tool_name in _DUPLICATE_CHECK_TOOLS]
     if checkable:
         seen: set[str] = set()
         duplicates = 0
@@ -275,14 +297,12 @@ def compute_framework_metrics(
         "tokens_per_stage": tokens_per_stage,
         "iteration_ratio": round(iteration_ratio, 4),
         "first_action_latency_ms": (
-            round(first_action_latency_ms, 1)
-            if first_action_latency_ms is not None else None
+            round(first_action_latency_ms, 1) if first_action_latency_ms is not None else None
         ),
         "redundant_tool_call_rate": round(redundant_tool_call_rate, 4),
         "tool_failure_rate": round(tool_failure_rate, 4),
         "framework_overhead_ms": (
-            round(framework_overhead_ms, 1)
-            if framework_overhead_ms is not None else None
+            round(framework_overhead_ms, 1) if framework_overhead_ms is not None else None
         ),
     }
 

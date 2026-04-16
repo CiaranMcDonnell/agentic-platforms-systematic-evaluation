@@ -94,6 +94,7 @@ class StageResult:
         }
         # Append subclass-specific fields (serialize nested dataclasses to dicts)
         import dataclasses
+
         base_fields = {f.name for f in dataclasses.fields(StageResult)}
         for f in dataclasses.fields(self):
             if f.name not in base_fields and f.name != "raw_output":
@@ -137,6 +138,7 @@ class StageResult:
 
         # Remove fields not in the target dataclass
         import dataclasses
+
         valid_fields = {f.name for f in dataclasses.fields(target_cls)}
         filtered = {k: v for k, v in data.items() if k in valid_fields}
 
@@ -195,5 +197,3 @@ class DeployResult(StageResult):
     deployment_ready: bool = False
     build_log: str = ""
     dependency_issues: list[str] = field(default_factory=list)
-
-

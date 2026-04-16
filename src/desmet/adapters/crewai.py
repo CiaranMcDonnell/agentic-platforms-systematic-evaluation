@@ -11,11 +11,11 @@ import time
 from typing import Any
 
 from desmet.adapters._base import ToolAgentAdapter
+from desmet.adapters._observation import ObservationCollector
 from desmet.adapters._planning import ImplementationPlan, format_plan_text, parse_plan_text
 from desmet.adapters._prompts import STAGE_EXPECTED_OUTPUTS, get_stage_persona, get_sub_persona
-from desmet.adapters._tools import ToolFormat, split_tools
-from desmet.adapters._observation import ObservationCollector
 from desmet.adapters._retry import ProgressReporter, RetryPolicy
+from desmet.adapters._tools import ToolFormat, split_tools
 from desmet.adapters._tracing import record_node_event
 from desmet.adapters.registry import load_platform_info
 from desmet.harness.context import StageContext
@@ -75,6 +75,7 @@ class CrewAIAdapter(ToolAgentAdapter):
     def _get_version(self) -> str:
         try:
             import crewai
+
             return getattr(crewai, "__version__", "unknown")
         except ImportError:
             return "not installed"
@@ -92,6 +93,7 @@ class CrewAIAdapter(ToolAgentAdapter):
             # (crew → task → agent → tool spans in Langfuse)
             try:
                 from openinference.instrumentation.crewai import CrewAIInstrumentor
+
                 CrewAIInstrumentor().instrument(skip_dep_check=True)
             except ImportError:
                 pass  # optional — tracing degrades gracefully
@@ -159,8 +161,10 @@ class CrewAIAdapter(ToolAgentAdapter):
                 if usage:
                     prev = self._last_usage_snapshot
                     raw_usage = {
-                        "prompt_tokens": usage.get("prompt_tokens", 0) - prev.get("prompt_tokens", 0),
-                        "completion_tokens": usage.get("completion_tokens", 0) - prev.get("completion_tokens", 0),
+                        "prompt_tokens": usage.get("prompt_tokens", 0)
+                        - prev.get("prompt_tokens", 0),
+                        "completion_tokens": usage.get("completion_tokens", 0)
+                        - prev.get("completion_tokens", 0),
                     }
                 col.record_llm_response(
                     raw_usage=raw_usage,
@@ -176,7 +180,8 @@ class CrewAIAdapter(ToolAgentAdapter):
                 resp_text = str(event.response) if event.response else ""
                 if resp_text:
                     col.record_message(
-                        "assistant", resp_text[:2000],
+                        "assistant",
+                        resp_text[:2000],
                         metadata={"step": self._llm_call_count},
                     )
 
@@ -192,9 +197,15 @@ class CrewAIAdapter(ToolAgentAdapter):
                 col = self._current_collector
                 if col is None:
                     return
-                args = event.tool_args if isinstance(event.tool_args, dict) else {"input": str(event.tool_args)}
+                args = (
+                    event.tool_args
+                    if isinstance(event.tool_args, dict)
+                    else {"input": str(event.tool_args)}
+                )
                 col.record_tool_execution(
-                    event.tool_name, args, str(event.output or ""),
+                    event.tool_name,
+                    args,
+                    str(event.output or ""),
                 )
                 progress = self._current_progress
                 if progress:
@@ -209,7 +220,8 @@ class CrewAIAdapter(ToolAgentAdapter):
                     return
                 output_str = str(event.output) if event.output else ""
                 col.record_message(
-                    "assistant", output_str,
+                    "assistant",
+                    output_str,
                     metadata={"event": "task_complete"},
                 )
                 progress = self._current_progress
@@ -240,23 +252,34 @@ class CrewAIAdapter(ToolAgentAdapter):
 
         if cfg.provider in (Provider.OPENAI, Provider.OPENROUTER):
             from crewai.llms.providers.openai.completion import OpenAICompletion
+
             return OpenAICompletion(
                 model=cfg.model,
                 temperature=cfg.temperature,
                 api_key=cfg.api_key,
                 base_url=cfg.base_url,
+                timeout=cfg.timeout_seconds,
+                max_retries=cfg.max_retries,
             )
 
         if cfg.provider == Provider.ANTHROPIC:
             from crewai.llms.providers.anthropic.completion import AnthropicCompletion
+
             return AnthropicCompletion(
                 model=cfg.model,
                 temperature=cfg.temperature,
                 api_key=cfg.api_key,
+                timeout=cfg.timeout_seconds,
+                max_retries=cfg.max_retries,
             )
 
         if cfg.provider == Provider.GOOGLE:
             from crewai.llms.providers.gemini.completion import GeminiCompletion
+
+            # NOTE: GeminiCompletion does not expose timeout/max_retries —
+            # the native google-genai SDK doesn't surface them through
+            # CrewAI's completion wrapper.  Hung calls on this path will
+            # only be bounded by the stage iteration budget.
             return GeminiCompletion(
                 model=cfg.model,
                 temperature=cfg.temperature,
@@ -265,11 +288,14 @@ class CrewAIAdapter(ToolAgentAdapter):
 
         # Fallback: treat as OpenAI-compatible with custom base_url
         from crewai.llms.providers.openai.completion import OpenAICompletion
+
         return OpenAICompletion(
             model=cfg.model,
             temperature=cfg.temperature,
             api_key=cfg.api_key,
             base_url=cfg.base_url,
+            timeout=cfg.timeout_seconds,
+            max_retries=cfg.max_retries,
         )
 
     # =========================================================================
@@ -302,7 +328,8 @@ class CrewAIAdapter(ToolAgentAdapter):
 
         is_retry = retry_attempt > 0
         planner_budget, executor_budget, reviewer_budget = _compute_iter_budget(
-            context.max_iterations, retry=is_retry,
+            context.max_iterations,
+            retry=is_retry,
         )
         time_budget = context.time_budget_seconds or 0
 
@@ -330,8 +357,7 @@ class CrewAIAdapter(ToolAgentAdapter):
         if plan is not None:
             plan_text_fmt, files_text = format_plan_text(plan)
             executor_context = (
-                f"\n\n## Implementation Plan\n{plan_text_fmt}\n\n"
-                f"## Files\n{files_text}\n"
+                f"\n\n## Implementation Plan\n{plan_text_fmt}\n\n## Files\n{files_text}\n"
             )
         else:
             executor_context = ""
@@ -388,9 +414,7 @@ class CrewAIAdapter(ToolAgentAdapter):
                     f"implementation plan identifying all files to create "
                     f"or modify.\n\n{prompt}"
                 ),
-                expected_output=(
-                    "A numbered implementation plan with files to create/modify"
-                ),
+                expected_output=("A numbered implementation plan with files to create/modify"),
                 agent=planner_agent,
                 output_pydantic=ImplementationPlan,
             )
@@ -409,8 +433,7 @@ class CrewAIAdapter(ToolAgentAdapter):
                     "outputs are complete and correct."
                 ),
                 expected_output=(
-                    "Validation report confirming all artefacts are present "
-                    "and correct"
+                    "Validation report confirming all artefacts are present and correct"
                 ),
                 agent=reviewer_agent,
                 context=[analyse_task, implement_task],
@@ -441,8 +464,7 @@ class CrewAIAdapter(ToolAgentAdapter):
                     "outputs are complete and correct."
                 ),
                 expected_output=(
-                    "Validation report confirming all artefacts are present "
-                    "and correct"
+                    "Validation report confirming all artefacts are present and correct"
                 ),
                 agent=reviewer_agent,
                 context=[implement_task],
@@ -478,7 +500,12 @@ class CrewAIAdapter(ToolAgentAdapter):
         policy: RetryPolicy,
         progress: ProgressReporter,
     ) -> tuple[int, bool]:
-        """Run a CrewAI crew with retry loop. Returns (iterations, hit_limit)."""
+        """Run a CrewAI crew with retry loop. Returns (iterations, success).
+
+        success is True iff the workspace passes validation at the end of
+        the run — exhausting the retry budget without a passing validator
+        returns success=False.
+        """
         import asyncio
 
         llm = self._create_llm(context)
@@ -491,14 +518,24 @@ class CrewAIAdapter(ToolAgentAdapter):
         collector.record_message("user", prompt)
 
         total_iterations = 0
-        hit_limit = False
+        # Tracks whether ANY attempt produced a workspace that passes
+        # validation.  Once True, exhausting the iteration budget on a
+        # later attempt must NOT flip success to failure: a stage that
+        # produced the required artifacts before running out of budget
+        # is a success.
+        validation_succeeded = False
         plan_text = ""
         feedback = ""
         structured_plan: ImplementationPlan | None = None
 
         for attempt in range(policy.total_attempts()):
             crew = self._build_crew(
-                stage_name, prompt, system_msg, tools, llm, context,
+                stage_name,
+                prompt,
+                system_msg,
+                tools,
+                llm,
+                context,
                 retry_attempt=attempt,
                 prior_plan=plan_text,
                 feedback=feedback,
@@ -538,12 +575,14 @@ class CrewAIAdapter(ToolAgentAdapter):
             # ── Validate workspace ───────────────────────────────────────
             passed, feedback = policy.validate()
             record_node_event(
-                collector.trace, "validator",
+                collector.trace,
+                "validator",
                 validator_passed=passed,
                 retry_count=attempt + 1,
             )
 
             if passed:
+                validation_succeeded = True
                 progress.validation_passed()
                 break
 
@@ -551,14 +590,19 @@ class CrewAIAdapter(ToolAgentAdapter):
             progress.validation_failed(attempt + 1, policy.total_attempts(), feedback)
 
             if total_iterations >= context.max_iterations:
-                hit_limit = True
                 break
 
-        if not hit_limit:
-            hit_limit = total_iterations >= context.max_iterations
-
         collector.mark_iterations(total_iterations)
-        return total_iterations, hit_limit
+
+        # Final success requires the workspace to actually pass validation
+        # at the END of the run.  validation_succeeded covers mid-run
+        # passes; the post-loop policy.validate() catches the case where
+        # a late attempt produced the artifacts on the way out.
+        if validation_succeeded:
+            success = True
+        else:
+            success, _ = policy.validate()
+        return total_iterations, success
 
     # Stage methods inherited from ToolAgentAdapter
 

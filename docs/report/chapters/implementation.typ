@@ -54,10 +54,10 @@ All platform adapters extend `BasePlatformAdapter` and implement four methods co
     [OpenAI Agents SDK], [Implemented], [3-agent handoff chain with output guardrails],
     [Google ADK], [Implemented], [SequentialAgent + LoopAgent orchestration],
     [Microsoft Agent Framework], [Implemented], [MagenticOne manager-driven orchestration],
-    [Flowise], [Implemented], [REST API chatflow creation and execution via Docker],
-    [LangFlow], [Implemented], [REST API flow creation and execution via Docker],
-    [Dify], [Implemented], [Dual Console/Service API with app lifecycle management],
-    [N8n], [Implemented], [REST API v1 workflow creation with credential provisioning],
+    [Flowise], [Implemented], [Spec-driven chatflow builder using the live node catalogue, with per-run tool and credential registration],
+    [LangFlow], [Implemented], [Catalogue-wrapped React-Flow graph with pre-computed tool introspection and a per-run API key],
+    [Dify], [Partial], [Init, auth, and app creation automated; Layer~3 execution blocked by Dify~1.13's marketplace-only plugin ecosystem (see @limitations)],
+    [N8n], [Implemented], [REST API v1 workflow creation with provider-specific credential mapping (`openRouterApi`/`openAiApi`/`anthropicApi`)],
   ),
   caption: [Platform Adapter Implementation Status],
 )
@@ -76,13 +76,13 @@ Each implemented adapter extends `ToolAgentAdapter` and provides a single method
 
 The four visual/workflow platform adapters share a different base class---`VisualAgentAdapter` (`adapters/_visual_base.py`)---which provides the `_execute_visual_stage` retry loop and result building. Unlike the SDK-based adapters that invoke platform libraries in-process, visual adapters communicate with their platforms over REST APIs, with each platform running as a Docker container managed by the harness infrastructure.
 
-*Flowise* (`adapters/flowise.py`): Communicates with Flowise via its REST API to programmatically create AI Agent chatflows for each pipeline stage. The adapter constructs chatflow definitions from JSON templates (`adapters/flowise_templates.py`) that wire together an Agent node with the appropriate tool nodes and an LLM configuration. Each stage creates a chatflow, sends the stage prompt via the `/api/v1/prediction` endpoint, extracts the response and any tool call metadata, then deletes the chatflow to maintain isolation between stages.
+*Flowise* (`adapters/flowise.py`): Communicates with Flowise via its REST API to programmatically create AI Agent chatflows for each pipeline stage. Rather than shipping static JSON templates---which are fragile across Flowise versions---the adapter fetches the live node specification for each component it needs (`GET /api/v1/nodes/{name}`: `chatOpenRouter`, `customTool`, `bufferMemory`, `toolAgent`) and builds the React Flow graph programmatically, classifying each node input as either a parameter or an anchor using Flowise's own `INPUT_PARAMS_TYPE` constant. Connections between nodes are expressed as `{{nodeId.data.instance}}` references inside the target's `inputs` dictionary, which is how Flowise's runtime actually resolves wiring---visible edges are UI state. At stage start, the adapter registers the stage-scoped workspace tools (`execute_shell`, `read_file`, `write_file`) via `POST /api/v1/tools` and a provider-specific credential via `POST /api/v1/credentials` (e.g., `openRouterApi`), referencing both by ID in the chatflow definition. The stage prompt is sent via `/api/v1/prediction/{id}`; tool invocations are surfaced in the response's `usedTools` array and parsed into per-call `ToolCall` trace entries.
 
-*LangFlow* (`adapters/langflow.py`): Follows the same pattern as Flowise but targets LangFlow's flow API. Flow definitions are constructed from templates (`adapters/langflow_templates.py`) that assemble component graphs---including an Agent component, tool components, and an LLM provider component---matching LangFlow's internal graph representation. Flows are created, executed via the `/api/v1/run` endpoint, and cleaned up after each stage.
+*LangFlow* (`adapters/langflow.py`): Builds agent flows from the full component catalogue returned by `GET /api/v1/all`. Each catalogue entry is already the `data.node` portion of a React Flow node, so the adapter wraps catalogue entries in the outer envelope and overrides specific template field values. Three version-specific mechanics required non-obvious handling: the `api_key` field on the OpenRouter component carries `load_from_db: true` by default, which causes LangFlow to interpret the value as a Global Variable name---an explicit field-flag override (`load_from_db: false`) is needed to use the literal key; the `/api/v1/run/{flow_id}` endpoint rejects the auto-login session Bearer token and requires an `x-api-key` header from `POST /api/v1/api_key/`, which the adapter mints at init and deletes on shutdown; and the `PythonCodeStructuredTool` component expects three artefacts that LangFlow's UI normally populates (`_classes`, `_functions` keyed as a dict by function name, and per-argument `{fn}|{arg}` template fields), which the adapter re-creates by parsing the tool code with Python's `ast` module to match LangFlow's `update_build_config` behaviour. Flows are created via `POST /api/v1/flows/` (trailing slash required on collection endpoints), executed, and deleted. Tool calls surface from the nested response through several alternative paths (`message.data.content_blocks[type=tool_use]`, `message.additional_kwargs.tool_calls`, or source-attribution on Python structured tool outputs) that the adapter walks defensively.
 
-*Dify* (`adapters/dify.py`): Differs from the other visual adapters by requiring two APIs: the Console API (`/console/api/`) for app management (creating agent apps, configuring model providers, publishing) and the Service API (`/v1/`) for execution using per-app API keys. The adapter lifecycle for each stage is: authenticate → create agent app → configure the model provider → publish the app → generate an API key → execute via the Service API → delete the app @dify2024. This dual-API architecture adds complexity but reflects Dify's design as a multi-tenant platform where app management and execution are separated.
+*Dify* (`adapters/dify.py`): A partial integration covering Layers~1 and~2 only. Dify's two-API architecture (Console API for management, Service API for execution with per-app keys) is preserved as documented @dify2024, but Dify~1.13's shift to a marketplace-only model-provider ecosystem blocks the end of the adapter lifecycle: no LLM provider ships in-box, and providers must be fetched from the Dify marketplace and installed per-workspace before apps can select a model. The adapter automates everything up to that boundary: init-password validation via `POST /console/api/init` with the container's `INIT_PASSWORD`, admin setup and login with base64-encoded passwords, the CSRF-token handshake required by all mutating endpoints, and agent-app creation in `agent-chat` mode. Appropriate error messaging is surfaced at the execution boundary to distinguish platform gaps from harness bugs. This boundary is discussed as a finding in @limitations rather than a missing feature.
 
-*N8n* (`adapters/n8n.py`): Communicates with n8n's REST API v1 to create and execute AI Agent workflows. The adapter provisions LLM credentials in n8n's credential store before workflow creation, then constructs workflow definitions containing an AI Agent node wired to tool nodes. Workflows are activated, triggered via the `/api/v1/workflows/{id}/run` endpoint, and deactivated after execution. N8n's execution model is polling-based: the adapter submits the trigger and polls the execution endpoint until the workflow completes or times out.
+*N8n* (`adapters/n8n.py`): Communicates with n8n's REST API v1 to create and execute AI Agent workflows. At init the adapter auto-provisions an owner account (`/rest/owner/setup`, idempotent) and mints an API key via `/rest/api-keys` with the required `label`, `scopes`, and `expiresAt` fields; the raw key is only returned on creation, so the adapter captures it eagerly. Credential provisioning uses provider-specific n8n credential types---`openRouterApi` with just `{apiKey}` for OpenRouter (the URL is hidden by the component), `anthropicApi` for Anthropic, and `openAiApi` with the full conditional-header field set required by the public API schema for OpenAI-compatible providers. Workflow definitions wire an AI Agent node to tool nodes; runs are triggered via `/api/v1/workflows/{id}/run` and the adapter polls `/api/v1/executions/{id}` until completion. N8n's execution log is the richest of the visual platforms: `runData` is keyed by node name with per-node `startedAt` and `executionTime`, inputs, outputs, and status---the adapter records per-node events for graph reconstruction and per-tool-call `ToolCall` entries with real timing.
 
 == Pipeline Stage Implementation
 
@@ -165,6 +165,32 @@ The `MetricsCollector` class (`harness/metrics.py`) computes the four cross-cutt
 Pipeline Completeness combines the story completion ratio with the average pipeline completeness rubric score (0--3). Efficiency combines three components---time ratio (wall-clock relative to budget), token ratio (total tokens relative to a 100,000-token budget), and cost ratio (API cost relative to a \$0.50-per-story budget)---falling back to a two-component average when cost data is unavailable. Orchestration averages the three orchestration-related rubric scores (tool integration, error recovery, trace quality) and rescales from 0--3 to 1--5. Autonomy is computed as $5 - min(4, overline(I))$ where $overline(I)$ is the mean human interventions per stage, ensuring that fewer interventions yield higher scores.
 
 When repeated runs are configured (`RunnerConfig.repeats > 1`), the collector also computes `VarianceMetrics`---mean and population standard deviation for wall-clock time, token usage, cost, tool calls, iterations, and success rate---enabling assessment of result stability across non-deterministic LLM outputs.
+
+=== Metric Coverage Across Visual Platforms <sec-metric-coverage>
+
+The SDK-based adapters all emit the same metric set directly into the `AgentTrace` because they invoke platform libraries in-process and instrument the LLM call site. Visual platforms, in contrast, expose a single REST response per stage, and the level of execution detail in that response varies substantially across platforms. @tab-visual-metric-coverage summarises which framework-metric signals are recoverable from each visual platform's default response.
+
+#figure(
+  table(
+    columns: 5,
+    stroke: 0.5pt,
+    inset: 6pt,
+    align: (left, center, center, center, center),
+    table.header(
+      [*Metric*], [*N8n*], [*Flowise*], [*LangFlow*], [*Dify*],
+    ),
+    [`tokens_per_stage`], [✓], [—], [✓], [✓#super[\*]],
+    [`tool_calls_count`], [✓], [✓], [✓], [—],
+    [`redundant_tool_call_rate`], [✓], [✓], [✓], [—],
+    [`tool_failure_rate`], [✓], [✓], [✓], [—],
+    [`first_action_latency_ms`], [✓], [—], [—], [—],
+    [`framework_overhead_ms`], [✓], [—], [—], [—],
+    [per-node events], [✓], [—], [—], [—],
+  ),
+  caption: [Framework-metric signals recoverable from each visual platform's default REST response. ✓ = surfaced and parsed; — = not exposed by the platform. #super[\*] Dify exposes aggregate token usage via `metadata.usage` on chat responses, but end-to-end agent execution is blocked by the plugin-based model ecosystem (see @limitations). Unavailable signals are deliberately reported as `None` rather than synthesised from proxies.],
+) <tab-visual-metric-coverage>
+
+The dispersion is itself a cross-category finding. N8n's per-node `runData` log is the richest of the visual platforms and the only one that permits latency and overhead decomposition. Flowise's `usedTools` array captures tool inputs, outputs, and per-call error flags but drops token usage for `toolAgent` flows regardless of streaming mode. LangFlow surfaces both token usage (on `message.data.usage_metadata`) and tool calls through several structurally different response paths depending on version, which the adapter walks defensively. Dify exposes aggregate token usage but does not include per-tool-call traces in the default Service API output. Each adapter's `get_observability_info()` declares these capability flags programmatically (`exposes_per_tool_call`, `exposes_tool_timing`, `exposes_token_usage`, `exposes_node_events`), so downstream analyses can cite the observability boundary rather than treating all zeros identically.
 
 == Web-Based Management Console <sec-webui>
 

@@ -12,6 +12,7 @@ Requires::
 
     uv pip install -e ".[agent-framework]"
 """
+
 from __future__ import annotations
 
 import json
@@ -27,14 +28,14 @@ from desmet.adapters._planning import (
     parse_plan_text,
 )
 from desmet.adapters._prompts import get_stage_persona, get_sub_persona
-from desmet.adapters._tools import ToolFormat, split_tools
 from desmet.adapters._retry import ProgressReporter, RetryPolicy
+from desmet.adapters._tools import ToolFormat, split_tools
 from desmet.adapters.registry import load_platform_info
-from desmet.observability import get_langfuse, record_generation
 from desmet.harness.context import StageContext
 from desmet.harness.models import PlatformInfo
 from desmet.harness.trace import AgentTrace
 from desmet.llm_config import get_config as get_llm_config
+from desmet.observability import get_langfuse, record_generation
 
 _log = logging.getLogger(__name__)
 
@@ -94,6 +95,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
     def _get_version(self) -> str:
         try:
             import agent_framework
+
             return getattr(agent_framework, "__version__", "unknown")
         except ImportError:
             return "not installed"
@@ -102,16 +104,22 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
     def _create_client(cfg):
         """Build an OpenAIChatClient from the resolved LLM config.
 
+        OpenAIChatClient doesn't accept ``timeout`` / ``max_retries`` in
+        its constructor, so we pre-build an ``AsyncOpenAI`` with those
+        applied and inject it via ``async_client``.
+
         Defers the import so the module loads without agent-framework installed.
         """
         from agent_framework.openai import OpenAIChatClient
+        from openai import AsyncOpenAI
 
-        kwargs: dict[str, Any] = {"model_id": cfg.model}
-        if cfg.api_key:
-            kwargs["api_key"] = cfg.api_key
-        if cfg.base_url:
-            kwargs["base_url"] = cfg.base_url
-        return OpenAIChatClient(**kwargs)
+        async_client = AsyncOpenAI(
+            api_key=cfg.api_key,
+            base_url=cfg.base_url,
+            timeout=cfg.timeout_seconds,
+            max_retries=cfg.max_retries,
+        )
+        return OpenAIChatClient(model_id=cfg.model, async_client=async_client)
 
     async def initialize(self) -> None:
         try:
@@ -125,6 +133,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
             # Optionally enable OpenTelemetry tracing if configured
             try:
                 from agent_framework.observability import configure_otel_providers
+
                 configure_otel_providers()
             except (ImportError, AttributeError, Exception):
                 pass
@@ -176,7 +185,8 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
     ) -> tuple[int, bool]:
         """Run MagenticOne orchestration: manager + planner/executor/reviewer.
 
-        Returns (total_iterations, hit_limit).
+        Returns (total_iterations, success) where success is True iff the
+        workspace passes validation at the end of the run.
         """
         from agent_framework import (
             Agent,
@@ -191,7 +201,6 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
         reviewer_persona = get_sub_persona("reviewer")
 
         total_iterations = 0
-        hit_limit = False
 
         collector.record_message("user", prompt)
 
@@ -262,7 +271,9 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
 
         # -- Step 2: Build executor and reviewer agents -----------------------
         executor_instructions = build_executor_instructions(
-            executor_persona, plan, system_msg,
+            executor_persona,
+            plan,
+            system_msg,
         )
 
         executor_tools, reviewer_tools = split_tools(tools, self.TOOL_FORMAT)
@@ -329,7 +340,8 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                 full_text = "".join(current_message_chunks)
                 if full_text.strip():
                     collector.record_message(
-                        "assistant", full_text,
+                        "assistant",
+                        full_text,
                         metadata={"agent": current_agent_id},
                     )
                 current_message_chunks.clear()
@@ -337,7 +349,6 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
 
         try:
             async for event in workflow.run(prompt, stream=True):
-
                 if event.type == "output" and isinstance(event.data, AgentResponseUpdate):
                     # Streaming token chunk — aggregate, don't count as iteration
                     message_id = getattr(event.data, "message_id", None)
@@ -356,7 +367,8 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                     event_name = getattr(getattr(event.data, "event_type", None), "name", "unknown")
                     if isinstance(content, Message):
                         collector.record_message(
-                            "system", content.text or "",
+                            "system",
+                            content.text or "",
                             metadata={"event": f"orchestrator_{event_name}"},
                         )
                     progress.agent_status("manager", event_name)
@@ -370,7 +382,8 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                             text = getattr(msg, "text", "") or ""
                             if text:
                                 collector.record_message(
-                                    "assistant", text,
+                                    "assistant",
+                                    text,
                                     metadata={"event": "final_output"},
                                 )
 
@@ -416,15 +429,23 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                         msgs = agent_msgs or []
                         pending_calls: dict[str, tuple[str, dict]] = {}  # call_id -> (name, args)
                         for msg in msgs:
-                            for content_item in (getattr(msg, "contents", None) or []):
-                                cd = content_item.to_dict() if hasattr(content_item, "to_dict") else {}
+                            for content_item in getattr(msg, "contents", None) or []:
+                                cd = (
+                                    content_item.to_dict()
+                                    if hasattr(content_item, "to_dict")
+                                    else {}
+                                )
                                 ctype = cd.get("type", "")
 
                                 if ctype == "function_call":
                                     tc_name = cd.get("name", "unknown")
                                     tc_args_raw = cd.get("arguments", "{}")
                                     try:
-                                        tc_args = json.loads(tc_args_raw) if isinstance(tc_args_raw, str) else tc_args_raw
+                                        tc_args = (
+                                            json.loads(tc_args_raw)
+                                            if isinstance(tc_args_raw, str)
+                                            else tc_args_raw
+                                        )
                                     except (json.JSONDecodeError, TypeError):
                                         tc_args = {"raw": tc_args_raw}
                                     call_id = cd.get("call_id", "")
@@ -442,10 +463,16 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                                         result_text = json.dumps(result_text)
                                     # Truncate large results for trace storage
                                     if len(str(result_text)) > 1000:
-                                        result_text = str(result_text)[:500] + "...(truncated)..." + str(result_text)[-300:]
+                                        result_text = (
+                                            str(result_text)[:500]
+                                            + "...(truncated)..."
+                                            + str(result_text)[-300:]
+                                        )
                                     # Match with pending call
                                     tc_name, tc_args = pending_calls.pop(call_id, ("unknown", {}))
-                                    collector.record_tool_execution(tc_name, tc_args, str(result_text))
+                                    collector.record_tool_execution(
+                                        tc_name, tc_args, str(result_text)
+                                    )
                                     progress.tool_call(tc_name, tc_args)
 
                         # Record any unmatched calls (no result yet)
@@ -464,9 +491,9 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                         type(event.data).__name__,
                     )
 
-                # Check iteration limit
+                # Check iteration limit — break out of streaming loop;
+                # final success state is decided by policy.validate() below.
                 if total_iterations >= context.max_iterations:
-                    hit_limit = True
                     break
 
             # Flush any remaining chunks
@@ -483,14 +510,17 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
         collector.record_llm_response(raw_usage=None, duration_ms=llm_time_estimate)
 
         # -- Step 5: Final validation -----------------------------------------
-        passed, feedback = policy.validate()
-        if passed:
+        # Final success requires the workspace to actually pass validation.
+        # Same invariant as the other adapters: artifacts present == success,
+        # regardless of iteration count.
+        success, feedback = policy.validate()
+        if success:
             progress.validation_passed()
         else:
             progress.validation_failed(1, 1, feedback)
 
         collector.mark_iterations(total_iterations)
-        return total_iterations, hit_limit
+        return total_iterations, success
 
     # -- Metadata -------------------------------------------------------------
 

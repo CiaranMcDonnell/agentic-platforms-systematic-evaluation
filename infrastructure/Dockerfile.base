@@ -86,6 +86,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl wget git jq sqlite3 rsync ca-certificates gnupg \
     locales \
     software-properties-common \
+    openssh-client \
     libasound2t64 libatk-bridge2.0-0 libatk1.0-0 libcups2 \
     libdbus-1-3 libdrm2 libgbm1 libgtk-3-0t64 libnspr4 libnss3 \
     libpango-1.0-0 libx11-xcb1 libxcomposite1 libxdamage1 \

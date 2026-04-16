@@ -11,6 +11,7 @@ Hierarchy:
                 ├── N8nAdapter
                 └── FlowiseAdapter
 """
+
 from __future__ import annotations
 
 import logging
@@ -27,6 +28,7 @@ from desmet.adapters._prompts import (
 )
 from desmet.adapters._tracing import (
     build_stage_result,
+    compute_framework_metrics,
     finish_trace,
     record_message,
     start_trace,
@@ -120,14 +122,18 @@ class VisualAgentAdapter(VisualPlatformAdapter):
 
             for attempt in range(self.max_retries + 1):
                 exec_data = await self._run_workflow(
-                    stage_name, prompt, system_msg or "", workspace,
+                    stage_name,
+                    prompt,
+                    system_msg or "",
+                    workspace,
                 )
 
                 iterations += 1
                 self._collect_execution_metrics(trace, exec_data)
 
                 scope_warnings = audit_workspace(
-                    stage_name, str(context.workspace),
+                    stage_name,
+                    str(context.workspace),
                     set(context.metadata.get("baseline_files", [])),
                 )
 
@@ -138,11 +144,15 @@ class VisualAgentAdapter(VisualPlatformAdapter):
                 feedback = "; ".join(scope_warnings)
                 logger.info(
                     "%s stage %s attempt %d/%d failed validation: %s",
-                    platform_id, stage_name,
-                    attempt + 1, self.max_retries + 1, feedback,
+                    platform_id,
+                    stage_name,
+                    attempt + 1,
+                    self.max_retries + 1,
+                    feedback,
                 )
                 record_message(
-                    trace, "system",
+                    trace,
+                    "system",
                     f"Validation failed (attempt {attempt + 1}): {feedback}",
                 )
 
@@ -152,36 +162,64 @@ class VisualAgentAdapter(VisualPlatformAdapter):
                     f"Please fix these issues."
                 )
 
+            # Mirror the local retry counter onto the trace so
+            # compute_framework_metrics' iteration_ratio is meaningful.
+            trace.total_iterations = iterations
+            fm = compute_framework_metrics(trace, context.max_iterations)
             return build_stage_result(
-                result_cls, platform_id, stage_name, trace,
-                success=success, iterations=iterations,
+                result_cls,
+                platform_id,
+                stage_name,
+                trace,
+                success=success,
+                iterations=iterations,
+                framework_metrics=fm,
             )
 
         except Exception as e:
             finish_trace(trace, error=str(e))
+            fm = compute_framework_metrics(trace, context.max_iterations)
             return build_stage_result(
-                result_cls, platform_id, stage_name, trace,
-                success=False, iterations=0, error_message=str(e),
+                result_cls,
+                platform_id,
+                stage_name,
+                trace,
+                success=False,
+                iterations=0,
+                error_message=str(e),
+                framework_metrics=fm,
             )
 
     # ── Concrete SDLC stage methods ────────────────────────────────────
 
     async def generate_requirements(self, context: StageContext) -> RequirementsResult:
         return await self._execute_visual_stage(
-            "requirements", build_requirements_prompt, RequirementsResult, context,
+            "requirements",
+            build_requirements_prompt,
+            RequirementsResult,
+            context,
         )
 
     async def generate_code(self, context: StageContext) -> CodeResult:
         return await self._execute_visual_stage(
-            "codegen", build_codegen_prompt, CodeResult, context,
+            "codegen",
+            build_codegen_prompt,
+            CodeResult,
+            context,
         )
 
     async def generate_tests(self, context: StageContext) -> TestResult:
         return await self._execute_visual_stage(
-            "testing", build_testing_prompt, TestResult, context,
+            "testing",
+            build_testing_prompt,
+            TestResult,
+            context,
         )
 
     async def build_and_deploy(self, context: StageContext) -> DeployResult:
         return await self._execute_visual_stage(
-            "deploy", build_deploy_prompt, DeployResult, context,
+            "deploy",
+            build_deploy_prompt,
+            DeployResult,
+            context,
         )

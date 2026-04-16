@@ -61,6 +61,7 @@ def _load_evaluation_settings() -> dict:
 # Internal parsers
 # ---------------------------------------------------------------------------
 
+
 def _parse_prompt_file(content: str) -> tuple[str, str]:
     """Split a prompt ``.md`` file into *(prompt, context)*.
 
@@ -224,12 +225,14 @@ def load_story(
     for ac_raw in raw.get("acceptance_criteria", []):
         ac_id = ac_raw["id"]
         gherkin = ac_raw.get("gherkin") or gherkin_map.get(ac_id)
-        criteria.append(AcceptanceCriterion(
-            id=ac_id,
-            description=ac_raw.get("description", ""),
-            gherkin=gherkin,
-            verification_method=ac_raw.get("verification_method", "manual"),
-        ))
+        criteria.append(
+            AcceptanceCriterion(
+                id=ac_id,
+                description=ac_raw.get("description", ""),
+                gherkin=gherkin,
+                verification_method=ac_raw.get("verification_method", "manual"),
+            )
+        )
 
     # --- Resolve per-difficulty defaults from evaluation_settings ---------
     difficulty = DifficultyLevel(raw["difficulty"])
@@ -287,10 +290,7 @@ def load_all_stories(
     yaml_files = sorted(stories_dir.rglob("*.yaml"))
 
     if difficulty:
-        yaml_files = [
-            p for p in yaml_files
-            if p.parent.name == difficulty
-        ]
+        yaml_files = [p for p in yaml_files if p.parent.name == difficulty]
 
     stories: list[UserStory] = []
     for yf in yaml_files:

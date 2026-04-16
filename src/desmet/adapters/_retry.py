@@ -87,7 +87,10 @@ class ProgressReporter:
         self._cb("    validator: PASSED")
 
     def validation_failed(
-        self, attempt: int, max_attempts: int, feedback: str,
+        self,
+        attempt: int,
+        max_attempts: int,
+        feedback: str,
     ) -> None:
         """Emit validation failure with attempt count and feedback."""
         if self._cb is None:
@@ -101,10 +104,7 @@ class ProgressReporter:
         """Emit agent lifecycle status."""
         if self._cb is None:
             return
-        self._cb(
-            f"    [{agent}] {status}"
-            f"  ({self._elapsed():.0f}s, {self._tokens():,} tokens)"
-        )
+        self._cb(f"    [{agent}] {status}  ({self._elapsed():.0f}s, {self._tokens():,} tokens)")
 
     def heartbeat(self, step: int, label: str = "") -> None:
         """Emit periodic progress during long-running execution.
@@ -114,7 +114,19 @@ class ProgressReporter:
         if self._cb is None:
             return
         prefix = f"[{label}] " if label else ""
+        self._cb(f"    {prefix}step {step}  ({self._elapsed():.0f}s, {self._tokens():,} tokens)")
+
+    def waiting(self, label: str, seconds: int) -> None:
+        """Emit a wall-clock heartbeat while a stage is blocked on an LLM call.
+
+        Used by streaming wrappers (e.g. langgraph's ``executor_sg.astream``)
+        to break the silence when a single LLM call is taking long enough
+        that no chunk has been yielded yet.  Without this the UI looks
+        frozen during 60+ second LLM calls or rate-limit retries.
+        """
+        if self._cb is None:
+            return
         self._cb(
-            f"    {prefix}step {step}"
+            f"    [{label}] waiting on LLM ({seconds}s)..."
             f"  ({self._elapsed():.0f}s, {self._tokens():,} tokens)"
         )

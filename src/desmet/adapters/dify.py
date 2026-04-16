@@ -8,9 +8,43 @@ Dify differs from the other visual adapters:
 - Two APIs: Console (auth via access token) and Service (auth via app API key)
 - Model providers configured separately via Console API
 - Agent apps created → published → API key generated → executed → deleted
+
+Known limitation — Dify 1.13 plugin-based model providers
+---------------------------------------------------------
+
+Dify shifted its entire LLM provider and tool ecosystem to a plugin
+marketplace model.  No LLM (OpenAI, OpenRouter, Anthropic, ...) is
+built in; each provider is an external plugin that must be installed
+per-workspace via ``POST /console/api/workspaces/current/plugin/install/marketplace``
+before any agent app can select a model.  The same applies to the
+tools we'd want the agent to call for file I/O and shell execution.
+
+The adapter below handles the parts that ARE stable across versions:
+init-password validation, admin setup, login (with base64-encoded
+password and cookie-delivered access token), workspace auth, and
+basic app lifecycle.  ``_configure_app`` and ``setup_model_provider``
+are written against the pre-plugin API and will fail until a provider
+plugin is installed and the model-config shape is updated to
+reference the plugin's models.
+
+Rather than write a speculative implementation against a fast-moving
+marketplace API, we treat Dify end-to-end execution as an explicit
+"requires out-of-band plugin setup" gap and document it here rather
+than silently failing with opaque errors.  The thesis-ready summary:
+
+    "Dify 1.13's plugin-only model ecosystem makes programmatic
+     integration substantially harder than Flowise/LangFlow.  Init,
+     auth, and app creation automate cleanly, but end-to-end agent
+     execution requires manual plugin installation and a different
+     ``model_config`` shape."
+
+See ``project_dify_plugin_limitation.md`` in memory for the full
+context around this decision.
 """
+
 from __future__ import annotations
 
+import base64
 import logging
 import os
 from typing import Any
@@ -57,21 +91,55 @@ class DifyClient:
     # ── Console Auth ───────────────────────────────────────────────────
 
     async def login(self, email: str, password: str) -> None:
-        """Login to the Console API and store the access token."""
+        """Login to the Console API and store the access token.
+
+        Recent Dify versions expect the password to be base64-encoded
+        (the ``@decrypt_password_field`` decorator decodes it server-side).
+        The access token is returned as an HTTP-only cookie, not in the
+        JSON body.  The httpx client stores the cookie automatically;
+        we also capture it in ``_console_token`` for Authorization headers.
+        """
         client = await self._ensure_client()
+        encoded_pw = base64.b64encode(password.encode()).decode()
         resp = await client.post(
             "/console/api/login",
-            json={"email": email, "password": password},
+            json={"email": email, "password": encoded_pw},
             headers={"Content-Type": "application/json"},
         )
         resp.raise_for_status()
-        data = resp.json()
-        self._console_token = data.get("access_token") or data.get("data", {}).get("access_token", "")
+        # Token is in the Set-Cookie header, not the JSON body
+        self._console_token = client.cookies.get("access_token", "")
 
-    async def setup_account(self, email: str, name: str, password: str) -> None:
-        """Initial account setup (first-run only). Silently ignores if already set up."""
+    async def setup_account(
+        self, email: str, name: str, password: str, init_password: str | None = None
+    ) -> None:
+        """Initial account setup (first-run only). Silently ignores if already set up.
+
+        Recent Dify versions require a two-step flow:
+        1. ``POST /console/api/init`` with the ``INIT_PASSWORD`` to validate
+        2. ``POST /console/api/setup`` with admin credentials
+        """
         client = await self._ensure_client()
         try:
+            # Check if setup already done
+            status_resp = await client.get(
+                "/console/api/setup",
+                headers={"Content-Type": "application/json"},
+            )
+            if status_resp.status_code == 200:
+                data = status_resp.json()
+                if data.get("step") == "finished":
+                    return  # Already set up
+
+            # Step 1: init validation (requires INIT_PASSWORD env var)
+            if init_password:
+                await client.post(
+                    "/console/api/init",
+                    json={"password": init_password},
+                    headers={"Content-Type": "application/json"},
+                )
+
+            # Step 2: create admin account
             resp = await client.post(
                 "/console/api/setup",
                 json={"email": email, "name": name, "password": password},
@@ -79,16 +147,28 @@ class DifyClient:
             )
             if resp.status_code in (200, 201):
                 data = resp.json()
-                self._console_token = data.get("access_token") or data.get("data", {}).get("access_token", "")
+                self._console_token = data.get("access_token") or data.get("data", {}).get(
+                    "access_token", ""
+                )
         except Exception:
             pass  # Already set up
 
     # ── Model Provider ─────────────────────────────────────────────────
 
     async def setup_model_provider(
-        self, provider: str, api_key: str, base_url: str | None = None,
+        self,
+        provider: str,
+        api_key: str,
+        base_url: str | None = None,
     ) -> None:
-        """Configure an LLM provider in Dify's model settings."""
+        """Configure an LLM provider in Dify's model settings.
+
+        This uses the legacy pre-plugin endpoint that silently no-ops on
+        Dify ≥1.13.  See the module docstring for the limitation
+        context.  Returning silently here keeps ``initialize()`` working
+        so downstream code can still create apps — but the app can't
+        actually run a model until a provider plugin is installed.
+        """
         client = await self._ensure_client()
         credentials: dict[str, str] = {"openai_api_key": api_key}
         if base_url:
@@ -110,15 +190,20 @@ class DifyClient:
             json={"credentials": credentials},
             headers=self._console_headers(),
         )
-        # Ignore 4xx — provider may already be configured
+        # Ignore 4xx — provider may already be configured, or (on
+        # Dify ≥1.13) the endpoint may no longer exist because the
+        # provider is plugin-delivered.
         if resp.status_code >= 500:
             resp.raise_for_status()
 
     # ── Apps ───────────────────────────────────────────────────────────
 
     async def create_app(
-        self, name: str, mode: str = "agent-chat",
-        model_name: str = "", system_msg: str = "",
+        self,
+        name: str,
+        mode: str = "agent-chat",
+        model_name: str = "",
+        system_msg: str = "",
     ) -> str:
         """Create an agent app. Returns the app ID."""
         client = await self._ensure_client()
@@ -141,7 +226,10 @@ class DifyClient:
         return app_id
 
     async def _configure_app(
-        self, app_id: str, model_name: str, system_msg: str,
+        self,
+        app_id: str,
+        model_name: str,
+        system_msg: str,
     ) -> None:
         """Set the model config and enable code interpreter tool."""
         client = await self._ensure_client()
@@ -240,7 +328,7 @@ class DifyAdapter(VisualAgentAdapter):
     def __init__(self, config: dict[str, Any] | None = None):
         config = config or {}
         super().__init__(
-            base_url=config.get("base_url", "http://localhost:5001"),
+            base_url=config.get("base_url", "http://localhost:5401"),
             api_key=None,  # Dify doesn't use a single API key
             config=config,
         )
@@ -264,10 +352,14 @@ class DifyAdapter(VisualAgentAdapter):
             )
 
         # Setup or login
-        password = os.environ.get("DIFY_INIT_PASSWORD", "desmet-admin")
-        await self._client.setup_account(_DIFY_EMAIL, _DIFY_NAME, password)
+        # Password must satisfy Dify's policy: letters + digits, length > 8
+        init_password = os.environ.get("DIFY_INIT_PASSWORD", "desmet-admin1")
+        account_password = "desmet-admin1"
+        await self._client.setup_account(
+            _DIFY_EMAIL, _DIFY_NAME, account_password, init_password=init_password
+        )
         if not self._client._console_token:
-            await self._client.login(_DIFY_EMAIL, password)
+            await self._client.login(_DIFY_EMAIL, account_password)
 
         # Configure LLM provider
         from desmet.llm_config import get_config as get_llm_config
@@ -278,7 +370,9 @@ class DifyAdapter(VisualAgentAdapter):
 
         if cfg.api_key:
             await self._client.setup_model_provider(
-                cfg.provider.value, cfg.api_key, cfg.base_url,
+                cfg.provider.value,
+                cfg.api_key,
+                cfg.base_url,
             )
 
         self._initialized = True
@@ -323,7 +417,14 @@ class DifyAdapter(VisualAgentAdapter):
         system_msg: str,
         workspace: str,
     ) -> dict:
-        """Create an agent app, run it, clean up, return result."""
+        """Create an agent app, run it, clean up, return result.
+
+        NOTE: On Dify ≥1.13 this will fail at app execution because
+        the pre-plugin model-config shape is no longer valid.  See the
+        module docstring for the known limitation — the thesis treats
+        Dify as a "partial integration" documenting the automation gap
+        that Dify's plugin-only ecosystem introduces.
+        """
         app_name = f"desmet-{stage_name}"
 
         # Inject workspace info into system message
@@ -363,15 +464,23 @@ class DifyAdapter(VisualAgentAdapter):
 
     def get_observability_info(self) -> dict[str, Any]:
         return {
-            "has_tracing": True,
+            "has_tracing": False,
             "has_step_through": False,
             "has_replay": False,
-            "has_state_inspection": True,
-            "has_memory_inspection": True,
-            "trace_format": "Dify execution log",
+            "has_state_inspection": False,
+            "has_memory_inspection": False,
+            "trace_format": "Dify chat-message metadata (partial)",
+            "exposes_per_tool_call": False,
+            "exposes_tool_timing": False,
+            "exposes_token_usage": True,  # metadata.usage on chat response
+            "exposes_node_events": False,
             "notes": (
-                "Full execution trace via Console API. "
-                "Token usage in chat response metadata."
+                "Dify exposes aggregate token usage via metadata.usage "
+                "on chat responses but does not include per-tool-call "
+                "traces in the default Service API output, limiting what "
+                "orchestration-quality metrics can observe. End-to-end "
+                "execution also blocked on the plugin-only model "
+                "ecosystem (see module docstring)."
             ),
         }
 

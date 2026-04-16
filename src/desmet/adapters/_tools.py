@@ -46,6 +46,7 @@ AVAILABLE_TOOLS: tuple[str, ...] = (
 # Path safety
 # ---------------------------------------------------------------------------
 
+
 def _safe_resolve(workspace: Path, path: str) -> Path:
     """Resolve *path* relative to *workspace*, rejecting traversal escapes.
 
@@ -59,9 +60,7 @@ def _safe_resolve(workspace: Path, path: str) -> Path:
     try:
         resolved.relative_to(workspace_resolved)
     except ValueError:
-        raise ValueError(
-            f"Path {path!r} resolves outside workspace: {workspace_resolved}"
-        )
+        raise ValueError(f"Path {path!r} resolves outside workspace: {workspace_resolved}")
     return resolved
 
 
@@ -174,7 +173,9 @@ def _check_loop(workspace: str, tool_name: str, call_key: str) -> str | None:
     target = _extract_target(tool_name, call_key)
     if target is not None and target in _locked_targets[workspace]:
         _log.warning(
-            "[DEFENSE] REFUSED %s on locked target '%s'", tool_name, target,
+            "[DEFENSE] REFUSED %s on locked target '%s'",
+            tool_name,
+            target,
         )
         return (
             f"REFUSED: '{target}' is locked after a previous loop was "
@@ -199,7 +200,8 @@ def _check_loop(workspace: str, tool_name: str, call_key: str) -> str | None:
         _call_history[tracker_key] = []
         _log.warning(
             "[DEFENSE] LOOP DETECTED — %s called %d times in a row with identical args",
-            tool_name, _CONSECUTIVE_THRESHOLD,
+            tool_name,
+            _CONSECUTIVE_THRESHOLD,
         )
         return (
             f"LOOP DETECTED: '{tool_name}' was called {_CONSECUTIVE_THRESHOLD} "
@@ -235,13 +237,10 @@ def _check_loop(workspace: str, tool_name: str, call_key: str) -> str | None:
         cross = _cross_tool_history[workspace]
         cross.append(target)
         if len(cross) > _CROSS_TOOL_THRESHOLD * 2:
-            _cross_tool_history[workspace] = cross[-_CROSS_TOOL_THRESHOLD * 2:]
+            _cross_tool_history[workspace] = cross[-_CROSS_TOOL_THRESHOLD * 2 :]
             cross = _cross_tool_history[workspace]
         cross_tail = cross[-_CROSS_TOOL_THRESHOLD:]
-        if (
-            len(cross_tail) == _CROSS_TOOL_THRESHOLD
-            and len(set(cross_tail)) == 1
-        ):
+        if len(cross_tail) == _CROSS_TOOL_THRESHOLD and len(set(cross_tail)) == 1:
             _cross_tool_history[workspace] = []
             # LOCK this target for the rest of the stage — any further
             # tool call on it will be refused by the locked-target check
@@ -249,7 +248,8 @@ def _check_loop(workspace: str, tool_name: str, call_key: str) -> str | None:
             _locked_targets[workspace].add(target)
             _log.warning(
                 "[DEFENSE] LOOP DETECTED + LOCKED — %d cross-tool ops on '%s'",
-                _CROSS_TOOL_THRESHOLD, target,
+                _CROSS_TOOL_THRESHOLD,
+                target,
             )
             return (
                 f"LOOP DETECTED: you have made {_CROSS_TOOL_THRESHOLD} "
@@ -276,21 +276,58 @@ def reset_loop_tracker() -> None:
 
 # Commands allowed during the requirements stage (allowlist).
 # Only stages listed here are filtered; unlisted stages have unrestricted shell.
-_REQUIREMENTS_SHELL_ALLOW = frozenset({
-    # Filesystem inspection
-    "ls", "cat", "head", "tail", "find", "grep", "egrep", "fgrep",
-    "wc", "file", "stat", "tree", "diff", "sort", "uniq",
-    "realpath", "readlink", "basename", "dirname",
-    # File management
-    "mkdir", "cp", "mv", "rm", "touch", "chmod",
-    # Diagram rendering
-    "mmdc",
-    # Shell basics
-    "echo", "printf", "pwd", "which", "type", "true", "false",
-    "test", "[", "env", "date",
-    # Text processing
-    "sed", "awk", "cut", "tr", "tee", "xargs",
-})
+_REQUIREMENTS_SHELL_ALLOW = frozenset(
+    {
+        # Filesystem inspection
+        "ls",
+        "cat",
+        "head",
+        "tail",
+        "find",
+        "grep",
+        "egrep",
+        "fgrep",
+        "wc",
+        "file",
+        "stat",
+        "tree",
+        "diff",
+        "sort",
+        "uniq",
+        "realpath",
+        "readlink",
+        "basename",
+        "dirname",
+        # File management
+        "mkdir",
+        "cp",
+        "mv",
+        "rm",
+        "touch",
+        "chmod",
+        # Diagram rendering
+        "mmdc",
+        # Shell basics
+        "echo",
+        "printf",
+        "pwd",
+        "which",
+        "type",
+        "true",
+        "false",
+        "test",
+        "[",
+        "env",
+        "date",
+        # Text processing
+        "sed",
+        "awk",
+        "cut",
+        "tr",
+        "tee",
+        "xargs",
+    }
+)
 
 _STAGE_SHELL_ALLOWLIST: dict[str, frozenset[str]] = {
     "requirements": _REQUIREMENTS_SHELL_ALLOW,
@@ -384,9 +421,7 @@ def _list_directory(workspace: Path, path: str = ".") -> str:
     except ValueError as exc:
         return f"Error: {exc}"
     if full_path.exists() and full_path.is_dir():
-        entries = sorted(
-            str(f.relative_to(workspace.resolve())) for f in full_path.iterdir()
-        )
+        entries = sorted(str(f.relative_to(workspace.resolve())) for f in full_path.iterdir())
         return "\n".join(entries)
     return f"Directory not found: {path}"
 
@@ -514,7 +549,10 @@ def _git_push_url(repo: str) -> str:
     if not token:
         try:
             result = subprocess.run(
-                ["gh", "auth", "token"], capture_output=True, text=True, timeout=10,
+                ["gh", "auth", "token"],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             if result.returncode == 0:
                 token = result.stdout.strip()
@@ -545,9 +583,9 @@ def _deploy_local(
         env_file = workspace / ".env"
         existing = env_file.read_text() if env_file.exists() else ""
         lines = [
-            ln for ln in existing.splitlines()
-            if not ln.startswith("COMPOSE_PROJECT_NAME=")
-            and not ln.startswith("PORT=")
+            ln
+            for ln in existing.splitlines()
+            if not ln.startswith("COMPOSE_PROJECT_NAME=") and not ln.startswith("PORT=")
         ]
         lines.append(f"COMPOSE_PROJECT_NAME={compose_project}")
         lines.append(f"PORT={port}")
@@ -649,21 +687,30 @@ def _deploy_remote(
         try:
             subprocess.run(
                 [*git_safe, "add", "-A"],
-                cwd=workspace, capture_output=True, timeout=30,
+                cwd=workspace,
+                capture_output=True,
+                timeout=30,
             )
             # Only commit if there are staged changes
             diff = subprocess.run(
                 [*git_safe, "diff", "--cached", "--quiet"],
-                cwd=workspace, capture_output=True, timeout=10,
+                cwd=workspace,
+                capture_output=True,
+                timeout=10,
             )
             if diff.returncode != 0:
                 subprocess.run(
                     [*git_safe, "commit", "-m", "deploy from DESMET evaluation"],
-                    cwd=workspace, capture_output=True, timeout=30,
+                    cwd=workspace,
+                    capture_output=True,
+                    timeout=30,
                 )
             result = subprocess.run(
                 [*git_safe, "push", "deploy", f"HEAD:{branch}", "--force"],
-                cwd=workspace, capture_output=True, text=True, timeout=120,
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+                timeout=120,
             )
             output = result.stdout + result.stderr
             if result.returncode != 0:
@@ -691,21 +738,27 @@ def _deploy_remote(
 
         # Step 1: git clone (first deploy) or cd && git pull (subsequent)
         clone_result = _sp.run(
-            f'{ssh_opts} {q_user_host} '
-            f'"git clone -b {q_branch} {q_repo} {q_remote}"',
-            shell=True, capture_output=True, text=True, timeout=120,
+            f'{ssh_opts} {q_user_host} "git clone -b {q_branch} {q_repo} {q_remote}"',
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
         if clone_result.returncode != 0:
             # Already cloned — pull latest
             _sp.run(
-                f'{ssh_opts} {q_user_host} '
-                f'"cd {q_remote} && git fetch origin {q_branch}"',
-                shell=True, capture_output=True, text=True, timeout=60,
+                f'{ssh_opts} {q_user_host} "cd {q_remote} && git fetch origin {q_branch}"',
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
             _sp.run(
-                f'{ssh_opts} {q_user_host} '
-                f'"cd {q_remote} && git pull origin {q_branch}"',
-                shell=True, capture_output=True, text=True, timeout=60,
+                f'{ssh_opts} {q_user_host} "cd {q_remote} && git pull origin {q_branch}"',
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
 
         # Step 2: docker compose up.
@@ -717,9 +770,9 @@ def _deploy_remote(
         # Write/overwrite compose vars (filter out old values, append new)
         existing = env_file.read_text() if env_file.exists() else ""
         lines = [
-            ln for ln in existing.splitlines()
-            if not ln.startswith("COMPOSE_PROJECT_NAME=")
-            and not ln.startswith("PORT=")
+            ln
+            for ln in existing.splitlines()
+            if not ln.startswith("COMPOSE_PROJECT_NAME=") and not ln.startswith("PORT=")
         ]
         lines.append(f"COMPOSE_PROJECT_NAME={compose_project}")
         lines.append(f"PORT={port}")
@@ -727,39 +780,46 @@ def _deploy_remote(
 
         # Re-push so .env is on the server
         _sp.run(
-            ["git", "add", "-A"], cwd=workspace, capture_output=True, timeout=10,
+            ["git", "add", "-A"],
+            cwd=workspace,
+            capture_output=True,
+            timeout=10,
         )
         _sp.run(
-            ["git", "commit", "-m", "add compose env"], cwd=workspace,
-            capture_output=True, timeout=10,
+            ["git", "commit", "-m", "add compose env"],
+            cwd=workspace,
+            capture_output=True,
+            timeout=10,
         )
         _sp.run(
             ["git", "push", "deploy", f"HEAD:{branch}", "--force"],
-            cwd=workspace, capture_output=True, timeout=60,
+            cwd=workspace,
+            capture_output=True,
+            timeout=60,
         )
         # Pull on server
         _sp.run(
             f'{ssh_opts} {q_user_host} "cd {q_remote} && git pull origin {q_branch}"',
-            shell=True, capture_output=True, text=True, timeout=60,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
 
-        cmd = (
-            f'{ssh_opts} {q_user_host} '
-            f'"cd {q_remote} && docker compose up -d --build"'
-        )
+        cmd = f'{ssh_opts} {q_user_host} "cd {q_remote} && docker compose up -d --build"'
     elif action == "health_check":
         q_url = shlex.quote(url)
         q_user_host = f"{shlex.quote(user)}@{shlex.quote(host)}"
-        cmd = (
-            f'{ssh_opts} {q_user_host} '
-            f'"curl -sf http://localhost:{port}{q_url}"'
-        )
+        cmd = f'{ssh_opts} {q_user_host} "curl -sf http://localhost:{port}{q_url}"'
     else:
         return f"Error: unknown action '{action}'. Use push, restart, or health_check."
 
     try:
         result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True,
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
             timeout=timeouts.get(action, 60),
         )
         output = result.stdout + result.stderr
@@ -782,8 +842,7 @@ def _check_completion(workspace: Path, stage: str) -> tuple[bool, str]:
     passed = validate_workspace(stage, str(workspace))
     if passed:
         return True, (
-            "VALIDATION PASSED: All required artifacts for this stage are present. "
-            "Task complete."
+            "VALIDATION PASSED: All required artifacts for this stage are present. Task complete."
         )
 
     hints = {
@@ -791,14 +850,8 @@ def _check_completion(workspace: Path, stage: str) -> tuple[bool, str]:
             "Ensure docs/design/ contains .md or .txt files covering "
             "functional, non-functional, and acceptance criteria."
         ),
-        "codegen": (
-            "Ensure at least one .py file exists and compiles without "
-            "syntax errors."
-        ),
-        "testing": (
-            "Ensure test_*.py or *_test.py files exist containing "
-            "def test_ functions."
-        ),
+        "codegen": ("Ensure at least one .py file exists and compiles without syntax errors."),
+        "testing": ("Ensure test_*.py or *_test.py files exist containing def test_ functions."),
         "deploy": (
             "Ensure both `Dockerfile` and `docker-compose.yaml` exist in the "
             "workspace root, and that docker-compose.yaml uses `${PORT}` "
@@ -813,58 +866,77 @@ def _check_completion(workspace: Path, stage: str) -> tuple[bool, str]:
 # Format builders
 # ---------------------------------------------------------------------------
 
-def _build_callable_tools(workspace: Path, tool_names: list[str], platform_id=None, story_id=None, stage_name=None) -> list:
+
+def _build_callable_tools(
+    workspace: Path, tool_names: list[str], platform_id=None, story_id=None, stage_name=None
+) -> list:
     """Return plain callables with meaningful ``__name__`` attributes."""
     tools: list = []
 
     for name in tool_names:
         if name == "read_file":
+
             def read_file(*, path: str) -> str:
                 """Read the contents of a file."""
                 return _read_file(workspace, path)
+
             tools.append(read_file)
 
         elif name == "write_file":
+
             def write_file(*, path: str, content: str) -> str:
                 """Write content to a file."""
                 return _write_file(workspace, path, content)
+
             tools.append(write_file)
 
         elif name == "list_directory":
+
             def list_directory(*, path: str = ".") -> str:
                 """List files in a directory."""
                 return _list_directory(workspace, path)
+
             tools.append(list_directory)
 
         elif name == "execute_shell":
+
             def execute_shell(*, command: str) -> str:
                 """Execute a shell command."""
                 return _execute_shell(workspace, command, stage=stage_name)
+
             tools.append(execute_shell)
 
         elif name == "search_code":
+
             def search_code(*, pattern: str, path: str = ".") -> str:
                 """Search code files for a pattern."""
                 return _search_code(workspace, pattern, path)
+
             tools.append(search_code)
 
         elif name == "deploy_remote":
+
             def deploy_remote_fn(*, action: str, url: str = "/health") -> str:
                 """Deploy to the remote server."""
                 return _deploy_remote(workspace, platform_id, story_id, action, url)
+
             tools.append(deploy_remote_fn)
 
         elif name == "check_completion":
+
             def check_completion() -> str:
                 """Check if all required artifacts are present in the workspace."""
                 _, msg = _check_completion(workspace, stage_name)
                 return msg
+
             tools.append(check_completion)
 
     return tools
 
 
-def _build_langchain_tools(workspace: Path, tool_names: list[str], platform_id=None, story_id=None, stage_name=None) -> list:
+def _build_langchain_tools(
+    workspace: Path, tool_names: list[str], platform_id=None, story_id=None, stage_name=None
+) -> list:
     """Return LangChain ``@tool`` decorated functions."""
     from langchain.tools import tool as lc_tool
 
@@ -872,59 +944,75 @@ def _build_langchain_tools(workspace: Path, tool_names: list[str], platform_id=N
 
     for name in tool_names:
         if name == "read_file":
+
             @lc_tool
             def read_file(path: str) -> str:
                 """Read the contents of a file."""
                 return _read_file(workspace, path)
+
             tools.append(read_file)
 
         elif name == "write_file":
+
             @lc_tool
             def write_file(path: str, content: str) -> str:
                 """Write content to a file."""
                 return _write_file(workspace, path, content)
+
             tools.append(write_file)
 
         elif name == "list_directory":
+
             @lc_tool
             def list_directory(path: str = ".") -> str:
                 """List files in a directory."""
                 return _list_directory(workspace, path)
+
             tools.append(list_directory)
 
         elif name == "execute_shell":
+
             @lc_tool
             def execute_shell(command: str) -> str:
                 """Execute a shell command."""
                 return _execute_shell(workspace, command, stage=stage_name)
+
             tools.append(execute_shell)
 
         elif name == "search_code":
+
             @lc_tool
             def search_code(pattern: str, path: str = ".") -> str:
                 """Search code files for a pattern."""
                 return _search_code(workspace, pattern, path)
+
             tools.append(search_code)
 
         elif name == "deploy_remote":
+
             @lc_tool
             def deploy_remote(action: str, url: str = "/health") -> str:
                 """Deploy to remote server: push artifacts, restart Docker, or health check."""
                 return _deploy_remote(workspace, platform_id, story_id, action, url)
+
             tools.append(deploy_remote)
 
         elif name == "check_completion":
+
             @lc_tool
             def check_completion() -> str:
                 """Check if all required artifacts are present in the workspace."""
                 _, msg = _check_completion(workspace, stage_name)
                 return msg
+
             tools.append(check_completion)
 
     return tools
 
 
-def _build_crewai_tools(workspace: Path, tool_names: list[str], platform_id=None, story_id=None, stage_name=None) -> list:
+def _build_crewai_tools(
+    workspace: Path, tool_names: list[str], platform_id=None, story_id=None, stage_name=None
+) -> list:
     """Return CrewAI ``BaseTool`` subclasses.
 
     Each tool is a class with a Pydantic ``args_schema`` so that CrewAI
@@ -1022,7 +1110,9 @@ def _build_crewai_tools(workspace: Path, tool_names: list[str], platform_id=None
 
         class DeployRemoteTool(CrewAIBaseTool):
             name: str = "deploy_remote"
-            description: str = "Deploy to remote server: push artifacts, restart Docker, or health check"
+            description: str = (
+                "Deploy to remote server: push artifacts, restart Docker, or health check"
+            )
             args_schema: type[BaseModel] = DeployRemoteInput
 
             def _run(self, action: str, url: str = "/health") -> str:
@@ -1050,66 +1140,84 @@ def _build_crewai_tools(workspace: Path, tool_names: list[str], platform_id=None
     return tools
 
 
-def _build_openai_agents_tools(workspace: Path, tool_names: list[str], platform_id=None, story_id=None, stage_name=None) -> list:
+def _build_openai_agents_tools(
+    workspace: Path, tool_names: list[str], platform_id=None, story_id=None, stage_name=None
+) -> list:
     """Return OpenAI Agents SDK ``FunctionTool`` instances."""
     from agents import function_tool
 
     tools: list = []
 
     if "read_file" in tool_names:
+
         @function_tool
         def read_file(path: str) -> str:
             """Read the contents of a file at the given relative path."""
             return _read_file(workspace, path)
+
         tools.append(read_file)
 
     if "write_file" in tool_names:
+
         @function_tool
         def write_file(path: str, content: str) -> str:
             """Write content to a file, creating parent directories as needed."""
             return _write_file(workspace, path, content)
+
         tools.append(write_file)
 
     if "list_directory" in tool_names:
+
         @function_tool
         def list_directory(path: str = ".") -> str:
             """List files and directories at the given relative path."""
             return _list_directory(workspace, path)
+
         tools.append(list_directory)
 
     if "execute_shell" in tool_names:
+
         @function_tool
         def execute_shell(command: str) -> str:
             """Execute a shell command in the project directory."""
             return _execute_shell(workspace, command, stage=stage_name)
+
         tools.append(execute_shell)
 
     if "search_code" in tool_names:
+
         @function_tool
         def search_code(pattern: str, path: str = ".") -> str:
             """Search code files for lines matching a regex pattern."""
             return _search_code(workspace, pattern, path)
+
         tools.append(search_code)
 
     if "deploy_remote" in tool_names:
+
         @function_tool
         def deploy_remote(action: str, url: str = "/health") -> str:
             """Deploy to remote server: push artifacts, restart Docker, or health check."""
             return _deploy_remote(workspace, platform_id, story_id, action, url)
+
         tools.append(deploy_remote)
 
     if "check_completion" in tool_names:
+
         @function_tool
         def check_completion() -> str:
             """Check if all required artifacts are present in the workspace."""
             _, msg = _check_completion(workspace, stage_name)
             return msg
+
         tools.append(check_completion)
 
     return tools
 
 
-def _build_agent_framework_tools(workspace: Path, tool_names: list[str], platform_id=None, story_id=None, stage_name=None) -> list:
+def _build_agent_framework_tools(
+    workspace: Path, tool_names: list[str], platform_id=None, story_id=None, stage_name=None
+) -> list:
     """Return plain callables for Microsoft Agent Framework.
 
     Produces the same functions as the CALLABLE format.  The Agent Framework
@@ -1118,46 +1226,60 @@ def _build_agent_framework_tools(workspace: Path, tool_names: list[str], platfor
     tools: list = []
 
     if "read_file" in tool_names:
+
         def read_file(path: str) -> str:
             """Read the contents of a file at the given relative path."""
             return _read_file(workspace, path)
+
         tools.append(read_file)
 
     if "write_file" in tool_names:
+
         def write_file(path: str, content: str) -> str:
             """Write content to a file, creating parent directories as needed."""
             return _write_file(workspace, path, content)
+
         tools.append(write_file)
 
     if "list_directory" in tool_names:
+
         def list_directory(path: str = ".") -> str:
             """List files and directories at the given relative path."""
             return _list_directory(workspace, path)
+
         tools.append(list_directory)
 
     if "execute_shell" in tool_names:
+
         def execute_shell(command: str) -> str:
             """Execute a shell command in the project directory."""
             return _execute_shell(workspace, command, stage=stage_name)
+
         tools.append(execute_shell)
 
     if "search_code" in tool_names:
+
         def search_code(pattern: str, path: str = ".") -> str:
             """Search code files for lines matching a regex pattern."""
             return _search_code(workspace, pattern, path)
+
         tools.append(search_code)
 
     if "deploy_remote" in tool_names:
+
         def deploy_remote(action: str, url: str = "/health") -> str:
             """Deploy to remote server: push artifacts, restart Docker, or health check."""
             return _deploy_remote(workspace, platform_id, story_id, action, url)
+
         tools.append(deploy_remote)
 
     if "check_completion" in tool_names:
+
         def check_completion() -> str:
             """Check if all required artifacts are present in the workspace."""
             _, msg = _check_completion(workspace, stage_name)
             return msg
+
         tools.append(check_completion)
 
     return tools
@@ -1166,6 +1288,7 @@ def _build_agent_framework_tools(workspace: Path, tool_names: list[str], platfor
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def create_tools(
     workspace: Path,
@@ -1242,6 +1365,7 @@ def split_tools(tools: list, fmt: ToolFormat) -> tuple[list, list]:
     For AGENT_FRAMEWORK format (plain callables), tool names are read from ``__name__``.
     For all other formats, ``.name`` is used.
     """
+
     def _name(tool) -> str:
         if fmt in (ToolFormat.AGENT_FRAMEWORK, ToolFormat.CALLABLE):
             return getattr(tool, "__name__", "")

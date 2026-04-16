@@ -85,6 +85,31 @@ def test_heartbeat_no_label():
     assert "[" not in msgs[0]  # no brackets when no label
 
 
+def test_waiting_emits_seconds_and_label():
+    """The waiting() helper is what stops slow LLM calls from looking
+    like a freeze in the UI — used by the langgraph stream wrapper."""
+    msgs: list[str] = []
+    reporter = _make_reporter(msgs)
+    reporter.waiting("executor", 15)
+    assert len(msgs) == 1
+    assert "[executor]" in msgs[0]
+    assert "waiting on LLM" in msgs[0]
+    assert "(15s)" in msgs[0]
+
+
+def test_waiting_is_noop_when_callback_none():
+    trace = AgentTrace()
+    collector = ObservationCollector(
+        trace,
+        requirements=ObservationRequirements(
+            usage=False, tool_calls=False, llm_duration=False,
+            messages=False, iterations=False,
+        ),
+    )
+    reporter = ProgressReporter(callback=None, collector=collector)
+    reporter.waiting("executor", 5)  # must not raise
+
+
 def test_none_callback_is_noop():
     trace = AgentTrace()
     collector = ObservationCollector(

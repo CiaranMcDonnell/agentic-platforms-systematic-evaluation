@@ -5,6 +5,7 @@ per-platform containers.  The host serializes StageContext to JSON,
 the container runs the entrypoint, and the result comes back as
 StageResult JSON on stdout with progress on stderr.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -16,10 +17,10 @@ from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import Any
 
-from desmet.platforms_config import get_platform_field, get_platforms_config
 from desmet.harness.context import StageContext
 from desmet.harness.resource_monitor import ResourceMonitor
 from desmet.harness.results import StageResult
+from desmet.platforms_config import get_platform_field, get_platforms_config
 
 _log = logging.getLogger(__name__)
 
@@ -32,9 +33,7 @@ _STAGE_NAMES = {"requirements", "codegen", "testing", "deploy"}
 # Built from config/platforms.yaml — maps SDK platform IDs to their pip extra.
 # Visual platforms (no pip_extra) are excluded.
 PLATFORM_EXTRA_MAP: dict[str, str] = {
-    pid: data["pip_extra"]
-    for pid, data in get_platforms_config().items()
-    if data.get("pip_extra")
+    pid: data["pip_extra"] for pid, data in get_platforms_config().items() if data.get("pip_extra")
 }
 
 
@@ -79,7 +78,8 @@ def has_image(platform_id: str) -> bool:
     try:
         result = subprocess.run(
             ["docker", "image", "inspect", tag],
-            capture_output=True, timeout=10,
+            capture_output=True,
+            timeout=10,
         )
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -105,12 +105,17 @@ def build_image(
     try:
         base_result = subprocess.run(
             [
-                "docker", "build",
-                "-f", str(_INFRA_DIR / "Dockerfile.base"),
-                "-t", _BASE_IMAGE,
+                "docker",
+                "build",
+                "-f",
+                str(_INFRA_DIR / "Dockerfile.base"),
+                "-t",
+                _BASE_IMAGE,
                 str(project_root),
             ],
-            capture_output=True, text=True, timeout=600,
+            capture_output=True,
+            text=True,
+            timeout=600,
         )
         if base_result.returncode != 0:
             _log.error("Base image build failed: %s", base_result.stderr)
@@ -130,13 +135,18 @@ def build_image(
     try:
         result = subprocess.run(
             [
-                "docker", "build",
-                "-f", str(df),
+                "docker",
+                "build",
+                "-f",
+                str(df),
                 *build_args,
-                "-t", tag,
+                "-t",
+                tag,
                 str(project_root),
             ],
-            capture_output=True, text=True, timeout=600,
+            capture_output=True,
+            text=True,
+            timeout=600,
         )
         if result.returncode != 0:
             _log.error("Image build failed for %s: %s", platform_id, result.stderr)
@@ -157,7 +167,9 @@ def delete_image(platform_id: str) -> bool:
     try:
         result = subprocess.run(
             ["docker", "rmi", tag],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -193,7 +205,9 @@ def delete_all_eval_images(
         try:
             result = subprocess.run(
                 ["docker", "rmi", _BASE_IMAGE],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             results[_BASE_IMAGE] = result.returncode == 0
         except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -208,7 +222,9 @@ def get_image_details(platform_id: str) -> dict[str, Any] | None:
     try:
         result = subprocess.run(
             ["docker", "image", "inspect", tag],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         if result.returncode != 0:
             return None
@@ -242,7 +258,8 @@ def build_image_streaming(
     try:
         probe = subprocess.run(
             ["docker", "image", "inspect", _BASE_IMAGE],
-            capture_output=True, timeout=10,
+            capture_output=True,
+            timeout=10,
         )
         need_base = probe.returncode != 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -253,12 +270,17 @@ def build_image_streaming(
         yield {"platform": platform_id, "phase": "base", "line": f"Building {_BASE_IMAGE}..."}
         proc = subprocess.Popen(
             [
-                "docker", "build",
-                "-f", str(_INFRA_DIR / "Dockerfile.base"),
-                "-t", _BASE_IMAGE,
+                "docker",
+                "build",
+                "-f",
+                str(_INFRA_DIR / "Dockerfile.base"),
+                "-t",
+                _BASE_IMAGE,
                 str(project_root),
             ],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
         )
         try:
             for line in proc.stdout:
@@ -278,13 +300,18 @@ def build_image_streaming(
 
     proc = subprocess.Popen(
         [
-            "docker", "build",
-            "-f", str(df),
+            "docker",
+            "build",
+            "-f",
+            str(df),
             *build_args,
-            "-t", tag,
+            "-t",
+            tag,
             str(project_root),
         ],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
     )
     try:
         for line in proc.stdout:
@@ -322,7 +349,9 @@ def _ensure_container(
     try:
         probe = subprocess.run(
             ["docker", "inspect", "-f", "{{.State.Running}}", name],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         if probe.returncode == 0 and "true" in probe.stdout.lower():
             return name
@@ -332,7 +361,8 @@ def _ensure_container(
     # Remove stale container if exists
     subprocess.run(
         ["docker", "rm", "-f", name],
-        capture_output=True, timeout=10,
+        capture_output=True,
+        timeout=10,
     )
 
     # Start container
@@ -340,13 +370,35 @@ def _ensure_container(
     env = {**os.environ, "MSYS_NO_PATHCONV": "1"}
     tag = image_name(platform_id)
 
-    # Pass through API keys and config env vars
+    # Pass through API keys and config env vars.
+    # The deploy stage's _deploy_remote tool runs INSIDE the container
+    # but the host owns the deploy credentials, so DEPLOY_* must be
+    # forwarded explicitly (the host .env loads them via load_dotenv()
+    # but they don't reach the container otherwise).  DEPLOY_KEY_PATH
+    # is handled separately below: the host file is bind-mounted into
+    # the container and the env var is rewritten to point at the
+    # in-container path.
     _PASSTHROUGH_VARS = [
-        "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY",
-        "OPENROUTER_API_KEY", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT",
-        "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST",
-        "LANGSMITH_API_KEY", "LANGCHAIN_API_KEY",
-        "DESMET_MODEL", "DESMET_TEMPERATURE", "DESMET_PROVIDER",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GOOGLE_API_KEY",
+        "OPENROUTER_API_KEY",
+        "AZURE_OPENAI_API_KEY",
+        "AZURE_OPENAI_ENDPOINT",
+        "LANGFUSE_PUBLIC_KEY",
+        "LANGFUSE_SECRET_KEY",
+        "LANGFUSE_HOST",
+        "LANGSMITH_API_KEY",
+        "LANGCHAIN_API_KEY",
+        "DESMET_MODEL",
+        "DESMET_TEMPERATURE",
+        "DESMET_PROVIDER",
+        "DESMET_DEPLOY_MODE",
+        "DEPLOY_HOST",
+        "DEPLOY_PORT",
+        "DEPLOY_USER",
+        "DEPLOY_REPO",
+        "DEPLOY_BASE_PATH",
     ]
     env_flags: list[str] = []
     for var in _PASSTHROUGH_VARS:
@@ -359,13 +411,38 @@ def _ensure_container(
                 val = "http://desmet-langfuse-web:3000"
             env_flags.extend(["-e", f"{var}={val}"])
 
+    # Bind-mount the deploy SSH key (read-only) when remote deploy is
+    # configured.  The container's ssh client will refer to the key via
+    # /run/secrets/deploy_key, so the env var DEPLOY_KEY_PATH inside
+    # the container is set to that fixed path regardless of where the
+    # host file lives.
+    deploy_mode = os.environ.get("DESMET_DEPLOY_MODE", "remote")
+    deploy_key_host = os.environ.get("DEPLOY_KEY_PATH", "")
+    deploy_key_mount: list[str] = []
+    if deploy_mode != "local" and deploy_key_host:
+        expanded = os.path.expanduser(deploy_key_host)
+        if os.path.isfile(expanded):
+            host_path = str(Path(expanded).resolve()).replace("\\", "/")
+            deploy_key_mount = [
+                "-v",
+                f"{host_path}:/run/secrets/deploy_key:ro",
+            ]
+            env_flags.extend(["-e", "DEPLOY_KEY_PATH=/run/secrets/deploy_key"])
+        else:
+            _log.warning(
+                "DEPLOY_KEY_PATH=%s does not exist on host; deploy stage "
+                "will fall back to DEPLOY_KEY_PATH-required error",
+                deploy_key_host,
+            )
+
     # Join desmet-network if it exists (created by docker-compose for
     # Langfuse, Postgres, etc.), otherwise run on the default bridge.
     network_flags: list[str] = []
     try:
         probe = subprocess.run(
             ["docker", "network", "inspect", "desmet-network"],
-            capture_output=True, timeout=10,
+            capture_output=True,
+            timeout=10,
         )
         if probe.returncode == 0:
             network_flags = ["--network", "desmet-network"]
@@ -374,16 +451,27 @@ def _ensure_container(
 
     result = subprocess.run(
         [
-            "docker", "run", "-d",
-            "--name", name,
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            name,
             *network_flags,
             *env_flags,
-            "-v", f"{workspace_abs}:/workspace",
-            "-w", "/workspace",
+            "-v",
+            f"{workspace_abs}:/workspace",
+            *deploy_key_mount,
+            "-w",
+            "/workspace",
             tag,
-            "bash", "-c", "sleep infinity",
+            "bash",
+            "-c",
+            "sleep infinity",
         ],
-        capture_output=True, text=True, timeout=60, env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
     )
     if result.returncode != 0:
         raise RuntimeError(f"Failed to start container {name}: {result.stderr}")
@@ -396,10 +484,42 @@ def stop_container(platform_id: str, story_id: str) -> None:
     try:
         subprocess.run(
             ["docker", "rm", "-f", name],
-            capture_output=True, timeout=15,
+            capture_output=True,
+            timeout=15,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
+
+
+def _current_trace_propagation_env() -> list[str]:
+    """Build ``-e TRACEPARENT=...`` flags from the current OTel span.
+
+    Called immediately before ``docker exec`` so the container's
+    Langfuse SDK can attach to the host's ongoing stage span (rather
+    than starting its own root trace).  Returns an empty list when no
+    span is active or the OTel SDK is unavailable, so non-traced
+    callers (tests, dry runs) keep working.
+
+    The W3C ``traceparent`` format is ``00-<trace_id>-<span_id>-<flags>``.
+    """
+    try:
+        from opentelemetry import trace as otel_trace
+
+        span = otel_trace.get_current_span()
+        ctx = span.get_span_context() if span else None
+        if not ctx or not ctx.is_valid:
+            return []
+        traceparent = (
+            f"00-{format(ctx.trace_id, '032x')}"
+            f"-{format(ctx.span_id, '016x')}"
+            f"-{format(ctx.trace_flags, '02x')}"
+        )
+        flags = ["-e", f"TRACEPARENT={traceparent}"]
+        if ctx.trace_state:
+            flags.extend(["-e", f"TRACESTATE={ctx.trace_state.to_header()}"])
+        return flags
+    except Exception:  # pragma: no cover — propagation is best-effort
+        return []
 
 
 async def run_stage_in_container(
@@ -437,11 +557,22 @@ async def run_stage_in_container(
     with open(ctx_file, "w") as f:
         json.dump(ctx_data, f)
 
-    # Run entrypoint via docker exec, streaming stderr
+    # Run entrypoint via docker exec, streaming stderr.
+    # Pass the host's current OTel span context as TRACEPARENT so that
+    # all spans created inside the container — Langfuse, LangChain
+    # callbacks, OpenInference instrumentors — become children of the
+    # host's stage span and land in a single Langfuse trace.
     env = {**os.environ, "MSYS_NO_PATHCONV": "1"}
+    trace_env_flags = _current_trace_propagation_env()
     proc = await asyncio.create_subprocess_exec(
-        "docker", "exec", container,
-        "/app/.venv/bin/python", "-m", "desmet.harness.entrypoint", "/workspace/.desmet-context.json",
+        "docker",
+        "exec",
+        *trace_env_flags,
+        container,
+        "/app/.venv/bin/python",
+        "-m",
+        "desmet.harness.entrypoint",
+        "/workspace/.desmet-context.json",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=env,
@@ -486,7 +617,11 @@ async def run_stage_in_container(
 
     # Parse result — extract the JSON object from stdout, ignoring any
     # stray output (library warnings, print statements) before/after it.
-    raw = stdout_data.decode("utf-8", errors="replace") if isinstance(stdout_data, bytes) else stdout_data
+    raw = (
+        stdout_data.decode("utf-8", errors="replace")
+        if isinstance(stdout_data, bytes)
+        else stdout_data
+    )
     raw = raw.strip()
 
     if not raw:
@@ -510,7 +645,7 @@ async def run_stage_in_container(
             resource_metrics=resource_summary.to_dict(),
         )
 
-    json_str = raw[json_start:json_end + 1]
+    json_str = raw[json_start : json_end + 1]
 
     try:
         result_data = json.loads(json_str)
@@ -521,7 +656,7 @@ async def run_stage_in_container(
         # Log a snippet around the error position for debugging
         if isinstance(e, json.JSONDecodeError):
             pos = e.pos or 0
-            snippet = json_str[max(0, pos - 80):pos + 80]
+            snippet = json_str[max(0, pos - 80) : pos + 80]
             return StageResult(
                 platform_id=platform_id,
                 stage_name=stage_name,

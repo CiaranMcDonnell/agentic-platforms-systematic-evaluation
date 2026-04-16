@@ -163,7 +163,7 @@ Four user stories of increasing complexity are run through the pipeline, providi
   caption: [User Stories for Pipeline Evaluation],
 )
 
-The framework is designed for 9 platforms × 4 stories × 4 stages = 144 stage-level evaluations. Layer 3 pipeline benchmarking is conducted for the five platforms with implemented adapters (LangGraph, CrewAI, OpenAI Agents SDK, Google ADK, Microsoft Agent Framework), yielding 5 × 4 × 4 = 80 stage-level evaluations; the remaining four platforms are assessed at Layers 1--2 only.
+The framework is designed for 9 platforms × 4 stories × 4 stages = 144 stage-level evaluations. Layer 3 pipeline benchmarking is conducted for the eight platforms with implemented adapters (LangGraph, CrewAI, OpenAI Agents SDK, Google ADK, Microsoft Agent Framework, Flowise, LangFlow, N8n), yielding 8 × 4 × 4 = 128 stage-level evaluations; Dify is assessed at Layers 1--2 only as a partial integration, because its marketplace-only plugin ecosystem (new in Dify~1.13) blocks fully automated execution (see @limitations).
 
 == Three-Layer Evaluation Framework
 

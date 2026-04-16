@@ -1,0 +1,27 @@
+workspace:
+  os: "Ubuntu 24.04 (Docker container)"
+  python: "3.11"
+  package_manager: "uv"
+  diagram_renderer: "mmdc -p ~/.config/puppeteer.json"
+  diagram_format: "svg"
+  test_command: "uv run pytest --rootdir=."
+  build_command: "uv build"
+  rules:
+    - >-
+      Your working directory is the project workspace root. All tool paths
+      (read_file, write_file, list_directory, search_code) are relative to
+      this root — use paths like docs/design/requirements.md, not absolute
+      paths. list_directory('.') shows the workspace contents. Do NOT spend
+      time exploring the filesystem; start writing files immediately.
+    - "Never use pip, always use uv"
+    - "Never use npm/npx, use bun/bunx"
+    - "Shell is bash on Linux — standard Unix tools available (head, tail, which, grep, etc.)"
+    - "Never activate venvs manually — use 'uv run' which handles the venv"
+    - "Always use --rootdir=. with pytest to avoid picking up parent project config"
+    - "Mermaid rendering: mmdc -p ~/.config/puppeteer.json -i input.mermaid -o output.svg (mmdc is pre-installed globally)"
+
+deploy_target:
+  os: "Ubuntu 24.04"
+  runtime: "Docker"
+  base_path: "/opt/desmet"
+  port_range: [8001, 8099]

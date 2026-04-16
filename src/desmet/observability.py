@@ -1,5 +1,10 @@
 """
-Observability: structured logging (structlog) and optional Langfuse tracing.
+Observability: structured logging (structlog) and Langfuse tracing.
+
+Langfuse is a core dependency — evaluation runs require it for trace
+storage and the management console surfaces Langfuse data in every
+dashboard view.  ``init_langfuse()`` raises ``RuntimeError`` when the
+SDK is missing or the required environment variables are not set.
 
 Usage::
 
@@ -79,14 +84,10 @@ def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
 # Langfuse (optional)
 # ---------------------------------------------------------------------------
 
-_Langfuse: type | None = None
-
 try:
     from langfuse import Langfuse as _Langfuse  # type: ignore[assignment]  # noqa: N811
-
-    _langfuse_available = True
 except ImportError:
-    _langfuse_available = False
+    _Langfuse = None
 
 _langfuse_client: Any | None = None
 
@@ -105,29 +106,36 @@ def _suppress_otel_noise() -> None:
         logging.getLogger(name).setLevel(logging.CRITICAL)
 
 
-def init_langfuse() -> Any | None:
+def init_langfuse() -> Any:
     """Initialise the Langfuse client from environment variables.
 
-    Returns the client instance, or ``None`` when Langfuse is not installed or
-    the required env vars are missing.
+    Langfuse is a core dependency — this function raises ``RuntimeError``
+    when the SDK is not installed or the required environment variables
+    (``LANGFUSE_PUBLIC_KEY``, ``LANGFUSE_SECRET_KEY``) are missing.
+
+    Returns the connected client instance.
     """
     global _langfuse_client  # noqa: PLW0603
 
-    if not _langfuse_available:
-        _log.info("langfuse_status", status="not installed — tracing disabled")
-        _suppress_otel_noise()
-        return None
+    # Already initialised — return cached client.
+    if _langfuse_client is not None:
+        return _langfuse_client
+
+    if _Langfuse is None:
+        raise RuntimeError(
+            "Langfuse SDK is not installed.  Install it with: uv pip install langfuse"
+        )
 
     public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
     secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
     host = os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com")
 
     if not public_key or not secret_key:
-        _log.info("langfuse_status", status="not configured — set LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY")
-        _suppress_otel_noise()
-        return None
+        raise RuntimeError(
+            "Langfuse is not configured.  Set LANGFUSE_PUBLIC_KEY and "
+            "LANGFUSE_SECRET_KEY in your .env file."
+        )
 
-    assert _Langfuse is not None  # guarded by _langfuse_available check above
     _langfuse_client = _Langfuse(
         public_key=public_key,
         secret_key=secret_key,
@@ -387,3 +395,76 @@ def record_generation(
         metadata=metadata or {},
     ):
         pass  # generation is recorded and ended on context exit
+
+
+def replay_trace_to_langfuse(
+    parent: Any | None,
+    stage_name: str,
+    trace: Any,
+    model: str | None = None,
+) -> None:
+    """Replay an :class:`AgentTrace` as nested Langfuse observations.
+
+    Creates a span per conversation message and per tool call so the
+    Langfuse UI shows the full execution timeline.  Called from the
+    host runner after the container returns its ``StageResult``.
+
+    No-op when *parent* is ``None``.
+    """
+    if parent is None:
+        return
+
+    # Build usage summary from the trace for the top-level generation
+    input_tokens = getattr(trace, "total_tokens_input", 0) or 0
+    output_tokens = getattr(trace, "total_tokens_output", 0) or 0
+    usage = {}
+    if input_tokens or output_tokens:
+        usage = {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        }
+    cost_usd = getattr(trace, "total_cost_usd", 0.0) or 0.0
+
+    has_errors = bool(getattr(trace, "errors", None))
+
+    with parent.start_as_current_observation(
+        name=f"agent-{stage_name}",
+        as_type="generation",
+        model=model,
+        usage_details=usage,
+        cost_details={"total": cost_usd} if cost_usd > 0 else {},
+        level="ERROR" if has_errors else "DEFAULT",
+        metadata={
+            "stage": stage_name,
+            **(getattr(trace, "framework_metrics", None) or {}),
+        },
+    ) as stage_obs:
+        # Record each message as a nested observation
+        for msg in getattr(trace, "messages", []):
+            obs_type = "generation" if msg.role == "assistant" else None
+            kwargs: dict[str, Any] = {
+                "name": f"{msg.role}-message",
+                "input": msg.content[:200] if msg.content else "",
+                "metadata": {"role": msg.role, **(msg.metadata or {})},
+            }
+            if obs_type:
+                kwargs["as_type"] = obs_type
+                kwargs["model"] = model
+            with stage_obs.start_as_current_observation(**kwargs):
+                pass
+
+        # Record each tool call as a nested span
+        for tc in getattr(trace, "tool_calls", []):
+            with stage_obs.start_as_current_observation(
+                name=f"tool-{tc.tool_name}",
+                input=tc.arguments,
+                output=str(tc.result)[:500] if tc.result else None,
+                level="ERROR" if not tc.success else "DEFAULT",
+                metadata={
+                    "tool_name": tc.tool_name,
+                    "success": tc.success,
+                    "duration_ms": tc.duration_ms,
+                },
+            ):
+                pass

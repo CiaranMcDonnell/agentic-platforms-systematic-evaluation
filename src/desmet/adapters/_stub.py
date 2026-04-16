@@ -117,7 +117,9 @@ def create_visual_stub_adapter(
         async def create_workflow(self, workflow_definition: dict) -> str:
             raise NotImplementedError(_msg)
 
-        async def execute_workflow(self, workflow_id: str, inputs: dict[str, Any]) -> dict[str, Any]:
+        async def execute_workflow(
+            self, workflow_id: str, inputs: dict[str, Any]
+        ) -> dict[str, Any]:
             raise NotImplementedError(_msg)
 
         async def delete_workflow(self, workflow_id: str) -> None:

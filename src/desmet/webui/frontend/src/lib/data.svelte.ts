@@ -47,8 +47,8 @@ export async function initData(): Promise<void> {
       fetchStories(),
       fetchConfig(),
     ]);
-    store.platforms = (pRes as any).platforms || [];
-    store.stories = (sRes as any).stories || [];
+    store.platforms = pRes.platforms ?? [];
+    store.stories = sRes.stories ?? [];
     store.config = cfg;
     store.initialized = true;
 

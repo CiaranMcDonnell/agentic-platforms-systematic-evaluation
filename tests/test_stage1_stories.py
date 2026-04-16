@@ -4,7 +4,7 @@ import pytest
 
 from desmet.harness.context import StageContext
 from desmet.harness.story import DifficultyLevel, UserStory
-from desmet.stages.stage1_stories.loader import prepare_stage_context
+from desmet.harness.story_loader import prepare_stage_context
 
 
 @pytest.fixture

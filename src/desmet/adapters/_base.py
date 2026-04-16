@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
+from desmet.adapters._observation import ObservationCollector, ObservationRequirements
 from desmet.adapters._prompts import (
     build_codegen_prompt,
     build_deploy_prompt,
@@ -21,16 +22,15 @@ from desmet.adapters._prompts import (
     build_system_message,
     build_testing_prompt,
 )
-from desmet.adapters._tools import ToolFormat, create_tools, reset_loop_tracker
-from desmet.adapters._validation import audit_workspace
-from desmet.adapters._observation import ObservationCollector, ObservationRequirements
 from desmet.adapters._retry import ProgressReporter, RetryPolicy
+from desmet.adapters._tools import ToolFormat, create_tools, reset_loop_tracker
 from desmet.adapters._tracing import (
     build_stage_result,
     compute_framework_metrics,
     finish_trace,
     start_trace,
 )
+from desmet.adapters._validation import audit_workspace
 from desmet.harness.adapter import BasePlatformAdapter
 from desmet.harness.context import StageContext
 from desmet.harness.results import (
@@ -72,7 +72,11 @@ class ToolAgentAdapter(BasePlatformAdapter):
         reporting.  The caller (``_execute_stage``) creates all three and
         seals the collector after this method returns.
 
-        Returns ``(iterations, hit_limit)``.
+        Returns ``(iterations, success)`` where *success* is ``True`` only
+        if the workspace passes ``policy.validate()`` at the end of the run.
+        Adapters should call ``policy.validate()`` themselves to determine
+        the final success state — exhausting the retry budget without a
+        passing validator MUST return ``success=False``.
         """
         ...
 
@@ -127,15 +131,19 @@ class ToolAgentAdapter(BasePlatformAdapter):
                 callback=context.progress_callback,
                 collector=collector,
             )
-            iterations, hit_limit = await self._run_agent(
-                stage_name, prompt, system_msg, tools,
-                collector, context, policy, progress,
+            iterations, success = await self._run_agent(
+                stage_name,
+                prompt,
+                system_msg,
+                tools,
+                collector,
+                context,
+                policy,
+                progress,
             )
             warnings = collector.seal()
             if warnings:
-                log = logging.getLogger(
-                    f"desmet.adapters.{self.platform_info.id}"
-                )
+                log = logging.getLogger(f"desmet.adapters.{self.platform_info.id}")
                 for w in warnings:
                     log.warning(
                         "Observation gap [%s/%s]: %s",
@@ -148,12 +156,12 @@ class ToolAgentAdapter(BasePlatformAdapter):
             # Post-stage scope audit
             baseline_files = set(context.metadata.get("baseline_files", []))
             scope_warnings = audit_workspace(
-                stage_name, str(context.workspace), baseline_files,
+                stage_name,
+                str(context.workspace),
+                baseline_files,
             )
             if scope_warnings:
-                log = logging.getLogger(
-                    f"desmet.adapters.{self.platform_info.id}"
-                )
+                log = logging.getLogger(f"desmet.adapters.{self.platform_info.id}")
                 for sw in scope_warnings:
                     log.warning(
                         "Stage scope [%s/%s]: %s",
@@ -163,8 +171,12 @@ class ToolAgentAdapter(BasePlatformAdapter):
                     )
 
             return build_stage_result(
-                result_cls, self.platform_info.id, stage_name,
-                trace, success=not hit_limit, iterations=iterations,
+                result_cls,
+                self.platform_info.id,
+                stage_name,
+                trace,
+                success=success,
+                iterations=iterations,
                 framework_metrics=fm,
             )
         except Exception as e:
@@ -173,15 +185,21 @@ class ToolAgentAdapter(BasePlatformAdapter):
             # Fall back to tool_calls count if mark_iterations was never called.
             iterations = trace.total_iterations or len(trace.tool_calls)
             return build_stage_result(
-                result_cls, self.platform_info.id, stage_name,
-                trace, success=False, iterations=iterations,
+                result_cls,
+                self.platform_info.id,
+                stage_name,
+                trace,
+                success=False,
+                iterations=iterations,
                 error_message=str(e),
             )
 
     # ── Concrete SDLC stage methods ──────────────────────────────────────
 
     async def generate_requirements(self, context: StageContext) -> RequirementsResult:
-        return await self._execute_stage("requirements", build_requirements_prompt, RequirementsResult, context)
+        return await self._execute_stage(
+            "requirements", build_requirements_prompt, RequirementsResult, context
+        )
 
     async def generate_code(self, context: StageContext) -> CodeResult:
         return await self._execute_stage("codegen", build_codegen_prompt, CodeResult, context)

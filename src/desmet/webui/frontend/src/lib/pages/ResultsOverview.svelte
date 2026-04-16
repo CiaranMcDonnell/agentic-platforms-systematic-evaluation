@@ -3,18 +3,20 @@
   import type { OverviewData } from '../api';
   import EChart from '../components/EChart.svelte';
   import DimScorePills from '../components/DimScorePills.svelte';
-  import RunSelector from '../components/RunSelector.svelte';
   import FrameworkMetricsTable from '../components/comparison/FrameworkMetricsTable.svelte';
   import { selectedResultsRunId } from '../stores';
 
   let data = $state<OverviewData | null>(null);
+  let overviewError = $state('');
 
   let currentRunId = $state<string | null>(null);
   selectedResultsRunId.subscribe((v) => (currentRunId = v));
 
   $effect(() => {
     const rid = currentRunId;
-    fetchOverview(rid).then((d) => (data = d));
+    fetchOverview(rid)
+      .then((d) => (data = d))
+      .catch(() => (overviewError = 'Failed to load overview'));
   });
 
   function hasAnyScore(dimScores: Record<string, number | null | undefined> | undefined): boolean {
@@ -24,10 +26,11 @@
 </script>
 
 <div>
-  <RunSelector />
   <h1 style="margin-bottom: 28px;">Results Overview</h1>
 
-  {#if !data}
+  {#if overviewError}
+    <div class="card" style="padding: 40px; color: var(--red); text-align: center;">{overviewError}</div>
+  {:else if !data}
     <div class="card" style="padding: 40px; color: var(--text-2); text-align: center;">Loading...</div>
   {:else if !data.has_data}
     <div class="card" style="padding: 48px; color: var(--text-2); text-align: center;">

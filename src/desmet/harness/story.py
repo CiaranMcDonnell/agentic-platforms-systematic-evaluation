@@ -159,8 +159,22 @@ class StoryResult:
 
     @property
     def success(self) -> bool:
-        """Whether the story was successfully completed."""
-        return self.status == StoryStatus.COMPLETED
+        """Whether the story was successfully completed.
+
+        Requires COMPLETED status *and* all stages to have passed.
+        A story whose runner finished without crashing but whose
+        individual stages failed (e.g. CrewAI execution timeout)
+        is not considered successful.
+        """
+        if self.status != StoryStatus.COMPLETED:
+            return False
+        if self.raw_result and isinstance(self.raw_result, dict):
+            return all(
+                sr.success
+                for sr in self.raw_result.values()
+                if hasattr(sr, "success")
+            )
+        return True
 
     @property
     def criteria_pass_rate(self) -> float:

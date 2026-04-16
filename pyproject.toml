@@ -31,31 +31,35 @@ dependencies = [
     "fastapi>=0.109.0",
     "uvicorn[standard]>=0.25.0",
     "websockets>=12.0",
-    # LangGraph / LangChain v1
+]
+
+[project.optional-dependencies]
+# ── Platform adapters (installed per-container to avoid dependency conflicts) ──
+langgraph = [
     "langchain>=1.0.0",
     "langgraph>=1.0.0",
     "langgraph-sdk>=0.1.0",
     "langgraph-checkpoint>=4.0.0",
     "langchain-openai>=1.0.0",
     "langchain-anthropic>=1.0.0",
-    # CrewAI
+]
+crewai = [
     "crewai[tools]>=1.12.2",
-    # CrewAI OTEL tracing (crew/task/agent/tool spans)
     "openinference-instrumentation-crewai>=1.0.0",
-    # OpenAI Agents SDK
+]
+openai-agents = [
     "openai-agents>=0.1.0",
-    # Microsoft Agent Framework
+]
+agent-framework = [
     "agent-framework-core>=1.0rc5",
     "agent-framework-orchestrations>=1.0b0",
 ]
-
-[project.optional-dependencies]
+google-adk = [
+    "google-adk[extensions]>=1.0.0",
+]
 # Static chart export (PNG/SVG for reports)
 export = [
     "kaleido>=1.0.0",
-]
-google-adk = [
-    "google-adk[extensions]>=1.0.0",
 ]
 
 # ── Visual/workflow platforms ──
@@ -96,23 +100,23 @@ required-environments = [
     "sys_platform == 'win32' and platform_machine == 'AMD64'",
 ]
 
-# Many platform SDKs pin conflicting transitive dependency versions (especially
-# pydantic, openai, litellm). Each platform extra is intended to be installed in
-# isolation — pick ONE per virtual-env. Declare all known conflicts so uv can
-# resolve the base dependencies without trying to unify incompatible extras.
+# Platform SDK extras have incompatible opentelemetry version pins:
+#   crewai <1.35 | google-adk >=1.36,<1.39 | agent-framework >=1.39
+# Each extra is installed in its own Docker container, never co-installed.
+# The conflicts declaration lets uv resolve each extra independently.
 conflicts = [
+    [
+        { extra = "crewai" },
+        { extra = "agent-framework" },
+    ],
+    [
+        { extra = "crewai" },
+        { extra = "google-adk" },
+    ],
     [
         { extra = "agent-framework" },
         { extra = "google-adk" },
     ],
-]
-
-# agent-framework-core requires opentelemetry-api>=1.39 but crewai pins <1.35.
-# Since agent-framework and crewai are declared conflicting (never co-installed),
-# loosen the OTEL lower bounds so uv can resolve both extras independently.
-override-dependencies = [
-    "opentelemetry-api>=1.34.0",
-    "opentelemetry-sdk>=1.34.0",
 ]
 
 

@@ -1,5 +1,4 @@
 <script lang="ts">
-  import RunSelector from '../components/RunSelector.svelte';
   import VerdictBand from '../components/comparison/VerdictBand.svelte';
   import RubricMatrixPanel from '../components/comparison/RubricMatrixPanel.svelte';
   import FrameworkMetricsTable from '../components/comparison/FrameworkMetricsTable.svelte';
@@ -12,7 +11,6 @@
 </script>
 
 <div>
-  <RunSelector />
   <h1 style="margin-bottom: 28px;">Platform Comparison</h1>
 
   <!-- Verdict: rankings + completion -->

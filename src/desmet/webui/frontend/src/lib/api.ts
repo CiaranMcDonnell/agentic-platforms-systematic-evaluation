@@ -2,6 +2,9 @@
  * Typed API client for the DESMET FastAPI backend.
  */
 
+import { get } from 'svelte/store';
+import { selectedResultsRunId } from './stores';
+
 // ── Types ───────────────────────────────
 
 export interface Platform {
@@ -323,9 +326,6 @@ export const fetchStories = (difficulty?: string) =>
 export const fetchRuns = () =>
   request<{ runs: Run[] }>('/api/runs');
 
-export const fetchDashboardStats = () =>
-  request<DashboardStats>('/api/dashboard/stats');
-
 export const fetchRun = (id: string) =>
   request<Run>('/api/runs/' + id);
 
@@ -413,33 +413,52 @@ export interface ResultRun {
 export const fetchResultRuns = () =>
   request<{ runs: ResultRun[] }>('/api/result-runs');
 
-export const fetchOverview = (runId?: string | null) => {
-  const qs = runId ? `?run_id=${runId}` : '';
-  return request<OverviewData>(`/api/dashboard/overview${qs}`);
-};
+/** Append the globally-selected ``?run_id=...`` to a URL when present.
+ *
+ * Reads from the ``selectedResultsRunId`` store so every dashboard fetch
+ * respects the run chosen in the header dropdown (or URL). Callers can
+ * override by passing an explicit ``runId`` argument — ``null`` forces
+ * "latest" (no query param), ``undefined`` means "inherit the store".
+ */
+function withRun(path: string, runId?: string | null): string {
+  const rid = runId !== undefined ? runId : get(selectedResultsRunId);
+  if (!rid) return path;
+  const sep = path.includes('?') ? '&' : '?';
+  return `${path}${sep}run_id=${encodeURIComponent(rid)}`;
+}
+
+export const fetchOverview = (runId?: string | null) =>
+  request<OverviewData>(withRun('/api/dashboard/overview', runId));
 
 export const fetchChartJSON = (endpoint: string) =>
-  request<{ chart: Record<string, unknown> | null }>(endpoint);
+  request<{ chart: Record<string, unknown> | null }>(withRun(endpoint));
 
 export const fetchRubric = () =>
   request<ScoringRubric>('/api/dashboard/scoring/rubric');
 
-export const fetchScoringMatrix = (runId?: string | null) => {
-  const qs = runId ? `?run_id=${runId}` : '';
-  return request<ScoringMatrixData>(`/api/dashboard/scoring/matrix${qs}`);
-};
+export const fetchScoringMatrix = (runId?: string | null) =>
+  request<ScoringMatrixData>(withRun('/api/dashboard/scoring/matrix', runId));
 
 export const fetchStoryScore = (pid: string, sid: string) =>
-  request<StoryScoreData>(`/api/dashboard/scoring/${pid}/${sid}`);
+  request<StoryScoreData>(withRun(`/api/dashboard/scoring/${pid}/${sid}`));
 
 export const fetchAgentGraph = (pid: string, sid: string) =>
   request<CommunicationGraph>(`/api/dashboard/graph/${pid}/${sid}`);
 
 export const submitScore = (data: { platform_id: string; story_id: string; scores: Record<string, number>; notes: Record<string, string> }) =>
-  request<{ success: boolean }>('/api/dashboard/scoring/submit', { method: 'POST', body: JSON.stringify(data) });
+  request<{ success: boolean }>(
+    withRun('/api/dashboard/scoring/submit'),
+    { method: 'POST', body: JSON.stringify(data) },
+  );
+
+export const recomputeScores = () =>
+  request<{ run_id: string; platforms: Record<string, Record<string, number>> }>(
+    withRun('/api/dashboard/scoring/recompute'),
+    { method: 'POST' },
+  );
 
 export const fetchStoryDetail = (sid: string) =>
-  request<StoryDetailData>(`/api/dashboard/story/${sid}`);
+  request<StoryDetailData>(withRun(`/api/dashboard/story/${sid}`));
 
 export interface FrameworkMetricsPlatform {
   platform_id: string;
@@ -448,12 +467,11 @@ export interface FrameworkMetricsPlatform {
   metrics: Record<string, number | null>;
 }
 
-export const fetchFrameworkMetrics = (runId?: string | null) => {
-  const qs = runId ? `?run_id=${runId}` : '';
-  return request<{ platforms: FrameworkMetricsPlatform[] }>(
-    `/api/dashboard/framework-metrics${qs}`
-  );
-};
+export const fetchFrameworkMetrics = (runId?: string | null) =>
+  request<{ platforms: FrameworkMetricsPlatform[] }>(withRun('/api/dashboard/framework-metrics', runId));
+
+export const fetchDashboardStats = () =>
+  request<DashboardStats>(withRun('/api/dashboard/stats'));
 
 // ── Langfuse ────────────────────────────
 

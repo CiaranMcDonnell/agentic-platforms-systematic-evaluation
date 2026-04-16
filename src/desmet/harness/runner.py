@@ -234,8 +234,19 @@ class EvaluationRunner:
         self,
         platform_id: str,
         story_id: str,
+        *,
+        run_id: str | None = None,
     ) -> StoryResult:
-        """Run a single story on a single platform."""
+        """Run a single story on a single platform.
+
+        When *run_id* is provided, all executions are saved under that
+        existing persistent run instead of creating a new one.  This is
+        what callers running the same story across multiple platforms
+        (e.g. the management console "Run on selected platforms" loop)
+        must use, otherwise each call creates its own DuckDB run and the
+        Scoring page — which loads the latest run by default — only sees
+        the platform that ran last.
+        """
         if platform_id not in self.platforms:
             raise ValueError(f"Unknown platform: {platform_id}")
 
@@ -244,12 +255,15 @@ class EvaluationRunner:
             raise ValueError(f"Unknown story: {story_id}")
 
         adapter = self.platforms[platform_id]
-        self._current_run_id = self.store.create_run(
+        self._current_run_id = run_id or self.store.create_run(
             model=os.environ.get("DESMET_MODEL"),
             temperature=float(os.environ.get("DESMET_TEMPERATURE", "0")),
             platforms_filter=[platform_id],
             stories_filter=[story_id],
         )
+        # Track whether we own the run lifecycle so a shared run isn't
+        # finished prematurely by the first platform to complete.
+        self._owns_current_run = run_id is None
         await adapter.initialize()
 
         # Ensure metrics container exists for this platform
@@ -283,7 +297,8 @@ class EvaluationRunner:
                 self.metrics.finalize_platform(platform_id)
                 self._persist_platform_scores(platform_id)
                 self._export_results()
-                self.store.finish_run(self._current_run_id)
+                if getattr(self, "_owns_current_run", True):
+                    self.store.finish_run(self._current_run_id)
                 return repeat_results[-1]
             finally:
                 await adapter.shutdown()

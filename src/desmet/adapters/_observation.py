@@ -15,9 +15,11 @@ from desmet.adapters._tracing import (
     finish_trace,
     normalize_usage,
     record_llm_duration,
-    record_message as _record_message,
     record_tool_call,
     record_usage,
+)
+from desmet.adapters._tracing import (
+    record_message as _record_message,
 )
 from desmet.harness.trace import AgentTrace
 
@@ -164,9 +166,7 @@ class ObservationCollector:
         req = self._requirements
 
         if req.usage and self._usage_count == 0:
-            warnings.append(
-                "No token usage recorded (expected at least 1 LLM response)"
-            )
+            warnings.append("No token usage recorded (expected at least 1 LLM response)")
         if req.tool_calls and self._tool_call_count == 0:
             warnings.append("No tool calls recorded")
         if req.llm_duration and self._llm_duration_total_ms == 0.0:

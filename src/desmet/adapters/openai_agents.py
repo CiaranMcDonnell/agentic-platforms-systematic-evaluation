@@ -124,7 +124,12 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
         from openai import AsyncOpenAI
         from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
 
-        client = AsyncOpenAI(base_url=cfg.base_url, api_key=cfg.api_key)
+        client = AsyncOpenAI(
+            base_url=cfg.base_url,
+            api_key=cfg.api_key,
+            timeout=cfg.timeout_seconds,
+            max_retries=cfg.max_retries,
+        )
         return OpenAIChatCompletionsModel(model=cfg.model, openai_client=client)
 
     async def shutdown(self) -> None:
@@ -162,7 +167,8 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
     ) -> tuple[int, bool]:
         """Run a 3-agent handoff chain: planner → executor → reviewer.
 
-        Returns (total_iterations, hit_limit).
+        Returns (total_iterations, success) where success is True iff the
+        workspace passes validation at the end of the run.
         """
         from agents import Agent, ModelSettings, Runner
         from agents.exceptions import MaxTurnsExceeded, OutputGuardrailTripwireTriggered
@@ -173,7 +179,7 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
 
         total_iterations = 0
         tool_call_count = 0
-        hit_limit = False
+        validation_succeeded = False
 
         collector.record_message("user", prompt)
 
@@ -249,19 +255,25 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
         # ── Step 3: Retry loop ─────────────────────────────────────────────
         # Give each attempt a generous turn budget. The planner used ~3 turns,
         # so the remaining budget is split across retry attempts.
-        max_turns = max(10, (context.max_iterations - 3) // policy.max_retries)
+        max_turns = max(10, (context.max_iterations - 3) // max(1, policy.max_retries))
         result = None
+        last_feedback = ""
 
         for attempt in range(policy.total_attempts()):
             try:
                 if result is None:
                     input_msg = prompt
                 else:
-                    # Retry with conversation carry-forward
+                    # Retry with conversation carry-forward AND the actual
+                    # validator feedback so the model knows what to fix.
                     input_msg = result.to_input_list() + [
                         {
                             "role": "user",
-                            "content": f"Validation failed (attempt {attempt}/{policy.total_attempts()}). Fix issues.",
+                            "content": (
+                                f"Validation failed (attempt {attempt}/{policy.total_attempts()}). "
+                                f"Validator feedback:\n{last_feedback or '(no feedback available)'}\n"
+                                f"Address the specific issue above before stopping."
+                            ),
                         }
                     ]
 
@@ -281,20 +293,21 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
                 llm_time_estimate = max(0.0, run_duration_ms - tool_time_in_run)
                 collector.record_llm_response(raw_usage=None, duration_ms=llm_time_estimate)
 
-                if total_iterations >= context.max_iterations:
-                    hit_limit = True
-                    break
-
-                # If we got here without guardrail tripping, validation passed
+                # Reaching here means Runner.run() completed without
+                # OutputGuardrailTripwireTriggered → the work passed
+                # validation.  Report success even if the iteration
+                # count happens to land at or above max_iterations: a
+                # stage that produced the required artifacts within the
+                # budget is a success, not a budget overrun.
                 progress.validation_passed()
+                validation_succeeded = True
                 break
 
             except OutputGuardrailTripwireTriggered:
                 total_iterations += 1
-                _, feedback = policy.validate()
-                progress.validation_failed(attempt + 1, policy.total_attempts(), feedback)
+                _, last_feedback = policy.validate()
+                progress.validation_failed(attempt + 1, policy.total_attempts(), last_feedback)
                 if total_iterations >= context.max_iterations:
-                    hit_limit = True
                     break
                 continue
 
@@ -302,13 +315,23 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
                 # Executor/reviewer exhausted their turn budget — treat as retry
                 total_iterations += max_turns
                 progress.agent_status("executor", f"max turns exceeded (attempt {attempt + 1}/{policy.total_attempts()})")
+                # Pull current feedback so the next retry (if any) tells
+                # the model what's still missing.
+                _, last_feedback = policy.validate()
                 if total_iterations >= context.max_iterations:
-                    hit_limit = True
                     break
                 continue
 
         collector.mark_iterations(total_iterations)
-        return total_iterations, hit_limit
+
+        # Final success requires the workspace to actually pass validation.
+        # Falling out of the retry loop without validation_succeeded means
+        # we exhausted attempts — that MUST be reported as failure.
+        if validation_succeeded:
+            success = True
+        else:
+            success, _ = policy.validate()
+        return total_iterations, success
 
     @staticmethod
     def _extract_trace(
@@ -330,7 +353,7 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
 
         for item in result.new_items:
             if isinstance(item, MessageOutputItem):
-                text = item.raw_item.content[0].text if item.raw_item.content else ""
+                text = getattr(item.raw_item.content[0], "text", "") if item.raw_item.content else ""
                 collector.record_message("assistant", text)
             elif isinstance(item, ToolCallItem):
                 tool_call_count += 1

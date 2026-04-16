@@ -59,8 +59,7 @@ async def fetch_traces(
     if session_id:
         params["sessionId"] = session_id
     if tags:
-        for tag in tags:
-            params["tags"] = tag  # Langfuse accepts repeated params
+        params["tags"] = tags  # httpx sends list values as repeated params
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             r = await client.get(
@@ -82,7 +81,9 @@ async def fetch_traces(
                 }
                 for t in data.get("data", [])
             ]
-    except Exception:
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("fetch_traces failed: %s", exc)
         return []
 
 
@@ -165,7 +166,9 @@ async def fetch_trace(trace_id: str) -> dict[str, Any] | None:
             },
             "observations": roots,
         }
-    except Exception:
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("fetch_trace failed: %s", exc)
         return None
 
 

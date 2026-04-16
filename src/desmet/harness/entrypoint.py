@@ -8,6 +8,7 @@ Usage::
 
     python -m desmet.harness.entrypoint <context_file>
 """
+
 from __future__ import annotations
 
 import json
@@ -29,7 +30,6 @@ logging.basicConfig(
 
 from desmet.harness.context import StageContext
 from desmet.harness.results import StageResult
-
 
 _STAGE_METHODS = {
     "requirements": "generate_requirements",
@@ -152,6 +152,7 @@ def run_entrypoint(context_path: str) -> None:
         # before the container process exits.
         try:
             from desmet.observability import get_langfuse
+
             lf = get_langfuse()
             if lf is not None:
                 lf.flush()
