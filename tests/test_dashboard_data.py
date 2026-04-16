@@ -103,3 +103,102 @@ def test_scoring_matrix_endpoint_with_data():
     assert body["platforms"][0]["scores"]["pipeline_completeness"] == 3.0
     assert body["platforms"][0]["scored_count"] == 1
     assert body["dimensions"] == SCORING_DIMENSIONS
+
+
+def test_framework_metrics_includes_cost_and_total_tokens():
+    """Endpoint averages cost_usd and (tokens_input + tokens_output) per platform."""
+    from desmet.webui.api import app
+    client = TestClient(app)
+
+    fake_data = {
+        "platforms": {
+            "langgraph": {
+                "platform_name": "LangGraph",
+                "story_metrics": [
+                    {
+                        "story_id": "s1",
+                        "api_cost_usd": 0.10,
+                        "tokens_input": 1000,
+                        "tokens_output": 500,
+                        "framework_metrics": {"tokens_per_stage": 300},
+                    },
+                    {
+                        "story_id": "s2",
+                        "api_cost_usd": 0.30,
+                        "tokens_input": 2000,
+                        "tokens_output": 1000,
+                        "framework_metrics": {"tokens_per_stage": 500},
+                    },
+                ],
+            }
+        }
+    }
+    with patch("desmet.webui.api.load_results_raw", return_value=fake_data):
+        resp = client.get("/api/dashboard/framework-metrics")
+
+    assert resp.status_code == 200
+    platforms = resp.json()["platforms"]
+    assert len(platforms) == 1
+    metrics = platforms[0]["metrics"]
+    assert metrics["cost_usd"] == 0.2        # (0.10 + 0.30) / 2
+    assert metrics["total_tokens"] == 2250.0  # ((1000+500) + (2000+1000)) / 2
+
+
+def test_framework_metrics_cost_skips_missing():
+    """Stories missing api_cost_usd are skipped when averaging cost."""
+    from desmet.webui.api import app
+    client = TestClient(app)
+
+    fake_data = {
+        "platforms": {
+            "crewai": {
+                "platform_name": "CrewAI",
+                "story_metrics": [
+                    {
+                        "story_id": "s1",
+                        "api_cost_usd": 0.20,
+                        "tokens_input": 100,
+                        "tokens_output": 50,
+                        "framework_metrics": {"tokens_per_stage": 100},
+                    },
+                    {
+                        "story_id": "s2",
+                        # no api_cost_usd, no tokens
+                        "framework_metrics": {"tokens_per_stage": 200},
+                    },
+                ],
+            }
+        }
+    }
+    with patch("desmet.webui.api.load_results_raw", return_value=fake_data):
+        resp = client.get("/api/dashboard/framework-metrics")
+
+    metrics = resp.json()["platforms"][0]["metrics"]
+    assert metrics["cost_usd"] == 0.2      # only s1 contributed
+    assert metrics["total_tokens"] == 150.0  # only s1 contributed
+
+
+def test_framework_metrics_none_when_no_cost_data():
+    """When no story has cost/token data, endpoint returns None for those keys."""
+    from desmet.webui.api import app
+    client = TestClient(app)
+
+    fake_data = {
+        "platforms": {
+            "flowise": {
+                "platform_name": "Flowise",
+                "story_metrics": [
+                    {
+                        "story_id": "s1",
+                        "framework_metrics": {"tokens_per_stage": 100},
+                    }
+                ],
+            }
+        }
+    }
+    with patch("desmet.webui.api.load_results_raw", return_value=fake_data):
+        resp = client.get("/api/dashboard/framework-metrics")
+
+    metrics = resp.json()["platforms"][0]["metrics"]
+    assert metrics["cost_usd"] is None
+    assert metrics["total_tokens"] is None

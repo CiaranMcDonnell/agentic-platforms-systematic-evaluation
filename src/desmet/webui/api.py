@@ -1046,24 +1046,52 @@ async def chart_dimension(dimension: str, run_id: str | None = None):
 
 @app.get("/api/dashboard/framework-metrics")
 async def dashboard_framework_metrics(run_id: str | None = None):
-    """Return aggregated framework metrics per platform."""
+    """Return aggregated framework metrics per platform.
+
+    Includes six framework-metrics keys plus cost_usd and total_tokens
+    averaged across all stories for the platform.
+    """
     data = load_results_raw(run_id)
     platforms_out = []
     for pid, pdata in data.get("platforms", {}).items():
         pname = pdata.get("platform_name", pid)
-        all_fm: list[dict] = []
-        for sm in pdata.get("story_metrics", []):
-            fm = sm.get("framework_metrics")
-            if fm:
-                all_fm.append(fm)
+        story_metrics = pdata.get("story_metrics", [])
+        all_fm: list[dict] = [
+            sm["framework_metrics"] for sm in story_metrics
+            if sm.get("framework_metrics")
+        ]
         if not all_fm:
             continue
+
         avg_metrics: dict[str, float | None] = {}
         for key in ("tokens_per_stage", "iteration_ratio",
                      "redundant_tool_call_rate", "tool_failure_rate",
                      "first_action_latency_ms", "framework_overhead_ms"):
             vals = [fm[key] for fm in all_fm if fm.get(key) is not None]
             avg_metrics[key] = round(sum(vals) / len(vals), 2) if vals else None
+
+        # Cost: average of per-story api_cost_usd, skipping stories without it.
+        cost_vals = [
+            sm["api_cost_usd"] for sm in story_metrics
+            if sm.get("api_cost_usd") is not None
+        ]
+        avg_metrics["cost_usd"] = (
+            round(sum(cost_vals) / len(cost_vals), 4) if cost_vals else None
+        )
+
+        # Total tokens: average of (tokens_input + tokens_output) per story,
+        # skipping stories where both are missing/None.
+        token_sums: list[float] = []
+        for sm in story_metrics:
+            ti = sm.get("tokens_input")
+            to = sm.get("tokens_output")
+            if ti is None and to is None:
+                continue
+            token_sums.append(float((ti or 0) + (to or 0)))
+        avg_metrics["total_tokens"] = (
+            round(sum(token_sums) / len(token_sums), 2) if token_sums else None
+        )
+
         platforms_out.append({
             "platform_id": pid,
             "platform_name": pname,
