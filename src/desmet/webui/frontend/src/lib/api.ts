@@ -424,8 +424,10 @@ export const fetchChartJSON = (endpoint: string) =>
 export const fetchRubric = () =>
   request<ScoringRubric>('/api/dashboard/scoring/rubric');
 
-export const fetchScoringMatrix = () =>
-  request<ScoringMatrixData>('/api/dashboard/scoring/matrix');
+export const fetchScoringMatrix = (runId?: string | null) => {
+  const qs = runId ? `?run_id=${runId}` : '';
+  return request<ScoringMatrixData>(`/api/dashboard/scoring/matrix${qs}`);
+};
 
 export const fetchStoryScore = (pid: string, sid: string) =>
   request<StoryScoreData>(`/api/dashboard/scoring/${pid}/${sid}`);
@@ -446,8 +448,12 @@ export interface FrameworkMetricsPlatform {
   metrics: Record<string, number | null>;
 }
 
-export const fetchFrameworkMetrics = () =>
-  request<{ platforms: FrameworkMetricsPlatform[] }>('/api/dashboard/framework-metrics');
+export const fetchFrameworkMetrics = (runId?: string | null) => {
+  const qs = runId ? `?run_id=${runId}` : '';
+  return request<{ platforms: FrameworkMetricsPlatform[] }>(
+    `/api/dashboard/framework-metrics${qs}`
+  );
+};
 
 // ── Langfuse ────────────────────────────
 
