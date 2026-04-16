@@ -42,7 +42,6 @@ config/                  Platform definitions (platforms.yaml), environment conf
 data/stories/            YAML user story definitions (basic/intermediate/advanced)
 infrastructure/          Per-platform Dockerfiles, Docker Compose, base eval image
 docs/report/             Academic report (Typst)
-docs/spec/               Pipeline specification and UML diagrams
 tests/                   Test suite
 ```
 

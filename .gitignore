@@ -29,10 +29,6 @@
 !docs/
 !docs/report/
 !docs/report/**
-!docs/spec/
-!docs/spec/**
-!docs/superpowers/
-!docs/superpowers/**
 
 # ── Infrastructure ─────────────────────────────────────────────────────────
 !infrastructure/
