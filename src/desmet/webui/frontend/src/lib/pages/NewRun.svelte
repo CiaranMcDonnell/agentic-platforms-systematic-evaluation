@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { fetchRuns, startRun } from '../api';
   import type { Run } from '../api';
-  import { store } from '../data.svelte';
+  import { store, refreshPlatformStatuses } from '../data.svelte';
   import { currentPage, selectedRunId } from '../stores';
   import StatusBadge from '../components/StatusBadge.svelte';
   import ModelPicker from '../components/ModelPicker.svelte';
@@ -43,6 +43,9 @@
   onMount(async () => {
     const runsRes = await fetchRuns();
     recentRuns = (runsRes.runs ?? []).slice(-5).reverse();
+    // Refresh platform statuses so Docker state (e.g. Flowise ready/not-started)
+    // reflects any changes made since the app was first loaded.
+    refreshPlatformStatuses().catch(() => {});
   });
 
   function togglePlatform(id: string) {
@@ -182,7 +185,7 @@
               <div style="font-weight: 500; font-size: 13px;">{p.name}</div>
               <div style="font-size: 11px; color: var(--text-2);">{p.category}</div>
             </div>
-            <StatusBadge status={p.status} />
+            <StatusBadge status={store.platformStatuses[p.id] || p.status} />
           </div>
         {/each}
 
@@ -197,7 +200,7 @@
                 <div style="font-weight: 500; font-size: 13px; color: var(--text-2);">{p.name}</div>
                 <div style="font-size: 11px; color: var(--text-2); opacity: 0.6;">{p.category}</div>
               </div>
-              <StatusBadge status={p.status} />
+              <StatusBadge status={store.platformStatuses[p.id] || p.status} />
             </div>
           {/each}
         {/if}
