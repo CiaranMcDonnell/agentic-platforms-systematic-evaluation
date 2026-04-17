@@ -45,6 +45,15 @@ docs/report/             Academic report (Typst)
 tests/                   Test suite
 ```
 
+## Prerequisites
+
+- **[uv](https://docs.astral.sh/uv/getting-started/installation/)** — Python package manager.
+  - macOS/Linux: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+  - Windows (PowerShell): `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"`
+- **Docker Engine** — used to isolate each platform adapter.
+  - macOS/Windows: install [Docker Desktop](https://docs.docker.com/desktop/).
+  - Linux: install [Docker Engine](https://docs.docker.com/engine/install/).
+
 ## Quick Start
 
 ```bash
