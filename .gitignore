@@ -5,6 +5,7 @@
 !.gitignore
 !.python-version
 !.env.example
+!.dockerignore.example
 !pyproject.toml
 !uv.lock
 !README.md
@@ -29,6 +30,8 @@
 !docs/
 !docs/report/
 !docs/report/**
+!docs/presentation
+!docs/presentation/**
 
 # ── Infrastructure ─────────────────────────────────────────────────────────
 !infrastructure/
