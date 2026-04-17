@@ -140,6 +140,10 @@ def get_platform_statuses() -> list[PlatformStatus]:
                 )
         else:
             container_status = get_container_status(container) if container else "not started"
+            # A running visual-platform container is "ready" for a benchmark run,
+            # matching the SDK-platform "ready" terminology surfaced in the UI.
+            if container_status == "running":
+                container_status = "ready"
             statuses.append(
                 PlatformStatus(
                     platform_id=pid,
@@ -164,8 +168,10 @@ def get_docker_platform_statuses() -> dict[str, str]:
     result: dict[str, str] = {}
     for pid, container in PLATFORM_CONTAINERS.items():
         if container is not None:
-            # Visual platform — check running container
-            result[pid] = get_container_status(container)
+            # Visual platform — check running container. A running container is
+            # "ready" for a benchmark run, matching SDK-platform terminology.
+            status = get_container_status(container)
+            result[pid] = "ready" if status == "running" else status
         elif PLATFORM_PACKAGES.get(pid) is not None:
             # SDK platform — check Docker image existence
             result[pid] = "ready" if has_image(pid) else "not built"

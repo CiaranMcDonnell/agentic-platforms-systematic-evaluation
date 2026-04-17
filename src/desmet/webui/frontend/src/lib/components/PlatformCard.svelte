@@ -30,7 +30,7 @@
         platform.infra_type === "Docker (isolated)" ||
             platform.infra_type === "Python SDK",
     );
-    let isUp = $derived(platform.status === "running");
+    let isUp = $derived(platform.status === "ready");
     let needsBuild = $derived(platform.status === "not built");
 
     let expanded = $state(false);

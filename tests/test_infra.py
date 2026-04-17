@@ -131,7 +131,8 @@ class TestGetPlatformStatuses:
         statuses = get_platform_statuses()
         fw = next(s for s in statuses if s.platform_id == "flowise")
         assert fw.infra_type == "Docker"
-        assert fw.status == "running"
+        # A running visual container is surfaced as "ready" to match SDK terminology.
+        assert fw.status == "ready"
 
     @patch("desmet.harness.container_runner.has_image", return_value=False)
     @patch("desmet.infra.get_container_status")
@@ -151,8 +152,9 @@ class TestGetDockerPlatformStatuses:
         mock_container.return_value = "running"
         mock_has_image.return_value = False
         result = get_docker_platform_statuses()
-        assert result["flowise"] == "running"
-        assert result["n8n"] == "running"
+        # Running visual containers surface as "ready" for consistency with SDK.
+        assert result["flowise"] == "ready"
+        assert result["n8n"] == "ready"
 
     @patch("desmet.harness.container_runner.has_image")
     @patch("desmet.infra.get_container_status")
