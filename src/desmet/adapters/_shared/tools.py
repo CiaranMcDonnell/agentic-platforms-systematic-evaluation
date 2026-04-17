@@ -400,6 +400,25 @@ def _read_file(workspace: Path, path: str) -> str:
     return full_path.read_text(encoding="utf-8")
 
 
+def _strip_markdown_fences(content: str) -> str:
+    """Remove a leading ``` fence (with or without a language tag) and the
+    matching trailing fence.  LLMs frequently wrap mermaid (and other
+    source) output in markdown code fences by default, which makes
+    downstream tools like ``mmdc`` reject the file.  Stripping fences is
+    a no-op for content that was never fenced.
+    """
+    stripped = content.strip()
+    if not stripped.startswith("```"):
+        return content
+    first_nl = stripped.find("\n")
+    if first_nl == -1:
+        return content
+    body = stripped[first_nl + 1 :].rstrip()
+    if body.endswith("```"):
+        body = body[:-3].rstrip()
+    return body + "\n"
+
+
 def _write_file(workspace: Path, path: str, content: str) -> str:
     """Write *content* to a file inside the workspace."""
     loop_err = _check_loop(str(workspace), "write_file", path)
@@ -409,6 +428,8 @@ def _write_file(workspace: Path, path: str, content: str) -> str:
         full_path = _safe_resolve(workspace, path)
     except ValueError as exc:
         return f"Error: {exc}"
+    if full_path.suffix == ".mermaid":
+        content = _strip_markdown_fences(content)
     full_path.parent.mkdir(parents=True, exist_ok=True)
     full_path.write_text(content, encoding="utf-8")
     return f"Successfully wrote to {path}"
@@ -460,6 +481,12 @@ def _execute_shell(workspace: Path, command: str, *, stage: str | None = None) -
         output = result.stdout + result.stderr
         if len(output) > 2000:
             output = output[:1000] + "\n...(truncated)...\n" + output[-800:]
+        # Surface non-zero exit codes explicitly so the agent can tell
+        # a silent-fail command (e.g. mmdc rejecting bad mermaid syntax)
+        # apart from a successful no-output command.
+        if result.returncode != 0:
+            body = output if output else "(no output)"
+            return f"[EXIT={result.returncode}] {body}"
         return output if output else "(no output)"
     except subprocess.TimeoutExpired:
         return "Command timed out"

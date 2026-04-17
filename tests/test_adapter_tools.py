@@ -8,6 +8,7 @@ from desmet.adapters._shared.tools import (
     ToolFormat,
     _CROSS_TOOL_THRESHOLD,
     _check_loop,
+    _execute_shell,
     _extract_target,
     _safe_resolve,
     create_tools,
@@ -277,6 +278,43 @@ class TestCreateToolsCallable:
         result = write_file(path="deep/nested/file.txt", content="nested content")
         assert "Successfully wrote" in result
         assert (workspace / "deep" / "nested" / "file.txt").read_text() == "nested content"
+
+    def test_write_file_strips_markdown_fences_for_mermaid(self, workspace):
+        """``.mermaid`` files should have their markdown code fences stripped
+        so ``mmdc`` can render them — LLMs default to fenced output."""
+        tools = create_tools(workspace, ["write_file"])
+        write_file = tools[0]
+        fenced = "```mermaid\nclassDiagram\n    class Foo\n```"
+        write_file(path="diagram.mermaid", content=fenced)
+        on_disk = (workspace / "diagram.mermaid").read_text()
+        assert on_disk.startswith("classDiagram")
+        assert "```" not in on_disk
+
+    def test_write_file_preserves_fences_for_non_mermaid(self, workspace):
+        """Markdown files (and anything non-``.mermaid``) should keep fences
+        intact — they're legitimate markdown syntax there."""
+        tools = create_tools(workspace, ["write_file"])
+        write_file = tools[0]
+        fenced = "```python\nprint('hi')\n```"
+        write_file(path="notes.md", content=fenced)
+        assert (workspace / "notes.md").read_text() == fenced
+
+    def test_execute_shell_surfaces_nonzero_exit_code(self, workspace, tmp_path):
+        """Non-zero shell exits must be surfaced with an ``[EXIT=N]`` prefix
+        so the agent can tell a silent-fail command apart from one that
+        succeeded with no output."""
+        import sys
+        cmd = f'"{sys.executable}" -c "import sys; sys.exit(3)"'
+        result = _execute_shell(workspace, cmd, stage=None)
+        assert result.startswith("[EXIT=3]"), f"expected EXIT=3 prefix, got: {result!r}"
+
+    def test_execute_shell_omits_exit_code_on_success(self, workspace):
+        """Exit 0 commands shouldn't carry an ``[EXIT=...]`` prefix."""
+        import sys
+        cmd = f'"{sys.executable}" -c "print(\'ok\')"'
+        result = _execute_shell(workspace, cmd, stage=None)
+        assert "[EXIT=" not in result
+        assert "ok" in result
 
     def test_list_directory_lists_entries(self, workspace):
         tools = create_tools(workspace, ["list_directory"])
