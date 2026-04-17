@@ -2,7 +2,7 @@
 
 = Adding a Platform Adapter <appendix-adding-adapter>
 
-This appendix provides a step-by-step guide for integrating a new agentic platform into the DESMET evaluation framework. The process involves implementing a single Python class and adding two small config entries. No changes to the runner, metrics engine, scoring engine, or web UI are required — the framework auto-discovers new adapters.
+This appendix provides a step-by-step guide for integrating a new agentic platform into the DESMET evaluation framework. The process involves implementing a single Python class and adding two small config entries. The runner, metrics engine, scoring engine, and dashboard auto-discover new adapters; a small number of known hardcoded references (listed at the end of this appendix) may require a one-line edit depending on the platform's characteristics.
 
 == Overview
 
@@ -452,3 +452,24 @@ Each builder receives the same set of format-agnostic tool implementations (file
 Coded platforms build Docker images from `infrastructure/Dockerfile.platform`, which takes a `PLATFORM_EXTRA` build-arg and installs only that platform's `uv` optional extra. This gives each platform its own isolated Python environment without requiring a per-platform Dockerfile.
 
 If your platform needs custom system packages, a different base image, or compile steps, create `infrastructure/Dockerfile.<platform-id>` and `container_runner.dockerfile_path()` will prefer it over the shared template. See `infrastructure/Dockerfile.framework.example` for a complete reference with examples.
+
+== Known Hardcoded References
+
+A small number of call sites still enumerate platforms by name rather than deriving them from the registry or `platforms.yaml`. Each is scoped to a single concern and only needs attention when the new platform has the relevant characteristic.
+
+#figure(
+  table(
+    columns: 3,
+    stroke: 0.5pt,
+    inset: 8pt,
+    align: left,
+    table.header([*Location*], [*When it applies*], [*Edit required*]),
+    [`src/desmet/webui/frontend/src/lib/pages/Scoring.svelte`], [Platform has an external trace viewer (like LangSmith for LangGraph)], [Add a branch alongside the existing `selectedPlatform === 'langgraph'` check to surface the new viewer's link on the scoring page.],
+    [`tests/test_container_runner.py`], [Platform is a coded (Python SDK) framework, not a visual/Docker platform], [Add the platform ID to the expected set of coded platforms (around line 95).],
+    [`tests/test_<platform>_adapter.py`], [Always (by convention)], [Create a new test file mirroring the existing per-platform tests. Not strictly required for the framework to run but expected before merging an adapter.],
+    [`infrastructure/docker-compose.yaml`], [Visual platform backed by Postgres], [Add the database name to the DB-creation loop (search for `for db in ...`) and add the platform to the relevant `profiles:` dependency lists.],
+  ),
+  caption: [Known hardcoded references outside the auto-discovery path],
+)
+
+None of these block the adapter from running — the smoke test in Step 4 will still pass with only the four mandatory steps completed. They are listed here so adapter authors can decide whether to touch them based on their platform's characteristics.

@@ -22,17 +22,27 @@ _SHARED_MODULES = [
     "_shared/retry.py",
 ]
 
-_PLATFORM_ADAPTER_FILE: dict[str, str] = {
-    "langgraph": "multiagent/langgraph.py",
-    "crewai": "multiagent/crewai.py",
-    "microsoft_agent_framework": "multiagent/agent_framework.py",
-    "openai_agents_sdk": "sdk/openai_agents.py",
-    "google_adk": "sdk/google_adk.py",
-    "flowise": "visual/flowise.py",
-    "langflow": "visual/langflow.py",
-    "dify": "visual/dify.py",
-    "n8n": "visual/n8n.py",
-}
+def _resolve_adapter_file(platform_id: str) -> Path | None:
+    """Locate an adapter's source file via the registry.
+
+    Uses ``importlib.util.find_spec`` so the adapter's SDK does not need
+    to be importable — only the source location is needed.
+    """
+    import importlib.util
+
+    from desmet.adapters.registry import ADAPTER_REGISTRY
+
+    entry = ADAPTER_REGISTRY.get(platform_id)
+    if entry is None:
+        return None
+    module_path, _ = entry
+    try:
+        spec = importlib.util.find_spec(module_path)
+    except (ImportError, ValueError):
+        return None
+    if spec is None or spec.origin is None:
+        return None
+    return Path(spec.origin)
 
 
 @dataclass
@@ -148,11 +158,11 @@ def _get_platform_extra(platform_id: str) -> str | None:
 def compute_dev_metrics(platform_id: str) -> DevMetrics:
     dm = DevMetrics(platform_id=platform_id)
 
-    # Adapter LOC — consult explicit mapping first, then fall back to
-    # convention (platform_id.py, then underscored).
-    override = _PLATFORM_ADAPTER_FILE.get(platform_id)
-    if override is not None:
-        adapter_file = _ADAPTERS_DIR / override
+    # Adapter LOC — resolve via registry, then fall back to convention
+    # (platform_id.py, then underscored).
+    resolved = _resolve_adapter_file(platform_id)
+    if resolved is not None:
+        adapter_file = resolved
     else:
         adapter_file = _ADAPTERS_DIR / f"{platform_id}.py"
         if not adapter_file.exists():
