@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from desmet.adapters.agent_framework import AgentFrameworkAdapter
+from desmet.adapters.multiagent.agent_framework import AgentFrameworkAdapter
 from desmet.adapters._shared.observation import ObservationCollector
 from desmet.harness.trace import AgentTrace
 
@@ -92,12 +92,12 @@ class TestAgentFrameworkAdapterInterface:
 
 class TestAgentFrameworkAdapterStructure:
     def test_imports(self):
-        from desmet.adapters.agent_framework import AgentFrameworkAdapter
+        from desmet.adapters.multiagent.agent_framework import AgentFrameworkAdapter
         adapter = AgentFrameworkAdapter()
         assert adapter.TOOL_FORMAT is not None
 
     def test_max_stall_count_constant(self):
-        from desmet.adapters.agent_framework import MAX_STALL_COUNT
+        from desmet.adapters.multiagent.agent_framework import MAX_STALL_COUNT
         assert MAX_STALL_COUNT == 3
 
     def test_has_create_client(self, adapter):
@@ -106,7 +106,7 @@ class TestAgentFrameworkAdapterStructure:
         assert callable(adapter._create_client)
 
     def test_has_implementation_plan_model(self):
-        from desmet.adapters.agent_framework import ImplementationPlan
+        from desmet.adapters.multiagent.agent_framework import ImplementationPlan
         plan = ImplementationPlan(
             steps=["step 1", "step 2"],
             files_to_create=["main.py"],
@@ -170,11 +170,11 @@ class TestObservabilityMetadata:
 
 class TestUsageTrackingMiddleware:
     def test_middleware_class_exists(self):
-        from desmet.adapters.agent_framework import UsageTrackingMiddleware
+        from desmet.adapters.multiagent.agent_framework import UsageTrackingMiddleware
         assert UsageTrackingMiddleware is not None
 
     def test_middleware_initializes_with_collector(self):
-        from desmet.adapters.agent_framework import UsageTrackingMiddleware
+        from desmet.adapters.multiagent.agent_framework import UsageTrackingMiddleware
         trace = AgentTrace()
         collector = ObservationCollector(trace)
         mw = UsageTrackingMiddleware(collector)
@@ -182,7 +182,7 @@ class TestUsageTrackingMiddleware:
 
     def test_middleware_is_thread_safe(self):
         """ObservationCollector provides thread-safety via its own lock."""
-        from desmet.adapters.agent_framework import UsageTrackingMiddleware
+        from desmet.adapters.multiagent.agent_framework import UsageTrackingMiddleware
         trace = AgentTrace()
         collector = ObservationCollector(trace)
         mw = UsageTrackingMiddleware(collector)

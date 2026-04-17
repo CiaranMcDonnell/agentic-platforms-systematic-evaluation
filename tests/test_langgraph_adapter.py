@@ -8,19 +8,19 @@ pytest.importorskip("langchain_core", reason="langchain_core not installed")
 
 class TestLangGraphAdapterStructure:
     def test_imports(self):
-        from desmet.adapters.langgraph import LangGraphAdapter
+        from desmet.adapters.multiagent.langgraph import LangGraphAdapter
         adapter = LangGraphAdapter()
         assert adapter.TOOL_FORMAT is not None
 
     def test_observability_reports_checkpointing(self):
-        from desmet.adapters.langgraph import LangGraphAdapter
+        from desmet.adapters.multiagent.langgraph import LangGraphAdapter
         adapter = LangGraphAdapter()
         info = adapter.get_observability_info()
         assert info["has_checkpointing"] is True
         assert info["has_state_inspection"] is True
 
     def test_failure_handling_reports_auto_recovery(self):
-        from desmet.adapters.langgraph import LangGraphAdapter
+        from desmet.adapters.multiagent.langgraph import LangGraphAdapter
         adapter = LangGraphAdapter()
         info = adapter.get_failure_handling_info()
         assert info["has_auto_recovery"] is True
@@ -29,7 +29,7 @@ class TestLangGraphAdapterStructure:
 
 class TestBuildGraph:
     def test_graph_has_three_subgraph_nodes(self):
-        from desmet.adapters.langgraph import LangGraphAdapter
+        from desmet.adapters.multiagent.langgraph import LangGraphAdapter
         adapter = LangGraphAdapter()
         mock_llm = MagicMock()
         mock_llm.bind_tools = MagicMock(return_value=mock_llm)
@@ -44,13 +44,13 @@ class TestBuildGraph:
 
 class TestPlanParsing:
     def test_serial_plan_returns_no_parallel_groups(self):
-        from desmet.adapters.langgraph import parse_plan
+        from desmet.adapters.multiagent.langgraph import parse_plan
         steps = parse_plan("1. Create models\n2. Create views\n3. Create templates")
         assert all(not s.get("parallel") for s in steps)
         assert len(steps) == 3
 
     def test_parallel_markers_detected(self):
-        from desmet.adapters.langgraph import parse_plan
+        from desmet.adapters.multiagent.langgraph import parse_plan
         plan = "1. [PARALLEL] Create models.py\n2. [PARALLEL] Create views.py\n3. Run tests"
         steps = parse_plan(plan)
         assert steps[0]["parallel"] is True
@@ -58,11 +58,11 @@ class TestPlanParsing:
         assert steps[2]["parallel"] is False
 
     def test_empty_plan_returns_empty_list(self):
-        from desmet.adapters.langgraph import parse_plan
+        from desmet.adapters.multiagent.langgraph import parse_plan
         assert parse_plan("") == []
 
     def test_dash_format_plan(self):
-        from desmet.adapters.langgraph import parse_plan
+        from desmet.adapters.multiagent.langgraph import parse_plan
         steps = parse_plan("- First step\n- Second step")
         assert len(steps) == 2
         assert steps[0]["text"] == "First step"
@@ -81,7 +81,7 @@ class TestStreamHeartbeat:
 
     async def test_heartbeat_fires_during_slow_chunk(self):
         import asyncio
-        from desmet.adapters.langgraph import _aiter_with_heartbeat
+        from desmet.adapters.multiagent.langgraph import _aiter_with_heartbeat
 
         class FakeProgress:
             def __init__(self):
@@ -112,7 +112,7 @@ class TestStreamHeartbeat:
         """Fast streams should NOT emit heartbeats — that would spam
         progress on healthy runs."""
         import asyncio
-        from desmet.adapters.langgraph import _aiter_with_heartbeat
+        from desmet.adapters.multiagent.langgraph import _aiter_with_heartbeat
 
         class FakeProgress:
             def __init__(self):
@@ -137,7 +137,7 @@ class TestStreamHeartbeat:
     async def test_heartbeat_works_with_none_progress(self):
         """Helper must not crash when progress=None (early init paths)."""
         import asyncio
-        from desmet.adapters.langgraph import _aiter_with_heartbeat
+        from desmet.adapters.multiagent.langgraph import _aiter_with_heartbeat
 
         async def stream():
             await asyncio.sleep(0.3)

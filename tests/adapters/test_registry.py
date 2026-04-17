@@ -143,7 +143,7 @@ class TestAutoDerivedImplementation:
         registry._is_implemented.cache_clear()
 
         def fake_import(name):
-            if name == "desmet.adapters.langgraph":
+            if name == "desmet.adapters.multiagent.langgraph":
                 raise ModuleNotFoundError(
                     "No module named 'langchain_core'", name="langchain_core",
                 )
@@ -163,7 +163,7 @@ class TestAutoDerivedImplementation:
         registry._is_implemented.cache_clear()
 
         def fake_import(name):
-            if name == "desmet.adapters.langgraph":
+            if name == "desmet.adapters.multiagent.langgraph":
                 raise ModuleNotFoundError(
                     "No module named 'desmet.adapters._broken'",
                     name="desmet.adapters._broken",

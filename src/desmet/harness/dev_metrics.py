@@ -23,7 +23,9 @@ _SHARED_MODULES = [
 ]
 
 _PLATFORM_ADAPTER_FILE: dict[str, str] = {
-    "microsoft_agent_framework": "agent_framework.py",
+    "langgraph": "multiagent/langgraph.py",
+    "crewai": "multiagent/crewai.py",
+    "microsoft_agent_framework": "multiagent/agent_framework.py",
     "openai_agents_sdk": "openai_agents.py",
 }
 

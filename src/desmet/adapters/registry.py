@@ -30,9 +30,9 @@ class AdapterNotImplementedError(NotImplementedError):
 
 # (module_path, class_name)
 ADAPTER_REGISTRY: dict[str, tuple[str, str]] = {
-    "langgraph":          ("desmet.adapters.langgraph",        "LangGraphAdapter"),
-    "crewai":             ("desmet.adapters.crewai",           "CrewAIAdapter"),
-    "microsoft_agent_framework": ("desmet.adapters.agent_framework", "AgentFrameworkAdapter"),
+    "langgraph":          ("desmet.adapters.multiagent.langgraph",        "LangGraphAdapter"),
+    "crewai":             ("desmet.adapters.multiagent.crewai",           "CrewAIAdapter"),
+    "microsoft_agent_framework": ("desmet.adapters.multiagent.agent_framework", "AgentFrameworkAdapter"),
     "openai_agents_sdk":  ("desmet.adapters.openai_agents",    "OpenAIAgentsAdapter"),
     "google_adk":         ("desmet.adapters.google_adk",       "GoogleADKAdapter"),
     "flowise":            ("desmet.adapters.flowise",          "FlowiseAdapter"),

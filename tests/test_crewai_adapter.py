@@ -5,7 +5,7 @@ import inspect
 
 import pytest
 
-from desmet.adapters.crewai import CrewAIAdapter
+from desmet.adapters.multiagent.crewai import CrewAIAdapter
 from desmet.adapters._shared.observation import ObservationCollector, ObservationRequirements
 from desmet.adapters._shared.retry import ProgressReporter
 from desmet.harness.trace import (
@@ -234,38 +234,38 @@ class TestEventBusTracing:
 
 class TestCrewAIAdapterStructure:
     def test_imports(self):
-        from desmet.adapters.crewai import CrewAIAdapter
+        from desmet.adapters.multiagent.crewai import CrewAIAdapter
         adapter = CrewAIAdapter()
         assert adapter.TOOL_FORMAT is not None
 
     def test_observability_reports_auto_recovery(self):
-        from desmet.adapters.crewai import CrewAIAdapter
+        from desmet.adapters.multiagent.crewai import CrewAIAdapter
         adapter = CrewAIAdapter()
         info = adapter.get_failure_handling_info()
         assert info["has_auto_recovery"] is True
 
     def test_observability_reports_idempotent(self):
-        from desmet.adapters.crewai import CrewAIAdapter
+        from desmet.adapters.multiagent.crewai import CrewAIAdapter
         adapter = CrewAIAdapter()
         info = adapter.get_failure_handling_info()
         assert info["is_idempotent"] is True
 
     def test_observability_notes_mention_multi_agent(self):
-        from desmet.adapters.crewai import CrewAIAdapter
+        from desmet.adapters.multiagent.crewai import CrewAIAdapter
         adapter = CrewAIAdapter()
         info = adapter.get_observability_info()
         notes = info.get("notes", "").lower()
         assert "multi-agent" in notes or "crew" in notes
 
     def test_observability_notes_mention_retries(self):
-        from desmet.adapters.crewai import CrewAIAdapter
+        from desmet.adapters.multiagent.crewai import CrewAIAdapter
         adapter = CrewAIAdapter()
         info = adapter.get_failure_handling_info()
         assert "retries" in info["notes"].lower() or "retry" in info["notes"].lower()
 
     def test_no_monkeypatch_method(self):
         """The OpenAI SDK monkeypatch was removed — it should no longer exist."""
-        from desmet.adapters.crewai import CrewAIAdapter
+        from desmet.adapters.multiagent.crewai import CrewAIAdapter
         assert not hasattr(CrewAIAdapter, "_patch_tool_call_handling")
         assert not hasattr(CrewAIAdapter, "_tool_call_patch_applied")
 
@@ -281,21 +281,21 @@ class TestCrewAIAdapterStructure:
 
 class TestIterationBudget:
     def test_budget_allocation_default_50(self):
-        from desmet.adapters.crewai import _compute_iter_budget
+        from desmet.adapters.multiagent.crewai import _compute_iter_budget
         planner, executor, reviewer = _compute_iter_budget(50)
         assert planner == 10
         assert executor == 30
         assert reviewer == 10
 
     def test_budget_allocation_custom_30(self):
-        from desmet.adapters.crewai import _compute_iter_budget
+        from desmet.adapters.multiagent.crewai import _compute_iter_budget
         planner, executor, reviewer = _compute_iter_budget(30)
         assert planner + executor + reviewer <= 30
         assert executor > planner
         assert executor > reviewer
 
     def test_budget_allocation_minimum(self):
-        from desmet.adapters.crewai import _compute_iter_budget
+        from desmet.adapters.multiagent.crewai import _compute_iter_budget
         planner, executor, reviewer = _compute_iter_budget(10)
         assert planner >= 1
         assert executor >= 1
@@ -303,14 +303,14 @@ class TestIterationBudget:
 
     def test_budget_allocation_retry(self):
         """On retry, planner budget is 0 and executor gets the extra allocation."""
-        from desmet.adapters.crewai import _compute_iter_budget
+        from desmet.adapters.multiagent.crewai import _compute_iter_budget
         planner, executor, reviewer = _compute_iter_budget(50, retry=True)
         assert planner == 0
         assert reviewer == 10
         assert executor == 40
 
     def test_budget_allocation_retry_minimum(self):
-        from desmet.adapters.crewai import _compute_iter_budget
+        from desmet.adapters.multiagent.crewai import _compute_iter_budget
         planner, executor, reviewer = _compute_iter_budget(5, retry=True)
         assert planner == 0
         assert executor >= 1
@@ -332,7 +332,7 @@ class TestSuccessAfterBudget:
         self, monkeypatch, tmp_path,
     ):
         from unittest.mock import MagicMock
-        from desmet.adapters.crewai import CrewAIAdapter
+        from desmet.adapters.multiagent.crewai import CrewAIAdapter
         from desmet.adapters._shared.observation import (
             ObservationCollector, ObservationRequirements,
         )
@@ -416,7 +416,7 @@ class TestSuccessAfterBudget:
         check only set hit_limit when iterations exceeded max_iterations.
         """
         from unittest.mock import MagicMock
-        from desmet.adapters.crewai import CrewAIAdapter
+        from desmet.adapters.multiagent.crewai import CrewAIAdapter
         from desmet.adapters._shared.observation import (
             ObservationCollector, ObservationRequirements,
         )
