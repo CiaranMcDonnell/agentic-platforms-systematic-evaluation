@@ -7,7 +7,7 @@ import pytest
 
 class TestImplementationPlan:
     def test_creates_valid_plan(self):
-        from desmet.adapters.openai_agents import ImplementationPlan
+        from desmet.adapters.sdk.openai_agents import ImplementationPlan
         plan = ImplementationPlan(
             steps=["Create models", "Create views"],
             files_to_create=["models.py", "views.py"],
@@ -17,19 +17,19 @@ class TestImplementationPlan:
         assert plan.files_to_create == ["models.py", "views.py"]
 
     def test_plan_requires_steps(self):
-        from desmet.adapters.openai_agents import ImplementationPlan
+        from desmet.adapters.sdk.openai_agents import ImplementationPlan
         with pytest.raises(Exception):
             ImplementationPlan(files_to_create=[], files_to_modify=[])
 
 
 class TestOpenAIRunContext:
     def test_creates_with_none_plan(self):
-        from desmet.adapters.openai_agents import OpenAIRunContext
+        from desmet.adapters.sdk.openai_agents import OpenAIRunContext
         ctx = OpenAIRunContext(stage_context=None, plan=None)
         assert ctx.plan is None
 
     def test_plan_can_be_set(self):
-        from desmet.adapters.openai_agents import OpenAIRunContext, ImplementationPlan
+        from desmet.adapters.sdk.openai_agents import OpenAIRunContext, ImplementationPlan
         ctx = OpenAIRunContext(stage_context=None, plan=None)
         ctx.plan = ImplementationPlan(
             steps=["step 1"], files_to_create=[], files_to_modify=[]
@@ -40,18 +40,18 @@ class TestOpenAIRunContext:
 
 class TestOpenAIAdapterStructure:
     def test_imports(self):
-        from desmet.adapters.openai_agents import OpenAIAgentsAdapter
+        from desmet.adapters.sdk.openai_agents import OpenAIAgentsAdapter
         adapter = OpenAIAgentsAdapter()
         assert adapter.TOOL_FORMAT is not None
 
     def test_observability_mentions_handoff(self):
-        from desmet.adapters.openai_agents import OpenAIAgentsAdapter
+        from desmet.adapters.sdk.openai_agents import OpenAIAgentsAdapter
         adapter = OpenAIAgentsAdapter()
         info = adapter.get_observability_info()
         assert "handoff" in info.get("notes", "").lower()
 
     def test_failure_handling_mentions_guardrail(self):
-        from desmet.adapters.openai_agents import OpenAIAgentsAdapter
+        from desmet.adapters.sdk.openai_agents import OpenAIAgentsAdapter
         adapter = OpenAIAgentsAdapter()
         info = adapter.get_failure_handling_info()
         assert "guardrail" in info.get("notes", "").lower()
@@ -62,7 +62,7 @@ class TestOpenAIAdapterStructure:
 
 @pytest.fixture
 def adapter():
-    from desmet.adapters.openai_agents import OpenAIAgentsAdapter
+    from desmet.adapters.sdk.openai_agents import OpenAIAgentsAdapter
     return OpenAIAgentsAdapter(config={"model": "gpt-4o"})
 
 
@@ -115,7 +115,7 @@ class TestOpenAIAgentsAdapterInterface:
         """Adapter must not raise NotImplementedError on stage methods."""
         import ast
         import pathlib
-        src = pathlib.Path("src/desmet/adapters/openai_agents.py").read_text()
+        src = pathlib.Path("src/desmet/adapters/sdk/openai_agents.py").read_text()
         tree = ast.parse(src)
         for node in ast.walk(tree):
             if isinstance(node, ast.Raise):

@@ -26,7 +26,8 @@ _PLATFORM_ADAPTER_FILE: dict[str, str] = {
     "langgraph": "multiagent/langgraph.py",
     "crewai": "multiagent/crewai.py",
     "microsoft_agent_framework": "multiagent/agent_framework.py",
-    "openai_agents_sdk": "openai_agents.py",
+    "openai_agents_sdk": "sdk/openai_agents.py",
+    "google_adk": "sdk/google_adk.py",
 }
 
 

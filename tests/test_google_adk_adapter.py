@@ -10,13 +10,13 @@ from desmet.adapters._shared.tools import ToolFormat
 
 @pytest.fixture
 def adapter():
-    from desmet.adapters.google_adk import GoogleADKAdapter
+    from desmet.adapters.sdk.google_adk import GoogleADKAdapter
     return GoogleADKAdapter(config={"model": "gemini-2.5-flash"})
 
 
 class TestGoogleADKAdapterInterface:
     def test_imports(self):
-        from desmet.adapters.google_adk import GoogleADKAdapter
+        from desmet.adapters.sdk.google_adk import GoogleADKAdapter
         adapter = GoogleADKAdapter()
         assert adapter.TOOL_FORMAT == ToolFormat.CALLABLE
 
@@ -73,7 +73,7 @@ class TestGoogleADKAdapterInterface:
         """Adapter must not raise NotImplementedError on stage methods."""
         import ast
         import pathlib
-        src = pathlib.Path("src/desmet/adapters/google_adk.py").read_text()
+        src = pathlib.Path("src/desmet/adapters/sdk/google_adk.py").read_text()
         tree = ast.parse(src)
         for node in ast.walk(tree):
             if isinstance(node, ast.Raise):
@@ -84,14 +84,14 @@ class TestGoogleADKAdapterInterface:
 
 class TestGoogleADKAdapterStructure:
     def test_platform_info(self):
-        from desmet.adapters.google_adk import GoogleADKAdapter
+        from desmet.adapters.sdk.google_adk import GoogleADKAdapter
         adapter = GoogleADKAdapter()
         info = adapter.platform_info
         assert info.id == "google_adk"
         assert info.name == "Google ADK"
 
     def test_resolve_model_google(self):
-        from desmet.adapters.google_adk import GoogleADKAdapter
+        from desmet.adapters.sdk.google_adk import GoogleADKAdapter
         from desmet.llm_config import LLMConfig, Provider
         adapter = GoogleADKAdapter()
         cfg = LLMConfig(
@@ -101,7 +101,7 @@ class TestGoogleADKAdapterStructure:
         assert adapter._resolve_model_id(cfg) == "gemini-2.5-flash"
 
     def test_resolve_model_openai(self):
-        from desmet.adapters.google_adk import GoogleADKAdapter
+        from desmet.adapters.sdk.google_adk import GoogleADKAdapter
         from desmet.llm_config import LLMConfig, Provider
         adapter = GoogleADKAdapter()
         cfg = LLMConfig(
@@ -111,7 +111,7 @@ class TestGoogleADKAdapterStructure:
         assert adapter._resolve_model_id(cfg) == "openai/gpt-5.4-2026-03-05"
 
     def test_resolve_model_anthropic(self):
-        from desmet.adapters.google_adk import GoogleADKAdapter
+        from desmet.adapters.sdk.google_adk import GoogleADKAdapter
         from desmet.llm_config import LLMConfig, Provider
         adapter = GoogleADKAdapter()
         cfg = LLMConfig(
@@ -121,7 +121,7 @@ class TestGoogleADKAdapterStructure:
         assert adapter._resolve_model_id(cfg) == "anthropic/claude-sonnet-4-20250514"
 
     def test_resolve_model_openrouter(self):
-        from desmet.adapters.google_adk import GoogleADKAdapter
+        from desmet.adapters.sdk.google_adk import GoogleADKAdapter
         from desmet.llm_config import LLMConfig, Provider
         adapter = GoogleADKAdapter()
         cfg = LLMConfig(
@@ -133,57 +133,57 @@ class TestGoogleADKAdapterStructure:
 
 class TestObservabilityMetadata:
     def test_observability_reports_replay(self):
-        from desmet.adapters.google_adk import GoogleADKAdapter
+        from desmet.adapters.sdk.google_adk import GoogleADKAdapter
         info = GoogleADKAdapter().get_observability_info()
         assert info["has_replay"] is True
 
     def test_observability_reports_state_inspection(self):
-        from desmet.adapters.google_adk import GoogleADKAdapter
+        from desmet.adapters.sdk.google_adk import GoogleADKAdapter
         info = GoogleADKAdapter().get_observability_info()
         assert info["has_state_inspection"] is True
 
     def test_observability_trace_format(self):
-        from desmet.adapters.google_adk import GoogleADKAdapter
+        from desmet.adapters.sdk.google_adk import GoogleADKAdapter
         info = GoogleADKAdapter().get_observability_info()
         assert info["trace_format"] == "Event stream"
 
     def test_observability_mentions_sequential(self):
-        from desmet.adapters.google_adk import GoogleADKAdapter
+        from desmet.adapters.sdk.google_adk import GoogleADKAdapter
         info = GoogleADKAdapter().get_observability_info()
         assert "sequential" in info.get("notes", "").lower()
 
     def test_failure_handling_reports_auto_recovery(self):
-        from desmet.adapters.google_adk import GoogleADKAdapter
+        from desmet.adapters.sdk.google_adk import GoogleADKAdapter
         info = GoogleADKAdapter().get_failure_handling_info()
         assert info["has_auto_recovery"] is True
 
     def test_failure_handling_mentions_loop(self):
-        from desmet.adapters.google_adk import GoogleADKAdapter
+        from desmet.adapters.sdk.google_adk import GoogleADKAdapter
         info = GoogleADKAdapter().get_failure_handling_info()
         assert "loop" in info.get("notes", "").lower()
 
     def test_failure_handling_mentions_exit_loop(self):
-        from desmet.adapters.google_adk import GoogleADKAdapter
+        from desmet.adapters.sdk.google_adk import GoogleADKAdapter
         info = GoogleADKAdapter().get_failure_handling_info()
         assert "exit_loop" in info.get("notes", "").lower()
 
 
 class TestLifecycle:
     def test_initialize_is_coroutine(self):
-        from desmet.adapters.google_adk import GoogleADKAdapter
+        from desmet.adapters.sdk.google_adk import GoogleADKAdapter
         assert inspect.iscoroutinefunction(GoogleADKAdapter().initialize)
 
     def test_shutdown_is_coroutine(self):
-        from desmet.adapters.google_adk import GoogleADKAdapter
+        from desmet.adapters.sdk.google_adk import GoogleADKAdapter
         assert inspect.iscoroutinefunction(GoogleADKAdapter().shutdown)
 
     def test_health_check_is_coroutine(self):
-        from desmet.adapters.google_adk import GoogleADKAdapter
+        from desmet.adapters.sdk.google_adk import GoogleADKAdapter
         assert inspect.iscoroutinefunction(GoogleADKAdapter().health_check)
 
     @pytest.mark.asyncio
     async def test_shutdown_clears_state(self):
-        from desmet.adapters.google_adk import GoogleADKAdapter
+        from desmet.adapters.sdk.google_adk import GoogleADKAdapter
         adapter = GoogleADKAdapter()
         await adapter.shutdown()
         assert adapter._model_id is None
@@ -198,7 +198,7 @@ class TestRegistryIntegration:
 
     def test_registry_returns_correct_adapter(self):
         from desmet.adapters.registry import get_adapter
-        from desmet.adapters.google_adk import GoogleADKAdapter
+        from desmet.adapters.sdk.google_adk import GoogleADKAdapter
         adapter = get_adapter("google_adk")
         assert isinstance(adapter, GoogleADKAdapter)
 
