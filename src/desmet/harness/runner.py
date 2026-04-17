@@ -605,20 +605,32 @@ class EvaluationRunner:
                     # Auto-compute the three trace-derivable rubric
                     # dimensions.  The other two (pipeline_completeness,
                     # autonomy) stay manual via the webui Scoring page.
-                    last_trace = None
-                    for _key in ("deploy", "testing", "codegen", "requirements"):
-                        _sr = stage_results.get(_key)
-                        if _sr is not None and getattr(_sr, "trace", None) is not None:
-                            last_trace = _sr.trace
+                    # Skipped when all_fm is empty (total early failure):
+                    # without framework metrics the rubric has no signal.
+                    # `all(...)` is vacuously True on a dict containing only
+                    # stages that actually ran — that is the intended
+                    # semantics for score_error_recovery.
+                    rubric_trace = None
+                    for stage_name in ("deploy", "testing", "codegen", "requirements"):
+                        sr = stage_results.get(stage_name)
+                        if sr is not None and getattr(sr, "trace", None) is not None:
+                            rubric_trace = sr.trace
                             break
-                    if last_trace is not None:
-                        auto_scores = compute_auto_rubric_scores(
-                            success=all(sr.success for sr in stage_results.values()),
-                            framework_metrics=agg,
-                            trace=last_trace,
-                        )
-                        for dim, val in auto_scores.items():
-                            result.add_score(dim, val)
+                    if rubric_trace is not None:
+                        try:
+                            auto_scores = compute_auto_rubric_scores(
+                                success=all(sr.success for sr in stage_results.values()),
+                                framework_metrics=agg,
+                                trace=rubric_trace,
+                            )
+                            for dim, val in auto_scores.items():
+                                result.add_score(dim, val)
+                        except Exception as e:
+                            logger.warning(
+                                "auto_rubric_scoring_failed",
+                                error=str(e),
+                                story_id=story.id,
+                            )
 
                 # Aggregate resource metrics across stages
                 resource_stages = [
