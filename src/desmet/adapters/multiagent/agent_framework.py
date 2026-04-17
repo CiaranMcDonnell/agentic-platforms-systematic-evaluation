@@ -46,26 +46,38 @@ MAX_RESET_COUNT = 2
 # -- Usage tracking middleware ------------------------------------------------
 
 
-class UsageTrackingMiddleware:
-    """ChatMiddleware that intercepts every LLM call to record token usage.
+def _build_usage_middleware(collector: ObservationCollector) -> Any:
+    """Construct a ChatMiddleware subclass bound to *collector*.
 
-    Thread-safe: ``ObservationCollector`` handles its own lock, so no
-    additional lock is needed here.
+    Agent Framework's middleware contract (v1.0) requires:
+      * subclassing ``agent_framework.ChatMiddleware`` (ABC — bare
+        duck-typed classes are silently ignored).
+      * an ``async def process(self, context, call_next)`` method;
+        ``call_next()`` takes no args and the final response lives on
+        ``context.result`` (not a return value).
+      * reading token usage from ``ChatResponse.usage_details`` —
+        earlier releases exposed ``.usage`` but the current API
+        renamed it.
+
+    Deferred behind a factory because ``ChatMiddleware`` must not be
+    imported at module load time (agent-framework may not be installed
+    when the module is imported for a different platform's run).
     """
+    from agent_framework import ChatMiddleware
 
-    def __init__(self, collector: ObservationCollector) -> None:
-        self._collector = collector
+    class _UsageTrackingMiddleware(ChatMiddleware):
+        async def process(self, context: Any, call_next: Any) -> None:
+            t0 = time.monotonic()
+            await call_next()
+            duration_ms = (time.monotonic() - t0) * 1000
+            response = getattr(context, "result", None)
+            usage = (
+                getattr(response, "usage_details", None)
+                or getattr(response, "usage", None)
+            )
+            collector.record_llm_response(raw_usage=usage, duration_ms=duration_ms)
 
-    async def invoke(self, context: Any, next_handler: Any) -> Any:
-        """Middleware handler: call next, then record usage from the response."""
-        t0 = time.monotonic()
-        response = await next_handler(context)
-        duration_ms = (time.monotonic() - t0) * 1000
-
-        usage = getattr(response, "usage", None)
-        self._collector.record_llm_response(raw_usage=usage, duration_ms=duration_ms)
-
-        return response
+    return _UsageTrackingMiddleware()
 
 
 # -- Adapter ------------------------------------------------------------------
@@ -205,7 +217,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
         collector.record_message("user", prompt)
 
         # Register usage tracking middleware on agents
-        middleware = UsageTrackingMiddleware(collector)
+        middleware = _build_usage_middleware(collector)
 
         # -- Step 1: Planner agent (structured output) ------------------------
         plan: ImplementationPlan | None = None

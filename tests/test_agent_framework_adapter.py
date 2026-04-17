@@ -169,24 +169,21 @@ class TestObservabilityMetadata:
 
 
 class TestUsageTrackingMiddleware:
-    def test_middleware_class_exists(self):
-        from desmet.adapters.multiagent.agent_framework import UsageTrackingMiddleware
-        assert UsageTrackingMiddleware is not None
+    def test_factory_exists(self):
+        from desmet.adapters.multiagent.agent_framework import _build_usage_middleware
+        assert _build_usage_middleware is not None
 
-    def test_middleware_initializes_with_collector(self):
-        from desmet.adapters.multiagent.agent_framework import UsageTrackingMiddleware
+    def test_factory_returns_chat_middleware_subclass(self):
+        """The middleware must subclass ``agent_framework.ChatMiddleware``
+        or the framework silently ignores it."""
+        pytest.importorskip("agent_framework")
+        from agent_framework import ChatMiddleware
+        from desmet.adapters.multiagent.agent_framework import _build_usage_middleware
         trace = AgentTrace()
         collector = ObservationCollector(trace)
-        mw = UsageTrackingMiddleware(collector)
-        assert mw._collector is collector
-
-    def test_middleware_is_thread_safe(self):
-        """ObservationCollector provides thread-safety via its own lock."""
-        from desmet.adapters.multiagent.agent_framework import UsageTrackingMiddleware
-        trace = AgentTrace()
-        collector = ObservationCollector(trace)
-        mw = UsageTrackingMiddleware(collector)
-        assert hasattr(mw._collector, "_lock")
+        mw = _build_usage_middleware(collector)
+        assert isinstance(mw, ChatMiddleware)
+        assert callable(getattr(mw, "process", None))
 
 
 class TestRegistryIntegration:
