@@ -11,18 +11,18 @@ The framework uses a three-level adapter hierarchy:
 #figure(
   ```
   BasePlatformAdapter (ABC — harness/adapter.py)
-    ├─ ToolAgentAdapter (adapters/_base.py)
-    │    ├─ LangGraphAdapter
-    │    ├─ CrewAIAdapter
-    │    ├─ OpenAIAgentsAdapter
-    │    ├─ AgentFrameworkAdapter
-    │    └─ GoogleADKAdapter
+    ├─ ToolAgentAdapter (adapters/_shared/base.py)
+    │    ├─ LangGraphAdapter          (adapters/multiagent/langgraph.py)
+    │    ├─ CrewAIAdapter             (adapters/multiagent/crewai.py)
+    │    ├─ AgentFrameworkAdapter     (adapters/multiagent/agent_framework.py)
+    │    ├─ OpenAIAgentsAdapter       (adapters/sdk/openai_agents.py)
+    │    └─ GoogleADKAdapter          (adapters/sdk/google_adk.py)
     │
-    └─ VisualAgentAdapter (adapters/_visual_base.py)
-         ├─ FlowiseAdapter
-         ├─ LangFlowAdapter
-         ├─ DifyAdapter
-         └─ N8nAdapter
+    └─ VisualAgentAdapter (adapters/_shared/visual_base.py)
+         ├─ FlowiseAdapter            (adapters/visual/flowise.py)
+         ├─ LangFlowAdapter           (adapters/visual/langflow.py)
+         ├─ DifyAdapter               (adapters/visual/dify.py)
+         └─ N8nAdapter                (adapters/visual/n8n.py)
   ```,
   caption: [Adapter class hierarchy],
 )
@@ -44,9 +44,16 @@ Which base class you extend depends on how the platform is accessed:
 
 Both base classes provide the same things for free:
 - The retry loop with `audit_workspace()` validation
-- Prompt construction from `_prompts.py`
+- Prompt construction from `_shared/prompts.py`
 - Trace lifecycle (start/finish/build result)
 - The four SDLC stage methods (`generate_requirements`, `generate_code`, `generate_tests`, `build_and_deploy`)
+
+Adapter source files are organised into three subpackages under `src/desmet/adapters/` matching the platform category in `config/platforms.yaml`:
+- `multiagent/` — multi-agent frameworks (LangGraph, CrewAI, Agent Framework)
+- `sdk/` — agent SDK runtimes (OpenAI Agents, Google ADK)
+- `visual/` — visual/workflow platforms (Flowise, LangFlow, Dify, n8n)
+
+Cross-cutting infrastructure (`base.py`, `visual_base.py`, `prompts.py`, `tools.py`, `tracing.py`, `retry.py`, `observation.py`, `planning.py`, `stub.py`, `validation.py`) lives under `adapters/_shared/`.
 
 Adapter authors only write the platform-specific method (`_run_agent` or `_run_workflow`) — everything else is inherited.
 
@@ -58,7 +65,7 @@ Adapter authors only write the platform-specific method (`_run_agent` or `_run_w
     align: left,
     table.header([*Step*], [*Artefact*]),
     [1. Add platform metadata], [`config/platforms.yaml`],
-    [2. Implement the adapter], [`src/desmet/adapters/my_platform.py`],
+    [2. Implement the adapter], [`src/desmet/adapters/<category>/my_platform.py`],
     [3. Register in the registry], [`src/desmet/adapters/registry.py`],
     [4. Run the smoke test], [`data/stories/basic/US000_adapter_smoke_test.yaml`],
   ),
@@ -153,10 +160,10 @@ Parameter purposes:
 
 #figure(
   ```python
-  from desmet.adapters._base import ToolAgentAdapter
-  from desmet.adapters._observation import ObservationCollector
-  from desmet.adapters._retry import ProgressReporter, RetryPolicy
-  from desmet.adapters._tools import ToolFormat
+  from desmet.adapters._shared.base import ToolAgentAdapter
+  from desmet.adapters._shared.observation import ObservationCollector
+  from desmet.adapters._shared.retry import ProgressReporter, RetryPolicy
+  from desmet.adapters._shared.tools import ToolFormat
   from desmet.adapters.registry import load_platform_info
   from desmet.harness.context import StageContext
   from desmet.harness.models import PlatformInfo
@@ -288,8 +295,8 @@ The `workspace` path is already translated to the container-side path (`/desmet-
 #figure(
   ```python
   import httpx
-  from desmet.adapters._tracing import record_usage
-  from desmet.adapters._visual_base import VisualAgentAdapter
+  from desmet.adapters._shared.tracing import record_usage
+  from desmet.adapters._shared.visual_base import VisualAgentAdapter
   from desmet.adapters.registry import load_platform_info
   from desmet.harness.models import PlatformInfo
 
@@ -393,7 +400,7 @@ Add the adapter to `ADAPTER_REGISTRY` in `src/desmet/adapters/registry.py`:
   ADAPTER_REGISTRY: dict[str, tuple[str, str]] = {
       # ... existing entries ...
       "my_platform": (
-          "desmet.adapters.my_platform",
+          "desmet.adapters.<category>.my_platform",  # e.g. multiagent, sdk, or visual
           "MyPlatformAdapter",
       ),
   }
@@ -432,7 +439,7 @@ The web UI distinguishes between _registered_ platforms (in `ADAPTER_REGISTRY`) 
 
 == Adding a New Tool Format
 
-If the platform's SDK requires tools in a format not covered by the existing `ToolFormat` enum, a new format builder can be added to `src/desmet/adapters/_tools.py`:
+If the platform's SDK requires tools in a format not covered by the existing `ToolFormat` enum, a new format builder can be added to `src/desmet/adapters/_shared/tools.py`:
 
 + Add a new entry to the `ToolFormat` enum
 + Implement a `_build_<format>_tools()` function following the pattern of existing builders
