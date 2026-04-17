@@ -69,6 +69,9 @@ def _safe_resolve(workspace: Path, path: str) -> Path:
 # ---------------------------------------------------------------------------
 
 # Window size: how many recent calls to inspect for loop patterns.
+# Independent of _CROSS_TOOL_THRESHOLD below — the two windows track
+# different buffers (per-tool history vs cross-tool target history) so
+# _LOOP_WINDOW < _CROSS_TOOL_THRESHOLD is not a contradiction.
 _LOOP_WINDOW = 8
 
 # Consecutive-identical threshold (stricter, fires faster).
