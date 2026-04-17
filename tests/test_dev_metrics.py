@@ -33,3 +33,15 @@ def test_compute_all_dev_metrics():
 def test_get_shared_loc():
     shared = get_shared_loc()
     assert shared > 0
+
+
+def test_compute_dev_metrics_maps_mismatched_platform_ids():
+    from desmet.harness.dev_metrics import compute_dev_metrics
+
+    maf = compute_dev_metrics("microsoft_agent_framework")
+    assert maf.adapter_loc > 0, "MAF should resolve to agent_framework.py"
+    assert maf.adapter_sloc > 0
+
+    oai = compute_dev_metrics("openai_agents_sdk")
+    assert oai.adapter_loc > 0, "OpenAI SDK should resolve to openai_agents.py"
+    assert oai.adapter_sloc > 0

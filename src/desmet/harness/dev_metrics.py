@@ -22,6 +22,11 @@ _SHARED_MODULES = [
     "_retry.py",
 ]
 
+_PLATFORM_ADAPTER_FILE: dict[str, str] = {
+    "microsoft_agent_framework": "agent_framework.py",
+    "openai_agents_sdk": "openai_agents.py",
+}
+
 
 @dataclass
 class DevMetrics:
@@ -136,11 +141,16 @@ def _get_platform_extra(platform_id: str) -> str | None:
 def compute_dev_metrics(platform_id: str) -> DevMetrics:
     dm = DevMetrics(platform_id=platform_id)
 
-    # Adapter LOC — try platform_id.py, then with underscores
-    adapter_file = _ADAPTERS_DIR / f"{platform_id}.py"
-    if not adapter_file.exists():
-        alt_name = platform_id.replace("-", "_")
-        adapter_file = _ADAPTERS_DIR / f"{alt_name}.py"
+    # Adapter LOC — consult explicit mapping first, then fall back to
+    # convention (platform_id.py, then underscored).
+    override = _PLATFORM_ADAPTER_FILE.get(platform_id)
+    if override:
+        adapter_file = _ADAPTERS_DIR / override
+    else:
+        adapter_file = _ADAPTERS_DIR / f"{platform_id}.py"
+        if not adapter_file.exists():
+            alt_name = platform_id.replace("-", "_")
+            adapter_file = _ADAPTERS_DIR / f"{alt_name}.py"
 
     if adapter_file.exists():
         source = adapter_file.read_text(encoding="utf-8")
