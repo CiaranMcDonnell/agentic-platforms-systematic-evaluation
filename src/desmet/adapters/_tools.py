@@ -77,7 +77,7 @@ _CONSECUTIVE_THRESHOLD = 4
 # Cross-tool target threshold — fires when the same file/target appears
 # in N consecutive calls across ANY tools (catches agents thrashing on
 # one file with different tools: write → render → read → write → …).
-_CROSS_TOOL_THRESHOLD = 6
+_CROSS_TOOL_THRESHOLD = 10
 
 # Shell commands that produce no meaningful progress.  When the entire
 # window consists of these, the agent is stuck exploring rather than

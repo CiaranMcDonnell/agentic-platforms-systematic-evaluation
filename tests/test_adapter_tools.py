@@ -6,6 +6,7 @@ import pytest
 from desmet.adapters._tools import (
     AVAILABLE_TOOLS,
     ToolFormat,
+    _CROSS_TOOL_THRESHOLD,
     _check_loop,
     _extract_target,
     _safe_resolve,
@@ -52,24 +53,29 @@ class TestExtractTarget:
 
 
 class TestCrossToolLoopDetection:
-    def test_fires_on_six_cross_tool_ops_on_same_file(self, workspace):
+    def test_fires_on_cross_tool_ops_on_same_file(self, workspace):
         ws = str(workspace)
         target = "docs/design/use_case.mermaid"
-        # Simulate the CrewAI loop pattern: write → shell → read → write → shell → read
-        results = [
-            _check_loop(ws, "write_file", target),
-            _check_loop(ws, "execute_shell", f"mmdc -i {target}"),
-            _check_loop(ws, "read_file", target),
-            _check_loop(ws, "write_file", target),
-            _check_loop(ws, "execute_shell", f"mmdc -i {target}"),
-            _check_loop(ws, "read_file", target),
+        # Build a 5-item cycle so no individual tool accumulates 4+ identical
+        # consecutive calls (the per-tool consecutive threshold) before the
+        # cross-tool threshold is reached.  Each element appears exactly twice
+        # across _CROSS_TOOL_THRESHOLD (10) iterations.
+        cycle = [
+            ("write_file", target),
+            ("execute_shell", f"mmdc -i {target}"),
+            ("read_file", target),
+            ("execute_shell", f"cat {target}"),
+            ("execute_shell", f"wc -l {target}"),
         ]
-        # First 5 should be None (still under threshold)
-        assert all(r is None for r in results[:5])
-        # 6th call triggers the cross-tool loop detector
-        assert results[5] is not None
-        assert "LOOP DETECTED" in results[5]
-        assert target in results[5]
+        n = _CROSS_TOOL_THRESHOLD
+        results: list[str | None] = []
+        for i in range(n):
+            tool, arg = cycle[i % len(cycle)]
+            results.append(_check_loop(ws, tool, arg))
+        assert all(r is None for r in results[: n - 1])
+        assert results[-1] is not None
+        assert "LOOP DETECTED" in results[-1]
+        assert target in results[-1]
 
     def test_does_not_fire_on_different_files(self, workspace):
         ws = str(workspace)
@@ -116,17 +122,20 @@ class TestCrossToolLoopDetection:
         ws = str(workspace)
         target = "docs/design/use_case.mermaid"
 
-        # Build up 6 cross-tool ops to trigger the lock
-        sequence = [
+        # Build up enough cross-tool ops to trigger the lock.
+        # Use a 5-item cycle so no individual tool accumulates 4 identical
+        # consecutive calls (per-tool consecutive threshold) before the
+        # cross-tool threshold is reached.
+        cycle = [
             ("write_file", target),
             ("execute_shell", f"mmdc -i {target}"),
-            ("write_file", target),
-            ("execute_shell", f"mmdc -i {target}"),
-            ("write_file", target),
-            ("execute_shell", f"mmdc -i {target}"),
+            ("read_file", target),
+            ("execute_shell", f"cat {target}"),
+            ("execute_shell", f"wc -l {target}"),
         ]
+        sequence = [cycle[i % len(cycle)] for i in range(_CROSS_TOOL_THRESHOLD)]
         results = [_check_loop(ws, tool, arg) for tool, arg in sequence]
-        # 6th call triggers the cross-tool loop and LOCKS the target
+        # The final call triggers the cross-tool loop and LOCKS the target
         assert results[-1] is not None
         assert "LOCKED" in results[-1]
 
@@ -157,8 +166,18 @@ class TestCrossToolLoopDetection:
         target = "stuck.md"
 
         # Trigger a lock
-        for _ in range(6):
-            _check_loop(ws, "write_file", target)
+        # Use a varied 5-item cycle to reach the cross-tool threshold without
+        # triggering the per-tool consecutive check first.
+        cycle = [
+            ("write_file", target),
+            ("execute_shell", f"mmdc -i {target}"),
+            ("read_file", target),
+            ("execute_shell", f"cat {target}"),
+            ("execute_shell", f"wc -l {target}"),
+        ]
+        for i in range(_CROSS_TOOL_THRESHOLD):
+            tool, arg = cycle[i % len(cycle)]
+            _check_loop(ws, tool, arg)
         refused = _check_loop(ws, "write_file", target)
         assert refused is not None
 
