@@ -373,11 +373,13 @@ class GoogleADKAdapter(ToolAgentAdapter):
                 collector.record_llm_response(raw_usage=usage)
             return None
 
-        def _after_tool_callback(*, tool, tool_args, tool_context, result):
+        def _after_tool_callback(*, tool, args, tool_context, tool_response):
             """Record tool execution for observation."""
             tool_name = getattr(tool, "name", "") or getattr(tool, "__name__", "unknown")
-            collector.record_tool_execution(tool_name, tool_args, str(result) if result else "")
-            progress.tool_call(tool_name, tool_args)
+            collector.record_tool_execution(
+                tool_name, args, str(tool_response) if tool_response else ""
+            )
+            progress.tool_call(tool_name, args)
             return None
 
         executor_agent = Agent(
