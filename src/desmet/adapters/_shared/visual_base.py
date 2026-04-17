@@ -19,21 +19,21 @@ import re
 from abc import abstractmethod
 from typing import Any
 
-from desmet.adapters._prompts import (
+from desmet.adapters._shared.prompts import (
     build_codegen_prompt,
     build_deploy_prompt,
     build_requirements_prompt,
     build_system_message,
     build_testing_prompt,
 )
-from desmet.adapters._tracing import (
+from desmet.adapters._shared.tracing import (
     build_stage_result,
     compute_framework_metrics,
     finish_trace,
     record_message,
     start_trace,
 )
-from desmet.adapters._validation import audit_workspace
+from desmet.adapters._shared.validation import audit_workspace
 from desmet.harness.adapter import VisualPlatformAdapter
 from desmet.harness.context import StageContext
 from desmet.harness.results import (

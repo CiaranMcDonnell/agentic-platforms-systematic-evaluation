@@ -12,7 +12,7 @@ from typing import overload
 
 from pydantic import BaseModel
 
-from desmet.adapters._prompts import AgentPersona
+from desmet.adapters._shared.prompts import AgentPersona
 
 # =========================================================================
 # Plan Model

@@ -3,7 +3,7 @@
 import json
 from datetime import datetime, timedelta, timezone
 
-from desmet.adapters._tracing import compute_framework_metrics, record_llm_duration
+from desmet.adapters._shared.tracing import compute_framework_metrics, record_llm_duration
 from desmet.harness.trace import AgentTrace, ToolCall
 
 

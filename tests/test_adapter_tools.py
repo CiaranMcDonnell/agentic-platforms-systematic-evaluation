@@ -3,7 +3,7 @@
 
 import pytest
 
-from desmet.adapters._tools import (
+from desmet.adapters._shared.tools import (
     AVAILABLE_TOOLS,
     ToolFormat,
     _CROSS_TOOL_THRESHOLD,
@@ -538,11 +538,11 @@ class TestDeployRemoteTool:
 
 class TestAgentFrameworkToolFormat:
     def test_agent_framework_enum_exists(self):
-        from desmet.adapters._tools import ToolFormat
+        from desmet.adapters._shared.tools import ToolFormat
         assert hasattr(ToolFormat, "AGENT_FRAMEWORK")
 
     def test_create_agent_framework_tools(self, tmp_path):
-        from desmet.adapters._tools import ToolFormat, create_tools
+        from desmet.adapters._shared.tools import ToolFormat, create_tools
         tools = create_tools(
             tmp_path,
             ["read_file", "write_file", "list_directory"],
@@ -551,12 +551,12 @@ class TestAgentFrameworkToolFormat:
         assert len(tools) == 3
 
     def test_agent_framework_tools_are_callable(self, tmp_path):
-        from desmet.adapters._tools import ToolFormat, create_tools
+        from desmet.adapters._shared.tools import ToolFormat, create_tools
         tools = create_tools(tmp_path, ["read_file"], fmt=ToolFormat.AGENT_FRAMEWORK)
         assert callable(tools[0])
 
     def test_agent_framework_read_file_works(self, tmp_path):
-        from desmet.adapters._tools import ToolFormat, create_tools
+        from desmet.adapters._shared.tools import ToolFormat, create_tools
         (tmp_path / "hello.txt").write_text("world")
         tools = create_tools(tmp_path, ["read_file"], fmt=ToolFormat.AGENT_FRAMEWORK)
         read_file = tools[0]
@@ -564,7 +564,7 @@ class TestAgentFrameworkToolFormat:
         assert result == "world"
 
     def test_agent_framework_check_completion_included(self, tmp_path):
-        from desmet.adapters._tools import ToolFormat, create_tools
+        from desmet.adapters._shared.tools import ToolFormat, create_tools
         tools = create_tools(
             tmp_path,
             ["check_completion"],
@@ -575,7 +575,7 @@ class TestAgentFrameworkToolFormat:
 
     def test_agent_framework_tools_have_descriptions(self, tmp_path):
         """Agent Framework @tool functions need docstrings for schema inference."""
-        from desmet.adapters._tools import ToolFormat, create_tools
+        from desmet.adapters._shared.tools import ToolFormat, create_tools
         tools = create_tools(
             tmp_path,
             ["read_file", "write_file", "execute_shell"],
@@ -589,7 +589,7 @@ class TestAgentFrameworkToolFormat:
 # split_tools tests
 # ---------------------------------------------------------------------------
 
-from desmet.adapters._tools import split_tools
+from desmet.adapters._shared.tools import split_tools
 
 
 class _MockNamedTool:
@@ -629,7 +629,7 @@ class TestSplitTools:
 
 class TestSplitToolsCallable:
     def test_split_tools_callable_format(self, tmp_path):
-        from desmet.adapters._tools import ToolFormat, create_tools, split_tools
+        from desmet.adapters._shared.tools import ToolFormat, create_tools, split_tools
         tools = create_tools(
             tmp_path, ["read_file", "write_file", "check_completion"],
             fmt=ToolFormat.CALLABLE, stage_name="codegen",
@@ -646,7 +646,7 @@ class TestSplitToolsCallable:
 # _check_completion hint string tests
 # ---------------------------------------------------------------------------
 
-from desmet.adapters._tools import _check_completion
+from desmet.adapters._shared.tools import _check_completion
 
 
 class TestCheckCompletionDeployHint:

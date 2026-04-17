@@ -114,7 +114,7 @@ class TestAutoDerivedImplementation:
     def test_stub_class_detected_as_not_implemented(self):
         """A class carrying the _is_desmet_stub marker should be rejected."""
         from desmet.adapters.registry import _is_implemented
-        from desmet.adapters._stub import create_visual_stub_adapter
+        from desmet.adapters._shared.stub import create_visual_stub_adapter
 
         # create_visual_stub_adapter returns a class with _is_desmet_stub=True
         cls = create_visual_stub_adapter("flowise", default_url="http://x")

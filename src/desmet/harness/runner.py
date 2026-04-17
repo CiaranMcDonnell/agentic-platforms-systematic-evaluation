@@ -783,7 +783,7 @@ class EvaluationRunner:
         if not deploy_repo:
             return
 
-        from desmet.adapters._tools import _git_push_url
+        from desmet.adapters._shared.tools import _git_push_url
         push_url = _git_push_url(deploy_repo)
         branch = f"{platform_id}/{story_id}"
 

@@ -6,8 +6,8 @@ import inspect
 import pytest
 
 from desmet.adapters.crewai import CrewAIAdapter
-from desmet.adapters._observation import ObservationCollector, ObservationRequirements
-from desmet.adapters._retry import ProgressReporter
+from desmet.adapters._shared.observation import ObservationCollector, ObservationRequirements
+from desmet.adapters._shared.retry import ProgressReporter
 from desmet.harness.trace import (
     AgentTrace,
 )
@@ -270,7 +270,7 @@ class TestCrewAIAdapterStructure:
         assert not hasattr(CrewAIAdapter, "_tool_call_patch_applied")
 
     def test_max_retries_constant(self):
-        from desmet.adapters._retry import RetryPolicy
+        from desmet.adapters._shared.retry import RetryPolicy
         assert RetryPolicy().max_retries == 3
 
     def test_has_build_crew(self, adapter):
@@ -333,10 +333,10 @@ class TestSuccessAfterBudget:
     ):
         from unittest.mock import MagicMock
         from desmet.adapters.crewai import CrewAIAdapter
-        from desmet.adapters._observation import (
+        from desmet.adapters._shared.observation import (
             ObservationCollector, ObservationRequirements,
         )
-        from desmet.adapters._retry import ProgressReporter, RetryPolicy
+        from desmet.adapters._shared.retry import ProgressReporter, RetryPolicy
         from desmet.harness.context import StageContext
         from desmet.harness.story import DifficultyLevel, UserStory
         from desmet.harness.trace import AgentTrace
@@ -417,10 +417,10 @@ class TestSuccessAfterBudget:
         """
         from unittest.mock import MagicMock
         from desmet.adapters.crewai import CrewAIAdapter
-        from desmet.adapters._observation import (
+        from desmet.adapters._shared.observation import (
             ObservationCollector, ObservationRequirements,
         )
-        from desmet.adapters._retry import ProgressReporter, RetryPolicy
+        from desmet.adapters._shared.retry import ProgressReporter, RetryPolicy
         from desmet.harness.context import StageContext
         from desmet.harness.story import DifficultyLevel, UserStory
         from desmet.harness.trace import AgentTrace

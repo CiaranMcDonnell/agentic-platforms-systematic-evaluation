@@ -23,13 +23,13 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from typing_extensions import TypedDict
 
-from desmet.adapters._base import ToolAgentAdapter
-from desmet.adapters._planning import ImplementationPlan, build_executor_instructions, format_plan_text, parse_plan_text
-from desmet.adapters._prompts import get_stage_persona, get_sub_persona
-from desmet.adapters._tools import ToolFormat, split_tools
-from desmet.adapters._observation import ObservationCollector
-from desmet.adapters._retry import ProgressReporter, RetryPolicy
-from desmet.adapters._tracing import record_node_event
+from desmet.adapters._shared.base import ToolAgentAdapter
+from desmet.adapters._shared.planning import ImplementationPlan, build_executor_instructions, format_plan_text, parse_plan_text
+from desmet.adapters._shared.prompts import get_stage_persona, get_sub_persona
+from desmet.adapters._shared.tools import ToolFormat, split_tools
+from desmet.adapters._shared.observation import ObservationCollector
+from desmet.adapters._shared.retry import ProgressReporter, RetryPolicy
+from desmet.adapters._shared.tracing import record_node_event
 from desmet.adapters.registry import load_platform_info
 from desmet.harness.context import StageContext
 from desmet.harness.models import PlatformInfo

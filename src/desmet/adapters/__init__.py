@@ -6,7 +6,7 @@ Each module implements BasePlatformAdapter for a specific agentic platform.
 
 from desmet.harness.adapter import BasePlatformAdapter, VisualPlatformAdapter
 
-from ._base import ToolAgentAdapter
+from ._shared.base import ToolAgentAdapter
 from .registry import (
     AdapterNotImplementedError,
     get_adapter,

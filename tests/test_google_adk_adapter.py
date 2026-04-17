@@ -5,7 +5,7 @@ import inspect
 
 import pytest
 
-from desmet.adapters._tools import ToolFormat
+from desmet.adapters._shared.tools import ToolFormat
 
 
 @pytest.fixture
@@ -204,6 +204,6 @@ class TestRegistryIntegration:
 
     def test_registry_adapter_has_correct_tool_format(self):
         from desmet.adapters.registry import get_adapter
-        from desmet.adapters._tools import ToolFormat
+        from desmet.adapters._shared.tools import ToolFormat
         adapter = get_adapter("google_adk")
         assert adapter.TOOL_FORMAT == ToolFormat.CALLABLE

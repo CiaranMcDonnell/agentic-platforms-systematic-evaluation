@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from desmet.adapters._observation import ObservationCollector
-from desmet.adapters._tracing import format_tool_detail
+from desmet.adapters._shared.observation import ObservationCollector
+from desmet.adapters._shared.tracing import format_tool_detail
 
 
 @dataclass
@@ -40,7 +40,7 @@ class RetryPolicy:
         string from ``_check_completion`` (success message when passed,
         failure hint when not).
         """
-        from desmet.adapters._tools import _check_completion
+        from desmet.adapters._shared.tools import _check_completion
 
         return _check_completion(self.workspace, self.stage_name)
 

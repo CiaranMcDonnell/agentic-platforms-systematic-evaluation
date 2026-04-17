@@ -11,13 +11,13 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from desmet.adapters._base import ToolAgentAdapter
-from desmet.adapters._planning import ImplementationPlan, build_executor_instructions, parse_plan_text
-from desmet.adapters._prompts import get_stage_persona, get_sub_persona
-from desmet.adapters._tools import ToolFormat
-from desmet.adapters._observation import ObservationCollector
-from desmet.adapters._retry import ProgressReporter, RetryPolicy
-from desmet.adapters._validation import validate_workspace
+from desmet.adapters._shared.base import ToolAgentAdapter
+from desmet.adapters._shared.planning import ImplementationPlan, build_executor_instructions, parse_plan_text
+from desmet.adapters._shared.prompts import get_stage_persona, get_sub_persona
+from desmet.adapters._shared.tools import ToolFormat
+from desmet.adapters._shared.observation import ObservationCollector
+from desmet.adapters._shared.retry import ProgressReporter, RetryPolicy
+from desmet.adapters._shared.validation import validate_workspace
 from desmet.adapters.registry import load_platform_info
 from desmet.harness.context import StageContext
 from desmet.harness.models import PlatformInfo

@@ -15,8 +15,8 @@ import json
 
 import httpx
 
-from desmet.adapters._tracing import record_tool_call, record_usage
-from desmet.adapters._visual_base import VisualAgentAdapter
+from desmet.adapters._shared.tracing import record_tool_call, record_usage
+from desmet.adapters._shared.visual_base import VisualAgentAdapter
 from desmet.adapters.registry import load_platform_info
 from desmet.harness.models import PlatformInfo
 

@@ -121,7 +121,7 @@ def _is_implemented(platform_id: str) -> bool:
 
     An adapter is considered implemented when its registered class exists
     and is not a stub (no ``_is_desmet_stub`` marker from
-    :mod:`desmet.adapters._stub`).
+    :mod:`desmet.adapters._shared.stub`).
 
     **Missing SDK dependencies don't count as "not implemented"** — the
     adapter code still exists, it just can't run in this particular

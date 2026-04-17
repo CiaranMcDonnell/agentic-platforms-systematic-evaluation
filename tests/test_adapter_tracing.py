@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from desmet.adapters._tracing import (
+from desmet.adapters._shared.tracing import (
     build_stage_result,
     finish_trace,
     format_tool_detail,

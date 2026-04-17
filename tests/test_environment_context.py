@@ -1,7 +1,7 @@
 """Tests for environment context loading and prompt injection."""
 from types import SimpleNamespace
 
-from desmet.adapters._prompts import (
+from desmet.adapters._shared.prompts import (
     build_codegen_prompt,
     build_deploy_prompt,
     build_requirements_prompt,

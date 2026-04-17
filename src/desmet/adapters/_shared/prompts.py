@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from desmet.harness.results import RequirementsResult
     from desmet.harness.story import UserStory
 
-_CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
+_CONFIG_DIR = Path(__file__).resolve().parents[4] / "config"
 
 
 # =========================================================================

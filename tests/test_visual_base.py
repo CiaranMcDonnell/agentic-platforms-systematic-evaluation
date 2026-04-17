@@ -11,7 +11,7 @@ class _MockVisualAdapter:
 
     @staticmethod
     def create(run_workflow_return=None):
-        from desmet.adapters._visual_base import VisualAgentAdapter
+        from desmet.adapters._shared.visual_base import VisualAgentAdapter
         from desmet.harness.models import PlatformInfo, PlatformCategory, PlatformRuntime
 
         class ConcreteAdapter(VisualAgentAdapter):
@@ -99,7 +99,7 @@ class TestExecuteVisualStage:
         context.max_iterations = 25
         context.metadata = {}
 
-        with patch("desmet.adapters._visual_base.audit_workspace", return_value=[]):
+        with patch("desmet.adapters._shared.visual_base.audit_workspace", return_value=[]):
             result = await adapter._execute_visual_stage(
                 "requirements",
                 lambda s, **kw: "Analyse: " + s.prompt,
@@ -139,7 +139,7 @@ class TestExecuteVisualStage:
                 return ["missing file: main.py"]
             return []
 
-        with patch("desmet.adapters._visual_base.audit_workspace", side_effect=mock_audit):
+        with patch("desmet.adapters._shared.visual_base.audit_workspace", side_effect=mock_audit):
             result = await adapter._execute_visual_stage(
                 "codegen",
                 lambda s, **kw: "Build: " + s.prompt,

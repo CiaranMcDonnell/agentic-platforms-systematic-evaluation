@@ -14,23 +14,23 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
-from desmet.adapters._observation import ObservationCollector, ObservationRequirements
-from desmet.adapters._prompts import (
+from desmet.adapters._shared.observation import ObservationCollector, ObservationRequirements
+from desmet.adapters._shared.prompts import (
     build_codegen_prompt,
     build_deploy_prompt,
     build_requirements_prompt,
     build_system_message,
     build_testing_prompt,
 )
-from desmet.adapters._retry import ProgressReporter, RetryPolicy
-from desmet.adapters._tools import ToolFormat, create_tools, reset_loop_tracker
-from desmet.adapters._tracing import (
+from desmet.adapters._shared.retry import ProgressReporter, RetryPolicy
+from desmet.adapters._shared.tools import ToolFormat, create_tools, reset_loop_tracker
+from desmet.adapters._shared.tracing import (
     build_stage_result,
     compute_framework_metrics,
     finish_trace,
     start_trace,
 )
-from desmet.adapters._validation import audit_workspace
+from desmet.adapters._shared.validation import audit_workspace
 from desmet.harness.adapter import BasePlatformAdapter
 from desmet.harness.context import StageContext
 from desmet.harness.results import (

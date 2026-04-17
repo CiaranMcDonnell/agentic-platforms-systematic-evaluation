@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from desmet.adapters._prompts import (
+from desmet.adapters._shared.prompts import (
     STAGE_EXPECTED_OUTPUTS,
     AgentPersona,
     build_codegen_prompt,

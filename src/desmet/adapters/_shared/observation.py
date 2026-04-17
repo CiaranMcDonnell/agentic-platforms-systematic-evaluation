@@ -11,14 +11,14 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
-from desmet.adapters._tracing import (
+from desmet.adapters._shared.tracing import (
     finish_trace,
     normalize_usage,
     record_llm_duration,
     record_tool_call,
     record_usage,
 )
-from desmet.adapters._tracing import (
+from desmet.adapters._shared.tracing import (
     record_message as _record_message,
 )
 from desmet.harness.trace import AgentTrace

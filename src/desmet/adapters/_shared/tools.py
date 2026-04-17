@@ -840,7 +840,7 @@ def _check_completion(workspace: Path, stage: str) -> tuple[bool, str]:
     result.  CrewAI uses ``result_as_answer=True`` to short-circuit its
     ReAct loop when validation passes.
     """
-    from desmet.adapters._validation import validate_workspace
+    from desmet.adapters._shared.validation import validate_workspace
 
     passed = validate_workspace(stage, str(workspace))
     if passed:

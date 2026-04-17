@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from desmet.adapters._retry import RetryPolicy
+from desmet.adapters._shared.retry import RetryPolicy
 
 
 def test_total_attempts_default():

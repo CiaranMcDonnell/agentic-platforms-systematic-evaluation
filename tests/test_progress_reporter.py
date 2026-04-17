@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import time
 
-from desmet.adapters._observation import ObservationCollector, ObservationRequirements
-from desmet.adapters._retry import ProgressReporter
+from desmet.adapters._shared.observation import ObservationCollector, ObservationRequirements
+from desmet.adapters._shared.retry import ProgressReporter
 from desmet.harness.trace import AgentTrace
 
 

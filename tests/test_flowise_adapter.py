@@ -160,7 +160,7 @@ class TestFlowiseStageExecution:
         context.max_iterations = 25
         context.metadata = {}
 
-        with patch("desmet.adapters._visual_base.audit_workspace", return_value=[]):
+        with patch("desmet.adapters._shared.visual_base.audit_workspace", return_value=[]):
             result = await adapter._execute_visual_stage(
                 "requirements",
                 lambda s, **kw: "Analyse: " + s.prompt,

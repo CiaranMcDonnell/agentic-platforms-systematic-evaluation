@@ -2,7 +2,7 @@
 import os
 from unittest.mock import patch, MagicMock
 
-from desmet.adapters._tools import _deploy_port, _deploy_remote, AVAILABLE_TOOLS
+from desmet.adapters._shared.tools import _deploy_port, _deploy_remote, AVAILABLE_TOOLS
 
 
 def test_deploy_port_is_deterministic():
@@ -40,7 +40,7 @@ _DEPLOY_ENV = {
 def test_deploy_remote_push_calls_git(tmp_path):
     """Push action uses git add/commit/push."""
     with patch.dict(os.environ, _DEPLOY_ENV), \
-         patch("desmet.adapters._tools.subprocess.run") as mock_run:
+         patch("desmet.adapters._shared.tools.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(stdout="pushed", stderr="", returncode=0)
         result = _deploy_remote(
             workspace=tmp_path,
@@ -57,7 +57,7 @@ def test_deploy_remote_push_calls_git(tmp_path):
 def test_deploy_remote_restart_calls_ssh(tmp_path):
     """Restart action SSHes to server and runs docker compose."""
     with patch.dict(os.environ, _DEPLOY_ENV), \
-         patch("desmet.adapters._tools.subprocess.run") as mock_run:
+         patch("desmet.adapters._shared.tools.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(stdout="started", stderr="", returncode=0)
         result = _deploy_remote(
             workspace=tmp_path,
@@ -73,7 +73,7 @@ def test_deploy_remote_restart_calls_ssh(tmp_path):
 def test_deploy_remote_health_check_uses_port(tmp_path):
     """Health check curls the deploy port via SSH."""
     with patch.dict(os.environ, _DEPLOY_ENV), \
-         patch("desmet.adapters._tools.subprocess.run") as mock_run:
+         patch("desmet.adapters._shared.tools.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(stdout='{"status":"ok"}', stderr="", returncode=0)
         result = _deploy_remote(
             workspace=tmp_path,
@@ -124,7 +124,7 @@ class TestLocalDeployMode:
 
     def test_local_restart_calls_docker_compose(self, tmp_path):
         with patch.dict(os.environ, {"DESMET_DEPLOY_MODE": "local"}), \
-             patch("desmet.adapters._tools.subprocess.run") as mock_run:
+             patch("desmet.adapters._shared.tools.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(stdout="started", stderr="", returncode=0)
             result = _deploy_remote(
                 workspace=tmp_path,
@@ -138,7 +138,7 @@ class TestLocalDeployMode:
 
     def test_local_health_check_curls_localhost(self, tmp_path):
         with patch.dict(os.environ, {"DESMET_DEPLOY_MODE": "local"}), \
-             patch("desmet.adapters._tools.subprocess.run") as mock_run:
+             patch("desmet.adapters._shared.tools.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(stdout='{"status":"ok"}', stderr="", returncode=0)
             result = _deploy_remote(
                 workspace=tmp_path,

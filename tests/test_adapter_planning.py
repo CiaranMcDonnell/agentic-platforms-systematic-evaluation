@@ -1,17 +1,17 @@
-"""Tests for the shared planning module ``desmet.adapters._planning``."""
+"""Tests for the shared planning module ``desmet.adapters._shared.planning``."""
 
 from __future__ import annotations
 
 import pytest
 from pydantic import BaseModel
 
-from desmet.adapters._planning import (
+from desmet.adapters._shared.planning import (
     ImplementationPlan,
     build_executor_instructions,
     format_plan_text,
     parse_plan_text,
 )
-from desmet.adapters._prompts import AgentPersona
+from desmet.adapters._shared.prompts import AgentPersona
 
 
 # =========================================================================

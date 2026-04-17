@@ -1,6 +1,6 @@
 """Tests for shared workspace validation."""
 import pytest
-from desmet.adapters._validation import validate_workspace
+from desmet.adapters._shared.validation import validate_workspace
 
 
 class TestValidateWorkspace:

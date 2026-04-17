@@ -97,7 +97,7 @@ class TestOpenAIAgentsAdapterInterface:
         assert info.name == "OpenAI Agents SDK"
 
     def test_tool_format_is_openai_agents(self, adapter):
-        from desmet.adapters._tools import ToolFormat
+        from desmet.adapters._shared.tools import ToolFormat
         assert adapter.TOOL_FORMAT == ToolFormat.OPENAI_AGENTS
 
     def test_has_run_agent(self, adapter):

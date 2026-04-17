@@ -127,7 +127,7 @@ class TestDifyStageExecution:
         context.max_iterations = 25
         context.metadata = {}
 
-        with patch("desmet.adapters._visual_base.audit_workspace", return_value=[]):
+        with patch("desmet.adapters._shared.visual_base.audit_workspace", return_value=[]):
             result = await adapter._execute_visual_stage(
                 "requirements",
                 lambda s, **kw: "Analyse: " + s.prompt,
@@ -140,7 +140,7 @@ class TestDifyStageExecution:
         assert result.success is True
 
     def test_collect_execution_metrics_extracts_usage(self, adapter):
-        from desmet.adapters._tracing import start_trace
+        from desmet.adapters._shared.tracing import start_trace
 
         trace = start_trace()
         exec_data = {

@@ -6,7 +6,7 @@ import threading
 
 import pytest
 
-from desmet.adapters._observation import ObservationCollector, ObservationRequirements
+from desmet.adapters._shared.observation import ObservationCollector, ObservationRequirements
 from desmet.harness.trace import AgentTrace
 
 
@@ -169,7 +169,7 @@ def test_record_after_seal_raises():
 
 def test_constructor_model_used_by_default(mocker):
     trace = AgentTrace()
-    spy = mocker.patch("desmet.adapters._observation.record_usage")
+    spy = mocker.patch("desmet.adapters._shared.observation.record_usage")
     collector = ObservationCollector(trace, model="gpt-4o")
     collector.record_llm_response(raw_usage={"prompt_tokens": 5, "completion_tokens": 5})
     spy.assert_called_once()
@@ -178,7 +178,7 @@ def test_constructor_model_used_by_default(mocker):
 
 def test_per_call_model_overrides_constructor(mocker):
     trace = AgentTrace()
-    spy = mocker.patch("desmet.adapters._observation.record_usage")
+    spy = mocker.patch("desmet.adapters._shared.observation.record_usage")
     collector = ObservationCollector(trace, model="gpt-4o")
     collector.record_llm_response(
         raw_usage={"prompt_tokens": 5, "completion_tokens": 5},

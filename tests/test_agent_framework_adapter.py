@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from desmet.adapters.agent_framework import AgentFrameworkAdapter
-from desmet.adapters._observation import ObservationCollector
+from desmet.adapters._shared.observation import ObservationCollector
 from desmet.harness.trace import AgentTrace
 
 
@@ -76,7 +76,7 @@ class TestAgentFrameworkAdapterInterface:
 
     def test_no_legacy_stub(self, adapter):
         """The adapter should not be a stub anymore."""
-        from desmet.adapters._tools import ToolFormat
+        from desmet.adapters._shared.tools import ToolFormat
         assert adapter.TOOL_FORMAT == ToolFormat.AGENT_FRAMEWORK
 
     def test_run_agent_signature(self, adapter):
@@ -202,6 +202,6 @@ class TestRegistryIntegration:
 
     def test_registry_adapter_has_correct_tool_format(self):
         from desmet.adapters.registry import get_adapter
-        from desmet.adapters._tools import ToolFormat
+        from desmet.adapters._shared.tools import ToolFormat
         adapter = get_adapter("microsoft_agent_framework")
         assert adapter.TOOL_FORMAT == ToolFormat.AGENT_FRAMEWORK

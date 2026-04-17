@@ -12,14 +12,14 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _PYPROJECT = _PROJECT_ROOT / "pyproject.toml"
 
 _SHARED_MODULES = [
-    "_base.py",
-    "_tools.py",
-    "_prompts.py",
-    "_tracing.py",
-    "_validation.py",
-    "_planning.py",
-    "_observation.py",
-    "_retry.py",
+    "_shared/base.py",
+    "_shared/tools.py",
+    "_shared/prompts.py",
+    "_shared/tracing.py",
+    "_shared/validation.py",
+    "_shared/planning.py",
+    "_shared/observation.py",
+    "_shared/retry.py",
 ]
 
 _PLATFORM_ADAPTER_FILE: dict[str, str] = {
