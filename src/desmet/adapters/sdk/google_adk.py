@@ -362,20 +362,22 @@ class GoogleADKAdapter(ToolAgentAdapter):
             ),
         )
 
-        # Callback closures for observation tracking
-        def _after_model_callback(callback_context, response):
+        # Callback closures for observation tracking.  ADK invokes these
+        # with keyword-only arguments whose names are part of the contract
+        # — renaming them (e.g. llm_response → response) raises a
+        # "unexpected keyword argument" TypeError at runtime.
+        def _after_model_callback(*, callback_context, llm_response):
             """Record token usage from every LLM call."""
-            usage = getattr(response, "usage_metadata", None)
+            usage = getattr(llm_response, "usage_metadata", None)
             if usage:
                 collector.record_llm_response(raw_usage=usage)
             return None
 
-        def _after_tool_callback(tool_context, result, tool):
+        def _after_tool_callback(*, tool, tool_args, tool_context, result):
             """Record tool execution for observation."""
             tool_name = getattr(tool, "name", "") or getattr(tool, "__name__", "unknown")
-            args = getattr(tool_context, "function_call_args", {}) or {}
-            collector.record_tool_execution(tool_name, args, str(result) if result else "")
-            progress.tool_call(tool_name, args)
+            collector.record_tool_execution(tool_name, tool_args, str(result) if result else "")
+            progress.tool_call(tool_name, tool_args)
             return None
 
         executor_agent = Agent(
