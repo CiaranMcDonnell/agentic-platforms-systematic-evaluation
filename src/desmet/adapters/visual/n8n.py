@@ -357,7 +357,7 @@ class N8nAdapter(VisualAgentAdapter):
         workspace: str,
     ) -> dict:
         """Create, execute, poll, and clean up one n8n workflow."""
-        from desmet.adapters.n8n_templates import build_workflow
+        from desmet.adapters.visual.n8n_templates import build_workflow
 
         wf_def = build_workflow(
             stage_name=stage_name,

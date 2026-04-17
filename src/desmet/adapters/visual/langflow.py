@@ -257,7 +257,7 @@ class LangFlowAdapter(VisualAgentAdapter):
         workspace: str,
     ) -> dict:
         """Create a flow, run it, clean up, return result."""
-        from desmet.adapters.langflow_templates import build_flow
+        from desmet.adapters.visual.langflow_templates import build_flow
 
         assert self._client is not None
         assert self._catalog is not None

@@ -8,26 +8,26 @@ import pytest
 
 class TestDifyClientInit:
     def test_client_sets_base_url(self):
-        from desmet.adapters.dify import DifyClient
+        from desmet.adapters.visual.dify import DifyClient
 
         client = DifyClient("http://localhost:5001")
         assert client.base_url == "http://localhost:5001"
 
     def test_client_strips_trailing_slash(self):
-        from desmet.adapters.dify import DifyClient
+        from desmet.adapters.visual.dify import DifyClient
 
         client = DifyClient("http://localhost:5001/")
         assert client.base_url == "http://localhost:5001"
 
     def test_console_headers_without_token(self):
-        from desmet.adapters.dify import DifyClient
+        from desmet.adapters.visual.dify import DifyClient
 
         client = DifyClient("http://localhost:5001")
         headers = client._console_headers()
         assert "Authorization" not in headers
 
     def test_console_headers_with_token(self):
-        from desmet.adapters.dify import DifyClient
+        from desmet.adapters.visual.dify import DifyClient
 
         client = DifyClient("http://localhost:5001")
         client._console_token = "test-token"
@@ -37,27 +37,27 @@ class TestDifyClientInit:
 
 class TestDifyAdapterStructure:
     def test_imports(self):
-        from desmet.adapters.dify import DifyAdapter
+        from desmet.adapters.visual.dify import DifyAdapter
 
         adapter = DifyAdapter(config={"base_url": "http://localhost:5001"})
         assert adapter.platform_info.id == "dify"
 
     def test_platform_info_category(self):
-        from desmet.adapters.dify import DifyAdapter
+        from desmet.adapters.visual.dify import DifyAdapter
         from desmet.harness.models import PlatformCategory
 
         adapter = DifyAdapter()
         assert adapter.platform_info.category == PlatformCategory.VISUAL_WORKFLOW_PLATFORM
 
     def test_platform_info_runtime_is_docker(self):
-        from desmet.adapters.dify import DifyAdapter
+        from desmet.adapters.visual.dify import DifyAdapter
         from desmet.harness.models import PlatformRuntime
 
         adapter = DifyAdapter()
         assert adapter.platform_info.runtime == PlatformRuntime.DOCKER
 
     def test_observability_info(self):
-        from desmet.adapters.dify import DifyAdapter
+        from desmet.adapters.visual.dify import DifyAdapter
 
         adapter = DifyAdapter()
         info = adapter.get_observability_info()
@@ -69,7 +69,7 @@ class TestDifyAdapterStructure:
 class TestDifyStageExecution:
     @pytest.fixture
     def adapter(self):
-        from desmet.adapters.dify import DifyAdapter
+        from desmet.adapters.visual.dify import DifyAdapter
 
         a = DifyAdapter(config={"base_url": "http://localhost:5001"})
         a._initialized = True

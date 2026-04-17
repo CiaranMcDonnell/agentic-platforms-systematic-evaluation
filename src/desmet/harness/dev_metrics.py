@@ -28,6 +28,10 @@ _PLATFORM_ADAPTER_FILE: dict[str, str] = {
     "microsoft_agent_framework": "multiagent/agent_framework.py",
     "openai_agents_sdk": "sdk/openai_agents.py",
     "google_adk": "sdk/google_adk.py",
+    "flowise": "visual/flowise.py",
+    "langflow": "visual/langflow.py",
+    "dify": "visual/dify.py",
+    "n8n": "visual/n8n.py",
 }
 
 

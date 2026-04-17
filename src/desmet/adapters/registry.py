@@ -35,10 +35,10 @@ ADAPTER_REGISTRY: dict[str, tuple[str, str]] = {
     "microsoft_agent_framework": ("desmet.adapters.multiagent.agent_framework", "AgentFrameworkAdapter"),
     "openai_agents_sdk":  ("desmet.adapters.sdk.openai_agents", "OpenAIAgentsAdapter"),
     "google_adk":         ("desmet.adapters.sdk.google_adk",   "GoogleADKAdapter"),
-    "flowise":            ("desmet.adapters.flowise",          "FlowiseAdapter"),
-    "langflow":           ("desmet.adapters.langflow",         "LangFlowAdapter"),
-    "dify":               ("desmet.adapters.dify",             "DifyAdapter"),
-    "n8n":                ("desmet.adapters.n8n",              "N8nAdapter"),
+    "flowise":            ("desmet.adapters.visual.flowise",   "FlowiseAdapter"),
+    "langflow":           ("desmet.adapters.visual.langflow",  "LangFlowAdapter"),
+    "dify":               ("desmet.adapters.visual.dify",      "DifyAdapter"),
+    "n8n":                ("desmet.adapters.visual.n8n",       "N8nAdapter"),
 }
 
 

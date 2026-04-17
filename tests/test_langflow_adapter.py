@@ -8,25 +8,25 @@ import pytest
 
 class TestLangFlowClientInit:
     def test_client_sets_base_url(self):
-        from desmet.adapters.langflow import LangFlowClient
+        from desmet.adapters.visual.langflow import LangFlowClient
 
         client = LangFlowClient("http://localhost:7860")
         assert client.base_url == "http://localhost:7860"
 
     def test_client_strips_trailing_slash(self):
-        from desmet.adapters.langflow import LangFlowClient
+        from desmet.adapters.visual.langflow import LangFlowClient
 
         client = LangFlowClient("http://localhost:7860/")
         assert client.base_url == "http://localhost:7860"
 
     def test_auth_header_set_when_api_key_provided(self):
-        from desmet.adapters.langflow import LangFlowClient
+        from desmet.adapters.visual.langflow import LangFlowClient
 
         client = LangFlowClient("http://localhost:7860", api_key="my-key")
         assert client._headers["Authorization"] == "Bearer my-key"
 
     def test_no_auth_header_when_no_api_key(self):
-        from desmet.adapters.langflow import LangFlowClient
+        from desmet.adapters.visual.langflow import LangFlowClient
 
         client = LangFlowClient("http://localhost:7860")
         assert "Authorization" not in client._headers
@@ -34,14 +34,14 @@ class TestLangFlowClientInit:
 
 class TestFlowTemplates:
     def test_all_four_stages_have_templates(self):
-        from desmet.adapters.langflow_templates import STAGE_TEMPLATES
+        from desmet.adapters.visual.langflow_templates import STAGE_TEMPLATES
 
         assert set(STAGE_TEMPLATES.keys()) == {
             "requirements", "codegen", "testing", "deploy",
         }
 
     def test_template_has_agent_node(self):
-        from desmet.adapters.langflow_templates import STAGE_TEMPLATES
+        from desmet.adapters.visual.langflow_templates import STAGE_TEMPLATES
 
         for stage, template in STAGE_TEMPLATES.items():
             nodes = template["nodes"]
@@ -49,14 +49,14 @@ class TestFlowTemplates:
             assert len(agent_nodes) >= 1, f"Stage {stage} missing Agent node"
 
     def test_template_has_tool_nodes(self):
-        from desmet.adapters.langflow_templates import STAGE_TEMPLATES
+        from desmet.adapters.visual.langflow_templates import STAGE_TEMPLATES
 
         for stage, template in STAGE_TEMPLATES.items():
             nodes = template["nodes"]
             assert len(nodes) >= 3, f"Stage {stage} has too few nodes"
 
     def test_build_flow_injects_parameters(self):
-        from desmet.adapters.langflow_templates import build_flow
+        from desmet.adapters.visual.langflow_templates import build_flow
 
         flow = build_flow(
             stage_name="requirements",
@@ -73,20 +73,20 @@ class TestFlowTemplates:
 
 class TestLangFlowAdapterStructure:
     def test_imports(self):
-        from desmet.adapters.langflow import LangFlowAdapter
+        from desmet.adapters.visual.langflow import LangFlowAdapter
 
         adapter = LangFlowAdapter(config={"base_url": "http://localhost:7860"})
         assert adapter.platform_info.id == "langflow"
 
     def test_platform_info_category(self):
-        from desmet.adapters.langflow import LangFlowAdapter
+        from desmet.adapters.visual.langflow import LangFlowAdapter
         from desmet.harness.models import PlatformCategory
 
         adapter = LangFlowAdapter()
         assert adapter.platform_info.category == PlatformCategory.VISUAL_WORKFLOW_PLATFORM
 
     def test_observability_info(self):
-        from desmet.adapters.langflow import LangFlowAdapter
+        from desmet.adapters.visual.langflow import LangFlowAdapter
 
         adapter = LangFlowAdapter()
         info = adapter.get_observability_info()
@@ -97,7 +97,7 @@ class TestLangFlowAdapterStructure:
 class TestLangFlowStageExecution:
     @pytest.fixture
     def adapter(self):
-        from desmet.adapters.langflow import LangFlowAdapter
+        from desmet.adapters.visual.langflow import LangFlowAdapter
 
         a = LangFlowAdapter(config={"base_url": "http://localhost:7860"})
         a._initialized = True

@@ -6,13 +6,13 @@ import pytest
 
 class TestN8nClientInit:
     def test_client_sets_base_url(self):
-        from desmet.adapters.n8n import N8nClient
+        from desmet.adapters.visual.n8n import N8nClient
 
         client = N8nClient("http://localhost:5678", api_key="test-key")
         assert client.base_url == "http://localhost:5678"
 
     def test_client_strips_trailing_slash(self):
-        from desmet.adapters.n8n import N8nClient
+        from desmet.adapters.visual.n8n import N8nClient
 
         client = N8nClient("http://localhost:5678/", api_key="test-key")
         assert client.base_url == "http://localhost:5678"
@@ -20,13 +20,13 @@ class TestN8nClientInit:
 
 class TestN8nClientHeaders:
     def test_auth_header_set(self):
-        from desmet.adapters.n8n import N8nClient
+        from desmet.adapters.visual.n8n import N8nClient
 
         client = N8nClient("http://localhost:5678", api_key="my-key")
         assert client._headers["X-N8N-API-KEY"] == "my-key"
 
     def test_no_api_key_raises(self):
-        from desmet.adapters.n8n import N8nClient
+        from desmet.adapters.visual.n8n import N8nClient
 
         with pytest.raises(ValueError, match="api_key"):
             N8nClient("http://localhost:5678", api_key=None)
@@ -34,14 +34,14 @@ class TestN8nClientHeaders:
 
 class TestWorkflowTemplates:
     def test_all_four_stages_have_templates(self):
-        from desmet.adapters.n8n_templates import STAGE_TEMPLATES
+        from desmet.adapters.visual.n8n_templates import STAGE_TEMPLATES
 
         assert set(STAGE_TEMPLATES.keys()) == {
             "requirements", "codegen", "testing", "deploy",
         }
 
     def test_template_has_ai_agent_node(self):
-        from desmet.adapters.n8n_templates import STAGE_TEMPLATES
+        from desmet.adapters.visual.n8n_templates import STAGE_TEMPLATES
 
         for stage, template in STAGE_TEMPLATES.items():
             nodes = template["nodes"]
@@ -49,14 +49,14 @@ class TestWorkflowTemplates:
             assert len(agent_nodes) >= 1, f"Stage {stage} missing AI Agent node"
 
     def test_template_has_tool_nodes(self):
-        from desmet.adapters.n8n_templates import STAGE_TEMPLATES
+        from desmet.adapters.visual.n8n_templates import STAGE_TEMPLATES
 
         for stage, template in STAGE_TEMPLATES.items():
             nodes = template["nodes"]
             assert len(nodes) >= 3, f"Stage {stage} has too few nodes"
 
     def test_build_workflow_injects_parameters(self):
-        from desmet.adapters.n8n_templates import build_workflow
+        from desmet.adapters.visual.n8n_templates import build_workflow
 
         wf = build_workflow(
             stage_name="requirements",
@@ -75,21 +75,21 @@ class TestWorkflowTemplates:
 
 class TestCredentialMapping:
     def test_openai_provider_maps_to_openAiApi(self):
-        from desmet.adapters.n8n import _map_credential
+        from desmet.adapters.visual.n8n import _map_credential
 
         cred_type, data = _map_credential("openai", "gpt-5.4-2026-03-05", "sk-test", None)
         assert cred_type == "openAiApi"
         assert data["apiKey"] == "sk-test"
 
     def test_anthropic_provider_maps_to_anthropicApi(self):
-        from desmet.adapters.n8n import _map_credential
+        from desmet.adapters.visual.n8n import _map_credential
 
         cred_type, data = _map_credential("anthropic", "claude-opus-4-6", "sk-ant-test", None)
         assert cred_type == "anthropicApi"
         assert data["apiKey"] == "sk-ant-test"
 
     def test_openrouter_uses_openai_with_base_url(self):
-        from desmet.adapters.n8n import _map_credential
+        from desmet.adapters.visual.n8n import _map_credential
 
         cred_type, data = _map_credential(
             "openrouter", "meta-llama/llama-3", "sk-or-test",
@@ -100,7 +100,7 @@ class TestCredentialMapping:
         assert data["baseUrl"] == "https://openrouter.ai/api/v1"
 
     def test_missing_api_key_raises(self):
-        from desmet.adapters.n8n import _map_credential
+        from desmet.adapters.visual.n8n import _map_credential
 
         with pytest.raises(ValueError, match="API key"):
             _map_credential("openai", "gpt-5.4", None, None)
@@ -108,31 +108,31 @@ class TestCredentialMapping:
 
 class TestN8nAdapterStructure:
     def test_imports(self):
-        from desmet.adapters.n8n import N8nAdapter
+        from desmet.adapters.visual.n8n import N8nAdapter
         adapter = N8nAdapter(config={"api_key": "test", "base_url": "http://localhost:5678"})
         assert adapter.platform_info.id == "n8n"
 
     def test_platform_info_category(self):
-        from desmet.adapters.n8n import N8nAdapter
+        from desmet.adapters.visual.n8n import N8nAdapter
         from desmet.harness.models import PlatformCategory
         adapter = N8nAdapter(config={"api_key": "test"})
         assert adapter.platform_info.category == PlatformCategory.VISUAL_WORKFLOW_PLATFORM
 
     def test_platform_info_runtime_is_docker(self):
-        from desmet.adapters.n8n import N8nAdapter
+        from desmet.adapters.visual.n8n import N8nAdapter
         from desmet.harness.models import PlatformRuntime
         adapter = N8nAdapter(config={"api_key": "test"})
         assert adapter.platform_info.runtime == PlatformRuntime.DOCKER
 
     def test_observability_info(self):
-        from desmet.adapters.n8n import N8nAdapter
+        from desmet.adapters.visual.n8n import N8nAdapter
         adapter = N8nAdapter(config={"api_key": "test"})
         info = adapter.get_observability_info()
         assert isinstance(info, dict)
         assert "has_tracing" in info
 
     def test_workspace_path_translation(self):
-        from desmet.adapters.n8n import N8nAdapter
+        from desmet.adapters.visual.n8n import N8nAdapter
         adapter = N8nAdapter(config={"api_key": "test"})
         host_path = "/home/user/project/results/n8n/story_01/workspace"
         container_path = adapter._translate_workspace(host_path)
@@ -140,7 +140,7 @@ class TestN8nAdapterStructure:
         assert "workspace" in container_path
 
     def test_workspace_path_windows(self):
-        from desmet.adapters.n8n import N8nAdapter
+        from desmet.adapters.visual.n8n import N8nAdapter
         adapter = N8nAdapter(config={"api_key": "test"})
         host_path = "C:\\Users\\user\\project\\results\\n8n\\story_01\\workspace"
         container_path = adapter._translate_workspace(host_path)
@@ -153,7 +153,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 class TestN8nStageExecution:
     @pytest.fixture
     def adapter(self):
-        from desmet.adapters.n8n import N8nAdapter
+        from desmet.adapters.visual.n8n import N8nAdapter
         a = N8nAdapter(config={"api_key": "test"})
         a._initialized = True
         a._credential_id = "cred-123"

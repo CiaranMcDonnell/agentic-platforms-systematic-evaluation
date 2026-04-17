@@ -304,7 +304,7 @@ class FlowiseAdapter(VisualAgentAdapter):
         workspace: str,
     ) -> dict:
         """Create workspace tools + chatflow, execute, clean up, return result."""
-        from desmet.adapters.flowise_templates import (
+        from desmet.adapters.visual.flowise_templates import (
             TOOL_DEFS,
             build_chatflow,
             tool_js_execute,
