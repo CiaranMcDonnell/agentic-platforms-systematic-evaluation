@@ -175,6 +175,10 @@ class GoogleADKAdapter(ToolAgentAdapter):
                 instruction=planner_persona.backstory,
                 output_schema=ImplementationPlan,
                 output_key="plan",  # ADK stores validated output in session.state["plan"]
+                # ADK rejects output_schema alongside agent transfers — set
+                # these explicitly to silence ADK's auto-correct warning.
+                disallow_transfer_to_parent=True,
+                disallow_transfer_to_peers=True,
                 generate_content_config=types.GenerateContentConfig(
                     temperature=temperature,
                 ),
@@ -310,7 +314,7 @@ class GoogleADKAdapter(ToolAgentAdapter):
         Returns (total_iterations, success) where success is True iff the
         workspace passes validation at the end of the run.
         """
-        from google.adk.agents import Agent, LoopAgent, SequentialAgent
+        from google.adk.agents import Agent, LoopAgent, RunConfig, SequentialAgent
         from google.adk.runners import Runner
         from google.adk.sessions import InMemorySessionService
         from google.adk.tools import exit_loop
@@ -430,7 +434,7 @@ class GoogleADKAdapter(ToolAgentAdapter):
 
         # Hard ceiling on total LLM calls — RunConfig is ADK's built-in
         # iteration budget, independent of LoopAgent.max_iterations.
-        run_config = types.RunConfig(max_llm_calls=context.max_iterations)
+        run_config = RunConfig(max_llm_calls=context.max_iterations)
 
         run_t0 = time.monotonic()
         try:

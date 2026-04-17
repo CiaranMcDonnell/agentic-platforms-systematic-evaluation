@@ -52,6 +52,7 @@ openai-agents = [
 agent-framework = [
     "agent-framework-core>=1.0rc5",
     "agent-framework-orchestrations>=1.0b0",
+    "agent-framework-openai>=1.0rc5",
 ]
 google-adk = [
     "google-adk[extensions]>=1.0.0",
