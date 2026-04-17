@@ -37,7 +37,7 @@ def _tc(name: str, ok: bool = True, dur: float | None = 100.0) -> ToolCall:
 
 
 class TestToolIntegration:
-    def test_zero_calls_scores_full(self):
+    def test_no_failures_no_redundancy_scores_full(self):
         assert score_tool_integration({"tool_failure_rate": 0.0, "redundant_tool_call_rate": 0.0}) == 3.0
 
     def test_half_fail_half_redundant(self):

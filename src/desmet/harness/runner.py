@@ -581,7 +581,12 @@ class EvaluationRunner:
                     sr.human_interventions for sr in stage_results.values()
                 )
 
-                # Aggregate framework metrics across stages
+                # Aggregate framework metrics across stages.
+                # all_fm also gates the auto-rubric block below, so the
+                # vacuous-True corner of `all(sr.success for sr in ...)`
+                # cannot be reached with zero stages — at least one stage
+                # must have produced framework_metrics for any rubric
+                # scoring to happen.
                 all_fm = [
                     sr.framework_metrics
                     for sr in stage_results.values()
@@ -610,6 +615,10 @@ class EvaluationRunner:
                     # `all(...)` is vacuously True on a dict containing only
                     # stages that actually ran — that is the intended
                     # semantics for score_error_recovery.
+                    # Trace selection: prefer the deepest completed stage.
+                    # Single-stage runs (e.g. requirements-only benchmarks)
+                    # land on that stage's trace; end-to-end runs score
+                    # using the deploy trace, which sees the full pipeline.
                     rubric_trace = None
                     for stage_name in ("deploy", "testing", "codegen", "requirements"):
                         sr = stage_results.get(stage_name)
