@@ -144,7 +144,7 @@ def compute_dev_metrics(platform_id: str) -> DevMetrics:
     # Adapter LOC — consult explicit mapping first, then fall back to
     # convention (platform_id.py, then underscored).
     override = _PLATFORM_ADAPTER_FILE.get(platform_id)
-    if override:
+    if override is not None:
         adapter_file = _ADAPTERS_DIR / override
     else:
         adapter_file = _ADAPTERS_DIR / f"{platform_id}.py"
