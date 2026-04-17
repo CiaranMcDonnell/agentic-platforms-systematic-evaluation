@@ -96,7 +96,18 @@ stages:
       - "Decompose the story into functional and non-functional requirements."
       - "Identify domain entities, relationships, and API endpoints."
       - "Identify use cases."
-      - "Produce UML diagrams (class, sequence, use-case) in Mermaid format."
+      - >-
+        Produce UML diagrams (class, sequence, use-case) in Mermaid format.
+        Mermaid has no dedicated use-case diagram type — render use cases
+        as a `graph TD` with ellipse-shaped nodes for each use case and
+        rectangular actors, e.g.:
+
+          graph TD
+              Actor[User] --> UC1(Register Account)
+              Actor --> UC2(Update Profile)
+
+        Use `classDiagram` for class diagrams and `sequenceDiagram` for
+        sequence diagrams — both are first-class Mermaid types.
       - "Write all requirements documents and diagrams to `docs/design/`."
       - >-
         Render EACH Mermaid diagram to SVG using execute_shell:
