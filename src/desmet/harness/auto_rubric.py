@@ -48,9 +48,17 @@ def score_error_recovery(
     * Stage failed: 0.0 (the framework did not recover).
     * Stage succeeded with no tool failures: 2.0 (nothing to recover
       from; credit withheld because recovery capability was not
-      exercised).
+      exercised — we cannot rate what we did not observe).
     * Stage succeeded with non-zero tool failures: 3.0 (framework
       recovered from observable failures).
+
+    The 2.0 value is the per-dimension "conservative default" used
+    throughout this module: it withholds the top-band score (2/3 of
+    3.0) when the scoring signal is absent, rather than awarding 0
+    (which would penalise platforms that happen to succeed cleanly) or
+    3 (which would conflate "no errors observed" with "recovered well
+    from errors").  Platforms wanting full credit on this dimension
+    must demonstrate recovery from real failures.
     """
     if not success:
         return 0.0
@@ -70,8 +78,13 @@ def score_trace_quality(
     2. framework-overhead is populated.
     3. every recorded tool call has a duration.
 
-    An empty tool-call list counts as signal 3 present (nothing to
-    fail to record).
+    An empty tool-call list satisfies signal 3 — the signal measures
+    whether the tracing layer records durations for the calls it
+    captures, not whether calls were captured at all.  Pathological
+    "no tool calls made" runs are caught by other dimensions
+    (pipeline_completeness, tool_integration via the iteration ratio),
+    so double-penalising them here would skew the trace-quality
+    dimension away from its intended meaning.
     """
     signals = 0
     if framework_metrics.get("first_action_latency_ms") is not None:

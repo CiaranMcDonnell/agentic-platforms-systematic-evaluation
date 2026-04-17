@@ -62,6 +62,10 @@ class TestErrorRecovery:
     def test_success_with_errors_scores_full(self):
         assert score_error_recovery(success=True, framework_metrics={"tool_failure_rate": 0.3}) == 3.0
 
+    def test_success_with_missing_metric_treated_as_no_failures(self):
+        # Missing key → `or 0.0` path → 2.0 (conservative default).
+        assert score_error_recovery(success=True, framework_metrics={}) == 2.0
+
 
 class TestTraceQuality:
     def test_full_signals_scores_full(self):
