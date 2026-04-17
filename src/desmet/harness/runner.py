@@ -35,6 +35,7 @@ from desmet.observability import (
 from desmet.harness.story_loader import prepare_stage_context
 
 from .adapter import BasePlatformAdapter
+from .auto_rubric import compute_auto_rubric_scores
 from .metrics import MetricsCollector, SetupMetrics, StageMetrics, StoryMetrics
 from .results import CodeResult, StageResult, TestResult
 from .store import ResultStore
@@ -601,6 +602,23 @@ class EvaluationRunner:
                                  if fm.get("framework_overhead_ms") is not None]
                     agg["framework_overhead_ms"] = sum(overheads) if overheads else None
                     result.framework_metrics = agg
+                    # Auto-compute the three trace-derivable rubric
+                    # dimensions.  The other two (pipeline_completeness,
+                    # autonomy) stay manual via the webui Scoring page.
+                    last_trace = None
+                    for _key in ("deploy", "testing", "codegen", "requirements"):
+                        _sr = stage_results.get(_key)
+                        if _sr is not None and getattr(_sr, "trace", None) is not None:
+                            last_trace = _sr.trace
+                            break
+                    if last_trace is not None:
+                        auto_scores = compute_auto_rubric_scores(
+                            success=all(sr.success for sr in stage_results.values()),
+                            framework_metrics=agg,
+                            trace=last_trace,
+                        )
+                        for dim, val in auto_scores.items():
+                            result.add_score(dim, val)
 
                 # Aggregate resource metrics across stages
                 resource_stages = [
