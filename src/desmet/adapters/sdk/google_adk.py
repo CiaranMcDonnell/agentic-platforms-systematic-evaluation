@@ -41,7 +41,8 @@ class GoogleADKAdapter(ToolAgentAdapter):
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         super().__init__(config)
-        self._model_id: str | None = None
+        # str for native Gemini, LiteLlm wrapper for everything else.
+        self._model_id: Any = None
         self._model_name: str | None = None
         self._timeout_seconds: float = 120.0
 
@@ -62,21 +63,26 @@ class GoogleADKAdapter(ToolAgentAdapter):
     def _get_model_name(self) -> str | None:
         return self._model_name
 
-    def _resolve_model_id(self, cfg) -> str:
-        """Build the model string for ADK agents.
+    def _resolve_model_id(self, cfg) -> Any:
+        """Build the model value for ADK agents.
 
-        Gemini models pass through directly. Non-Gemini models use LiteLLM
-        format (``provider/model``) which requires ``google-adk[extensions]``.
+        Gemini models pass through as bare strings (ADK has native
+        support).  Everything else is wrapped in ``LiteLlm`` — ADK only
+        routes non-Gemini through LiteLLM when the ``BaseLlm`` instance
+        is provided explicitly; a bare ``provider/model`` string isn't
+        recognised.  Requires ``google-adk[extensions]``.
         """
         if cfg.provider == Provider.GOOGLE:
             return cfg.model
+        from google.adk.models.lite_llm import LiteLlm
+
         prefix_map = {
             Provider.OPENAI: "openai",
             Provider.OPENROUTER: "openrouter",
             Provider.ANTHROPIC: "anthropic",
         }
         prefix = prefix_map.get(cfg.provider, "openai")
-        return f"{prefix}/{cfg.model}"
+        return LiteLlm(model=f"{prefix}/{cfg.model}")
 
     async def initialize(self) -> None:
         try:

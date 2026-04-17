@@ -101,6 +101,7 @@ class TestGoogleADKAdapterStructure:
         assert adapter._resolve_model_id(cfg) == "gemini-2.5-flash"
 
     def test_resolve_model_openai(self):
+        pytest.importorskip("google.adk.models.lite_llm")
         from desmet.adapters.sdk.google_adk import GoogleADKAdapter
         from desmet.llm_config import LLMConfig, Provider
         adapter = GoogleADKAdapter()
@@ -108,9 +109,14 @@ class TestGoogleADKAdapterStructure:
             model="gpt-5.4-2026-03-05", temperature=0.0,
             provider=Provider.OPENAI, api_key="test",
         )
-        assert adapter._resolve_model_id(cfg) == "openai/gpt-5.4-2026-03-05"
+        result = adapter._resolve_model_id(cfg)
+        # Non-Gemini models are wrapped in a LiteLlm instance so ADK routes
+        # them through LiteLLM — ADK does not recognise a bare provider/model
+        # string.  Inspect the wrapper's ``.model`` attribute.
+        assert getattr(result, "model", None) == "openai/gpt-5.4-2026-03-05"
 
     def test_resolve_model_anthropic(self):
+        pytest.importorskip("google.adk.models.lite_llm")
         from desmet.adapters.sdk.google_adk import GoogleADKAdapter
         from desmet.llm_config import LLMConfig, Provider
         adapter = GoogleADKAdapter()
@@ -118,9 +124,11 @@ class TestGoogleADKAdapterStructure:
             model="claude-sonnet-4-20250514", temperature=0.0,
             provider=Provider.ANTHROPIC, api_key="test",
         )
-        assert adapter._resolve_model_id(cfg) == "anthropic/claude-sonnet-4-20250514"
+        result = adapter._resolve_model_id(cfg)
+        assert getattr(result, "model", None) == "anthropic/claude-sonnet-4-20250514"
 
     def test_resolve_model_openrouter(self):
+        pytest.importorskip("google.adk.models.lite_llm")
         from desmet.adapters.sdk.google_adk import GoogleADKAdapter
         from desmet.llm_config import LLMConfig, Provider
         adapter = GoogleADKAdapter()
@@ -128,7 +136,8 @@ class TestGoogleADKAdapterStructure:
             model="anthropic/claude-sonnet-4", temperature=0.0,
             provider=Provider.OPENROUTER, api_key="test",
         )
-        assert adapter._resolve_model_id(cfg) == "openrouter/anthropic/claude-sonnet-4"
+        result = adapter._resolve_model_id(cfg)
+        assert getattr(result, "model", None) == "openrouter/anthropic/claude-sonnet-4"
 
 
 class TestObservabilityMetadata:

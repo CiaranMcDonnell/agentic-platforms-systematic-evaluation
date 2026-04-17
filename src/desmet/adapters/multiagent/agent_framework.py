@@ -119,7 +119,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
             timeout=cfg.timeout_seconds,
             max_retries=cfg.max_retries,
         )
-        return OpenAIChatClient(model_id=cfg.model, async_client=async_client)
+        return OpenAIChatClient(model=cfg.model, async_client=async_client)
 
     async def initialize(self) -> None:
         try:
