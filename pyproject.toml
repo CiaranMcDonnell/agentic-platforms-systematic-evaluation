@@ -45,7 +45,6 @@ langgraph = [
 ]
 crewai = [
     "crewai[tools]>=1.12.2",
-    "openinference-instrumentation-crewai>=1.0.0",
 ]
 openai-agents = [
     "openai-agents>=0.1.0",

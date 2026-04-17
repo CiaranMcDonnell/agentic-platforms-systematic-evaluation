@@ -89,15 +89,6 @@ class CrewAIAdapter(ToolAgentAdapter):
         try:
             from crewai import Agent, Crew, Process, Task  # noqa: F401 — verify core components
 
-            # OTEL instrumentation for CrewAI orchestration layer
-            # (crew → task → agent → tool spans in Langfuse)
-            try:
-                from openinference.instrumentation.crewai import CrewAIInstrumentor
-
-                CrewAIInstrumentor().instrument(skip_dep_check=True)
-            except ImportError:
-                pass  # optional — tracing degrades gracefully
-
             # All tracing (LLM calls, tool usage, task completion, iteration
             # counting) via CrewAI's native event bus — fires on every
             # execution path including native function calling.

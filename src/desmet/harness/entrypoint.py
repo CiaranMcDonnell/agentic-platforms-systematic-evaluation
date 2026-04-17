@@ -77,8 +77,8 @@ def _try_init_langfuse() -> None:
 
       * LangGraph: ``get_langchain_callback()`` returns a real
         ``CallbackHandler`` instead of ``None``
-      * CrewAI: ``CrewAIInstrumentor`` (OpenInference) emits into a real
-        TracerProvider rather than the noop default
+      * CrewAI: the adapter's native event-bus handlers emit LLM, tool,
+        and task spans directly to Langfuse via its TracerProvider
       * OpenAI Agents: ``get_openai_agents_tracing_processor()`` returns
         a real bridge
       * Agent Framework: ``record_generation(get_langfuse(), ...)`` is
