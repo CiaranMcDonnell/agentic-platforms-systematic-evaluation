@@ -9,7 +9,7 @@ This appendix covers installing the DESMET evaluation framework and launching th
 - *Python 3.11+* --- managed via `uv`
 - *uv* --- Python package manager (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
 - *Bun* --- JavaScript runtime for Mermaid diagram rendering (`curl -fsSL https://bun.sh/install | bash`)
-- *Docker* --- required for platform isolation (SDK adapters run in per-platform containers), Langfuse observability, and visual/workflow platform adapters
+- *Docker* --- required for platform isolation (SDK adapters run in per-platform containers), Langfuse observability, and visual/workflow platform adapters; the daemon (or Docker Desktop) must be running before starting a benchmark run
 - An API key for at least one LLM provider (OpenAI, Anthropic, or OpenRouter)
 
 == Installation

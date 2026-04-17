@@ -50,9 +50,9 @@ tests/                   Test suite
 - **[uv](https://docs.astral.sh/uv/getting-started/installation/)** — Python package manager.
   - macOS/Linux: `curl -LsSf https://astral.sh/uv/install.sh | sh`
   - Windows (PowerShell): `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"`
-- **Docker Engine** — used to isolate each platform adapter.
-  - macOS/Windows: install [Docker Desktop](https://docs.docker.com/desktop/).
-  - Linux: install [Docker Engine](https://docs.docker.com/engine/install/).
+- **Docker Engine** — used to isolate each platform adapter. Must be running before starting a benchmark run.
+  - macOS/Windows: install [Docker Desktop](https://docs.docker.com/desktop/) and launch it before using the console.
+  - Linux: install [Docker Engine](https://docs.docker.com/engine/install/) and ensure the `docker` service is active.
 
 ## Quick Start
 
