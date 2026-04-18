@@ -1,3 +1,4 @@
+# Keep build context small and avoid broken symlinks (Windows node_modules/.bin)
 .git
 .venv
 venv
