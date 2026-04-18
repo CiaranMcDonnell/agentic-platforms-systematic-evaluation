@@ -810,3 +810,97 @@ class TestWriteFileStageAllowlist:
         )
         # One of the allowed extensions should appear in the guidance text
         assert any(ext in result for ext in (".md", ".txt", ".mermaid"))
+
+
+class TestGoogleADKToolFormat:
+    """ADK's Gemini function-declaration schema rejects Python parameter
+    defaults (emits ~18 WARNING lines per stage in real runs). The
+    ToolFormat.GOOGLE_ADK variant returns the same callables but with
+    no defaults in the signature, so the schema builder is quiet."""
+
+    def test_format_exists(self):
+        from desmet.adapters._shared.tools import ToolFormat
+
+        assert hasattr(ToolFormat, "GOOGLE_ADK")
+
+    def test_list_directory_has_no_default(self, workspace):
+        import inspect
+
+        from desmet.adapters._shared.tools import ToolFormat, create_tools
+
+        tools = create_tools(workspace, ["list_directory"], fmt=ToolFormat.GOOGLE_ADK)
+        sig = inspect.signature(tools[0])
+        assert sig.parameters["path"].default is inspect.Parameter.empty, (
+            "ADK tools must have no default — Gemini schema rejects defaults"
+        )
+
+    def test_search_code_has_no_default(self, workspace):
+        import inspect
+
+        from desmet.adapters._shared.tools import ToolFormat, create_tools
+
+        tools = create_tools(workspace, ["search_code"], fmt=ToolFormat.GOOGLE_ADK)
+        sig = inspect.signature(tools[0])
+        assert sig.parameters["path"].default is inspect.Parameter.empty
+
+    def test_deploy_remote_has_no_default(self, workspace):
+        import inspect
+
+        from desmet.adapters._shared.tools import ToolFormat, create_tools
+
+        tools = create_tools(
+            workspace,
+            ["deploy_remote"],
+            fmt=ToolFormat.GOOGLE_ADK,
+            platform_id="google_adk",
+            story_id="s1",
+        )
+        sig = inspect.signature(tools[0])
+        assert sig.parameters["url"].default is inspect.Parameter.empty
+
+    def test_tools_still_callable_with_explicit_args(self, workspace):
+        from desmet.adapters._shared.tools import ToolFormat, create_tools
+
+        tools = create_tools(
+            workspace, ["list_directory", "read_file"], fmt=ToolFormat.GOOGLE_ADK
+        )
+        by_name = {t.__name__: t for t in tools}
+        listing = by_name["list_directory"](path=".")
+        assert "hello.py" in listing
+        content = by_name["read_file"](path="hello.py")
+        assert "print" in content
+
+    def test_write_file_still_stage_gated(self, workspace):
+        """ADK tools must still honor the write_file stage allowlist."""
+        from desmet.adapters._shared.tools import ToolFormat, create_tools
+
+        tools = create_tools(
+            workspace,
+            ["write_file"],
+            fmt=ToolFormat.GOOGLE_ADK,
+            stage_name="requirements",
+        )
+        result = tools[0](path="app.py", content="x=1\n")
+        assert result.startswith("BLOCKED")
+
+    def test_split_tools_recognises_adk_format(self, workspace):
+        """split_tools must use __name__ (not .name) for the GOOGLE_ADK format,
+        same as CALLABLE and AGENT_FRAMEWORK."""
+        from desmet.adapters._shared.tools import (
+            ToolFormat,
+            create_tools,
+            split_tools,
+        )
+
+        tools = create_tools(
+            workspace,
+            ["read_file", "write_file", "check_completion"],
+            fmt=ToolFormat.GOOGLE_ADK,
+            stage_name="requirements",
+        )
+        executor, reviewer = split_tools(tools, ToolFormat.GOOGLE_ADK)
+        exec_names = {t.__name__ for t in executor}
+        rev_names = {t.__name__ for t in reviewer}
+        assert "check_completion" not in exec_names
+        assert "check_completion" in rev_names
+        assert "read_file" in rev_names
