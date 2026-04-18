@@ -28,6 +28,7 @@ class ToolFormat(Enum):
     CREWAI = "crewai"  # BaseTool subclasses
     OPENAI_AGENTS = "openai_agents"  # OpenAI Agents SDK FunctionTool instances
     AGENT_FRAMEWORK = "agent_framework"  # Microsoft Agent Framework @tool functions
+    GOOGLE_ADK = "google_adk"  # Google ADK callables (no param defaults — Gemini schema rejects them)
     CALLABLE = "callable"  # plain Python callables
 
 
@@ -1353,6 +1354,79 @@ def _build_agent_framework_tools(
     return tools
 
 
+def _build_google_adk_tools(
+    workspace: Path, tool_names: list[str], platform_id=None, story_id=None, stage_name=None
+) -> list:
+    """Return plain callables for Google ADK with NO parameter defaults.
+
+    Gemini's function-declaration schema rejects Python parameter defaults —
+    ADK strips them and emits a WARNING per tool per stage. By removing
+    the defaults at the Python level, the schema builder has nothing to
+    strip and the logs stay clean. The LLM is required to pass every
+    argument explicitly (docstrings say so).
+    """
+    tools: list = []
+
+    if "read_file" in tool_names:
+
+        def read_file(path: str) -> str:
+            """Read the contents of a file at the given relative path."""
+            return _read_file(workspace, path)
+
+        tools.append(read_file)
+
+    if "write_file" in tool_names:
+
+        def write_file(path: str, content: str) -> str:
+            """Write content to a file, creating parent directories as needed."""
+            return _write_file(workspace, path, content, stage=stage_name)
+
+        tools.append(write_file)
+
+    if "list_directory" in tool_names:
+
+        def list_directory(path: str) -> str:
+            """List files and directories at the given relative path. Pass "." for the workspace root."""
+            return _list_directory(workspace, path)
+
+        tools.append(list_directory)
+
+    if "execute_shell" in tool_names:
+
+        def execute_shell(command: str) -> str:
+            """Execute a shell command in the project directory."""
+            return _execute_shell(workspace, command, stage=stage_name)
+
+        tools.append(execute_shell)
+
+    if "search_code" in tool_names:
+
+        def search_code(pattern: str, path: str) -> str:
+            """Search code files for lines matching a regex pattern. Pass "." to search the whole workspace."""
+            return _search_code(workspace, pattern, path)
+
+        tools.append(search_code)
+
+    if "deploy_remote" in tool_names:
+
+        def deploy_remote(action: str, url: str) -> str:
+            """Deploy to remote server: push artifacts, restart Docker, or health check. Pass "/health" for the default health URL."""
+            return _deploy_remote(workspace, platform_id, story_id, action, url)
+
+        tools.append(deploy_remote)
+
+    if "check_completion" in tool_names:
+
+        def check_completion() -> str:
+            """Check if all required artifacts are present in the workspace."""
+            _, msg = _check_completion(workspace, stage_name)
+            return msg
+
+        tools.append(check_completion)
+
+    return tools
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -1414,6 +1488,9 @@ def create_tools(
     if fmt is ToolFormat.AGENT_FRAMEWORK:
         return _build_agent_framework_tools(workspace, tool_names, **kwargs)
 
+    if fmt is ToolFormat.GOOGLE_ADK:
+        return _build_google_adk_tools(workspace, tool_names, **kwargs)
+
     raise ValueError(f"Unknown tool format: {fmt}")
 
 
@@ -1435,7 +1512,7 @@ def split_tools(tools: list, fmt: ToolFormat) -> tuple[list, list]:
     """
 
     def _name(tool) -> str:
-        if fmt in (ToolFormat.AGENT_FRAMEWORK, ToolFormat.CALLABLE):
+        if fmt in (ToolFormat.AGENT_FRAMEWORK, ToolFormat.CALLABLE, ToolFormat.GOOGLE_ADK):
             return getattr(tool, "__name__", "")
         return getattr(tool, "name", "")
 
