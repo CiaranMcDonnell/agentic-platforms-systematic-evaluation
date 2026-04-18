@@ -378,6 +378,41 @@ def _check_shell_stage(stage: str | None, command: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Stage-specific write_file extension filtering
+# ---------------------------------------------------------------------------
+
+# File extensions allowed when write_file is called during each stage.
+# Only stages listed here are filtered; unlisted stages have unrestricted
+# write access. Motivation: prevent scope drift where an executor writes
+# code files during a docs-only stage (observed with Microsoft Agent
+# Framework writing email_validator.py during requirements).
+_REQUIREMENTS_WRITE_ALLOW = frozenset({".md", ".txt", ".mermaid"})
+
+_STAGE_WRITE_ALLOWLIST: dict[str, frozenset[str]] = {
+    "requirements": _REQUIREMENTS_WRITE_ALLOW,
+}
+
+
+def _check_write_stage(stage: str | None, path: str) -> str | None:
+    """Return an error string if writing *path* is blocked for *stage*, else ``None``."""
+    if stage is None:
+        return None
+    allowlist = _STAGE_WRITE_ALLOWLIST.get(stage)
+    if allowlist is None:
+        return None
+    suffix = Path(path).suffix.lower()
+    if suffix in allowlist:
+        return None
+    allowed = ", ".join(sorted(allowlist))
+    return (
+        f"BLOCKED: write_file to {path!r} is not permitted during the "
+        f"{stage} stage. Only documentation artifacts are allowed "
+        f"(extensions: {allowed}). Write design docs and diagrams only; "
+        f"implementation files belong in later stages."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Core tool implementations (format-agnostic)
 # ---------------------------------------------------------------------------
 
@@ -419,8 +454,11 @@ def _strip_markdown_fences(content: str) -> str:
     return body + "\n"
 
 
-def _write_file(workspace: Path, path: str, content: str) -> str:
+def _write_file(workspace: Path, path: str, content: str, *, stage: str | None = None) -> str:
     """Write *content* to a file inside the workspace."""
+    stage_err = _check_write_stage(stage, path)
+    if stage_err:
+        return stage_err
     loop_err = _check_loop(str(workspace), "write_file", path)
     if loop_err:
         return loop_err
@@ -916,7 +954,7 @@ def _build_callable_tools(
 
             def write_file(*, path: str, content: str) -> str:
                 """Write content to a file."""
-                return _write_file(workspace, path, content)
+                return _write_file(workspace, path, content, stage=stage_name)
 
             tools.append(write_file)
 
@@ -987,7 +1025,7 @@ def _build_langchain_tools(
             @lc_tool
             def write_file(path: str, content: str) -> str:
                 """Write content to a file."""
-                return _write_file(workspace, path, content)
+                return _write_file(workspace, path, content, stage=stage_name)
 
             tools.append(write_file)
 
@@ -1082,7 +1120,7 @@ def _build_crewai_tools(
             args_schema: type[BaseModel] = WriteFileInput
 
             def _run(self, path: str, content: str) -> str:
-                return _write_file(workspace, path, content)
+                return _write_file(workspace, path, content, stage=stage_name)
 
         tools.append(WriteFileTool())
 
@@ -1192,7 +1230,7 @@ def _build_openai_agents_tools(
         @function_tool
         def write_file(path: str, content: str) -> str:
             """Write content to a file, creating parent directories as needed."""
-            return _write_file(workspace, path, content)
+            return _write_file(workspace, path, content, stage=stage_name)
 
         tools.append(write_file)
 
@@ -1267,7 +1305,7 @@ def _build_agent_framework_tools(
 
         def write_file(path: str, content: str) -> str:
             """Write content to a file, creating parent directories as needed."""
-            return _write_file(workspace, path, content)
+            return _write_file(workspace, path, content, stage=stage_name)
 
         tools.append(write_file)
 
