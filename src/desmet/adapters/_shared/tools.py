@@ -28,7 +28,8 @@ class ToolFormat(Enum):
     CREWAI = "crewai"  # BaseTool subclasses
     OPENAI_AGENTS = "openai_agents"  # OpenAI Agents SDK FunctionTool instances
     AGENT_FRAMEWORK = "agent_framework"  # Microsoft Agent Framework @tool functions
-    GOOGLE_ADK = "google_adk"  # Google ADK callables (no param defaults — Gemini schema rejects them)
+    # Google ADK callables (no param defaults — Gemini schema rejects them)
+    GOOGLE_ADK = "google_adk"
     CALLABLE = "callable"  # plain Python callables
 
 
