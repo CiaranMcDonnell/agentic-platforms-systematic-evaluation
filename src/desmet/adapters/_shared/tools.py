@@ -1507,8 +1507,8 @@ def split_tools(tools: list, fmt: ToolFormat) -> tuple[list, list]:
     Executor: all except ``check_completion``.
     Reviewer: ``read_file``, ``list_directory``, ``search_code``, ``check_completion``.
 
-    For AGENT_FRAMEWORK format (plain callables), tool names are read from ``__name__``.
-    For all other formats, ``.name`` is used.
+    For AGENT_FRAMEWORK, CALLABLE, and GOOGLE_ADK formats (plain callables),
+    tool names are read from ``__name__``. For all other formats, ``.name`` is used.
     """
 
     def _name(tool) -> str:
