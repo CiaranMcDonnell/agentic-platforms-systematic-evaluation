@@ -37,7 +37,7 @@ _log = logging.getLogger(__name__)
 class GoogleADKAdapter(ToolAgentAdapter):
     """Google ADK adapter using SequentialAgent + LoopAgent orchestration."""
 
-    TOOL_FORMAT = ToolFormat.CALLABLE
+    TOOL_FORMAT = ToolFormat.GOOGLE_ADK
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         super().__init__(config)
