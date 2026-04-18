@@ -729,3 +729,84 @@ class TestCheckCompletionDeployHint:
         passed, msg = _check_completion(tmp_path, "deploy")
         assert passed is True
         assert "VALIDATION PASSED" in msg
+
+
+class TestWriteFileStageAllowlist:
+    """_write_file must be gated by stage the same way _execute_shell is:
+    the requirements stage is a docs-only scope, so Python/YAML/etc writes
+    must be refused. Motivation: Microsoft Agent Framework was observed
+    writing email_validator.py during a requirements run, then deleting
+    it after the manager re-planned — wasted tokens that a write-scope
+    gate would have prevented up front.
+    """
+
+    def test_requirements_stage_blocks_python_write(self, workspace):
+        from desmet.adapters._shared.tools import _write_file
+
+        result = _write_file(
+            workspace,
+            "src/email_validator.py",
+            "def is_valid(x): return True\n",
+            stage="requirements",
+        )
+        assert result.startswith("BLOCKED"), f"expected BLOCKED prefix, got: {result!r}"
+        assert "requirements" in result
+        assert not (workspace / "src/email_validator.py").exists(), (
+            "blocked write must not create the file on disk"
+        )
+
+    def test_requirements_stage_allows_markdown_write(self, workspace):
+        from desmet.adapters._shared.tools import _write_file
+
+        result = _write_file(
+            workspace,
+            "docs/design/requirements.md",
+            "# Requirements\n",
+            stage="requirements",
+        )
+        assert "Successfully wrote" in result
+        assert (workspace / "docs/design/requirements.md").exists()
+
+    def test_requirements_stage_allows_mermaid_write(self, workspace):
+        from desmet.adapters._shared.tools import _write_file
+
+        result = _write_file(
+            workspace,
+            "docs/design/flow.mermaid",
+            "flowchart TD\nA-->B\n",
+            stage="requirements",
+        )
+        assert "Successfully wrote" in result
+        assert (workspace / "docs/design/flow.mermaid").exists()
+
+    def test_requirements_stage_allows_txt_write(self, workspace):
+        from desmet.adapters._shared.tools import _write_file
+
+        result = _write_file(workspace, "notes.txt", "hello\n", stage="requirements")
+        assert "Successfully wrote" in result
+
+    def test_none_stage_allows_any_write(self, workspace):
+        """stage=None means unfiltered — matches _check_shell_stage's contract."""
+        from desmet.adapters._shared.tools import _write_file
+
+        result = _write_file(workspace, "src/app.py", "print('hi')\n", stage=None)
+        assert "Successfully wrote" in result
+        assert (workspace / "src/app.py").exists()
+
+    def test_codegen_stage_unrestricted(self, workspace):
+        """Only stages listed in _STAGE_WRITE_ALLOWLIST are filtered."""
+        from desmet.adapters._shared.tools import _write_file
+
+        result = _write_file(workspace, "src/app.py", "print('hi')\n", stage="codegen")
+        assert "Successfully wrote" in result
+
+    def test_block_message_names_allowed_extensions(self, workspace):
+        """The blocked-message must tell the agent what IS allowed so it
+        can correct course instead of retrying blind."""
+        from desmet.adapters._shared.tools import _write_file
+
+        result = _write_file(
+            workspace, "src/app.py", "x=1\n", stage="requirements"
+        )
+        # One of the allowed extensions should appear in the guidance text
+        assert any(ext in result for ext in (".md", ".txt", ".mermaid"))
