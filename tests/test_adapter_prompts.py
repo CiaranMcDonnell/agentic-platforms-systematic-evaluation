@@ -219,6 +219,47 @@ class TestBuildDeployPrompt:
         # And ensure the example header isn't glued to the previous prose.
         assert "\n\nMinimal example:" in result
 
+    def test_required_deliverables_section_precedes_steps(self):
+        """The two deployment artefacts are non-negotiable and must be
+        surfaced BEFORE the task list.  Orchestrators that replan mid-run
+        (observed on Microsoft Agent Framework) lose the tail of the
+        prompt and end up producing generic Flask apps / requirements.txt
+        files instead of the artefacts the validator checks for.  Pulling
+        the contract into an up-front, unavoidable header keeps it in
+        scope across replans.
+        """
+        result = build_deploy_prompt(_make_story())
+        deliverables_idx = result.find("Required Deliverables")
+        steps_idx = result.find("## Steps")
+        assert deliverables_idx != -1, (
+            "Deploy prompt must include a 'Required Deliverables' section"
+        )
+        assert steps_idx != -1, "Deploy prompt must still include the Steps section"
+        assert deliverables_idx < steps_idx, (
+            "'Required Deliverables' must appear before '## Steps' so a "
+            "replanning orchestrator can't drop the artefact contract."
+        )
+
+    def test_required_deliverables_names_both_artefacts(self):
+        """The up-front section must name both files verbatim so a skim
+        lands on them even without reading further."""
+        result = build_deploy_prompt(_make_story())
+        deliverables = result.split("## Steps")[0]
+        deliverables_section = deliverables[deliverables.find("Required Deliverables") :]
+        assert "Dockerfile" in deliverables_section
+        assert "docker-compose.yaml" in deliverables_section
+
+    def test_scope_guard_forbids_out_of_story_artefacts(self):
+        """An agent that replans mid-run sometimes invents a Flask app or
+        unrelated requirements.txt. The prompt must explicitly scope the
+        deployment to the user story artefacts only.
+        """
+        result = build_deploy_prompt(_make_story()).lower()
+        # Either phrasing is acceptable — we just need an explicit scope
+        # clause that names the prohibition.  Checking for the key word
+        # "scope" keeps this flexible across rewrites.
+        assert "scope" in result or "do not invent" in result or "do not create" in result
+
 
 # ---------------------------------------------------------------------------
 # TestBuildTestingPrompt

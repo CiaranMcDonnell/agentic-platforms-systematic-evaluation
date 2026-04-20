@@ -139,7 +139,24 @@ stages:
         the workspace automatically.
 
   deploy:
-    preamble: "Build, deploy, and verify the project on the remote server."
+    preamble: |-
+      Build, deploy, and verify the project on the remote server.
+
+      ## Required Deliverables
+
+      Two files in the workspace root are non-negotiable — the
+      validator checks for both regardless of what else you produce:
+
+      1. `Dockerfile` — builds the project and runs it on port 8000.
+      2. `docker-compose.yaml` — maps host `${PORT}` to container 8000.
+
+      Produce exactly these artefacts for the existing project in the
+      workspace. Stay within the scope of the user story: do not
+      invent a new web service, do not create unrelated files like
+      `app.py` or `requirements.txt` if they are not already present,
+      and do not rewrite modules the earlier stages already produced.
+      If a file you would write is not in the user story's scope and
+      not one of the two deliverables above, skip it.
     tasks_preamble: "## Steps"
     tasks:
       - "Install dependencies: uv sync"
