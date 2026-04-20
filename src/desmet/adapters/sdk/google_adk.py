@@ -406,8 +406,17 @@ class GoogleADKAdapter(ToolAgentAdapter):
         # ADK HttpOptions.timeout is in milliseconds.  Convert from the
         # seconds-based LLMConfig so a hung Gemini call surfaces as a
         # transport error instead of waiting forever.
+        #
+        # ``max_output_tokens`` bounds the size of any single LLM
+        # response.  Without it Gemini will happily emit a 30k+ token
+        # file rewrite in one turn — the cumulative effect observed in
+        # live runs is ~270k tokens added per LoopAgent iteration once
+        # the session history has grown large.  8192 is generous enough
+        # to let the planner produce a full plan in one shot while
+        # forcing file rewrites to take multiple smaller steps.
         gen_config = types.GenerateContentConfig(
             temperature=context.temperature,
+            max_output_tokens=8192,
             http_options=types.HttpOptions(
                 timeout=int(self._timeout_seconds * 1000),
             ),
