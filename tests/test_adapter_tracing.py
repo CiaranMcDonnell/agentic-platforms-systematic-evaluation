@@ -417,6 +417,76 @@ class TestBuildStageResult:
 
         assert result.error_message is None
 
+    def test_orchestration_error_with_zero_tool_calls_forces_failure(self) -> None:
+        """If the orchestration raised and the agent never ran a single
+        tool, the stage must be treated as a failure even when a
+        post-hoc validator found the right files in the baseline
+        workspace.
+
+        Regression guard: observed on Microsoft Agent Framework via
+        Bedrock where every stage raised a Claude tool_use/tool_result
+        mismatch error at iteration 2, but the validator still reported
+        PASS on codegen/testing because prior-stage files were already
+        on disk. The resulting stage JSON claimed success despite the
+        agent having done no work at all.
+        """
+        trace = start_trace()
+        trace.errors.append("Orchestration error: tool_use_id mismatch")
+        finish_trace(trace)
+
+        result = build_stage_result(
+            StageResult,
+            platform_id="microsoft_agent_framework",
+            stage_name="codegen",
+            trace=trace,
+            success=True,  # validator thought it passed
+            iterations=2,
+        )
+
+        assert result.success is False
+        assert result.completed is False
+        assert result.error_message == "Orchestration error: tool_use_id mismatch"
+
+    def test_orchestration_error_with_tool_calls_does_not_force_failure(self) -> None:
+        """If the agent made tool calls before an error was logged, the
+        existing validator decision stands — the agent did real work and
+        may genuinely have reached a passing state.
+        """
+        trace = start_trace()
+        record_tool_call(trace, "write_file", {}, "ok")
+        trace.errors.append("Non-fatal orchestration hiccup")
+        finish_trace(trace)
+
+        result = build_stage_result(
+            StageResult,
+            platform_id="x",
+            stage_name="y",
+            trace=trace,
+            success=True,
+            iterations=3,
+        )
+
+        assert result.success is True
+
+    def test_zero_tool_calls_without_errors_stays_successful(self) -> None:
+        """Some stages (e.g. a no-op deploy replay) legitimately pass
+        with zero tool calls. The guard only fires when errors are also
+        present.
+        """
+        trace = start_trace()
+        finish_trace(trace)
+
+        result = build_stage_result(
+            StageResult,
+            platform_id="x",
+            stage_name="y",
+            trace=trace,
+            success=True,
+            iterations=1,
+        )
+
+        assert result.success is True
+
 
 # ── TestRecordNodeEvent ─────────────────────────────────────────────────
 

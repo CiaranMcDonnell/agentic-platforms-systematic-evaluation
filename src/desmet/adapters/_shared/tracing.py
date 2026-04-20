@@ -345,6 +345,18 @@ def build_stage_result(
     if error_message is None and trace.errors:
         error_message = trace.errors[0]
 
+    # Guard against orchestration-failure false positives.  A stage that
+    # raised mid-run AND never executed a single tool has done no agent
+    # work; any "success" reported by the validator was purely
+    # satisfied by baseline-workspace files produced in earlier stages.
+    # Observed on MAF via Bedrock where a tool_use/tool_result mismatch
+    # aborted every stage at iteration 2 but codegen/testing still
+    # reported PASS because the baseline already contained the
+    # validator's target files.
+    if success and trace.errors and not trace.tool_calls:
+        success = False
+        completed = False
+
     return result_cls(
         platform_id=platform_id,
         stage_name=stage_name,
