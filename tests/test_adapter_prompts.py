@@ -260,6 +260,29 @@ class TestBuildDeployPrompt:
         # "scope" keeps this flexible across rewrites.
         assert "scope" in result or "do not invent" in result or "do not create" in result
 
+    def test_health_check_is_the_terminal_action(self):
+        """A successful health_check must be an explicit stop point.
+
+        Regression guard: on a live Sonnet run, CrewAI Deploy completed
+        the real work in 15 tool calls, validator passed, and then the
+        agent burned another 257k tokens running ``search_code /./ ``
+        and ``list_directory`` exploration calls for no reason. The
+        existing 'then STOP' line was too soft to hold against a
+        strong model looking for more to do.
+        """
+        result = build_deploy_prompt(_make_story()).lower()
+        # The prompt must tie termination to the health_check outcome
+        # specifically — a generic "stop when done" is what we already
+        # had and it wasn't enough.
+        assert "health_check" in result
+        # And must explicitly forbid further tool use after success.
+        assert (
+            "do not call any more tools" in result
+            or "do not call further tools" in result
+            or "do not invoke any further tools" in result
+            or "do not run any further tools" in result
+        )
+
 
 # ---------------------------------------------------------------------------
 # TestBuildTestingPrompt
