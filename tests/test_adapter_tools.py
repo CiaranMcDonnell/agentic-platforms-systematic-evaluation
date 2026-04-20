@@ -6,7 +6,9 @@ import pytest
 from desmet.adapters._shared.tools import (
     AVAILABLE_TOOLS,
     ToolFormat,
+    _CONSECUTIVE_THRESHOLD,
     _CROSS_TOOL_THRESHOLD,
+    _STAGE_ABORT_THRESHOLD,
     _check_loop,
     _execute_shell,
     _extract_target,
@@ -187,6 +189,66 @@ class TestCrossToolLoopDetection:
 
         # Same file is now workable again
         assert _check_loop(ws, "write_file", target) is None
+
+
+class TestStageAbortOnRepeatedLoops:
+    """After the loop defense has fired N times in a stage the agent has
+    clearly ignored every prior warning, so all subsequent tool calls
+    return ``STAGE ABORTED`` — the adapter's outer loop can then see a
+    consistent refusal signal and terminate the stage instead of
+    continuing to burn tokens.
+
+    The scenario this guards against was observed in a live benchmark
+    run where ADK ignored two ``LOOP DETECTED`` warnings, routed around
+    a locked target by inventing a new filename, and proceeded to burn
+    ~700k additional tokens before being cancelled by the user.
+    """
+
+    def _fire_one_loop(self, ws: str, target: str) -> None:
+        """Cause a single consecutive-identical loop on *target*."""
+        for _ in range(_CONSECUTIVE_THRESHOLD):
+            _check_loop(ws, "write_file", target)
+
+    def test_stage_aborts_after_threshold_loop_fires(self, workspace):
+        ws = str(workspace)
+        # Fire the loop threshold times on distinct targets — each fire
+        # is a genuine defense event, not a recurrence on the same file.
+        for i in range(_STAGE_ABORT_THRESHOLD):
+            self._fire_one_loop(ws, f"scratch_{i}.py")
+        # Next check on a *fresh* tool + target must now be refused
+        # with STAGE ABORTED.
+        result = _check_loop(ws, "read_file", "something_new.py")
+        assert result is not None
+        assert "STAGE ABORTED" in result
+
+    def test_below_threshold_does_not_abort(self, workspace):
+        ws = str(workspace)
+        # Fire one fewer than the threshold — subsequent unrelated
+        # calls must still be allowed.
+        for i in range(_STAGE_ABORT_THRESHOLD - 1):
+            self._fire_one_loop(ws, f"scratch_{i}.py")
+        assert _check_loop(ws, "read_file", "fresh.py") is None
+
+    def test_reset_clears_stage_abort(self, workspace):
+        ws = str(workspace)
+        for i in range(_STAGE_ABORT_THRESHOLD):
+            self._fire_one_loop(ws, f"scratch_{i}.py")
+        # Confirm aborted
+        aborted = _check_loop(ws, "read_file", "after.py")
+        assert aborted is not None and "STAGE ABORTED" in aborted
+        # Between stages the harness calls reset_loop_tracker — the
+        # abort state must clear along with the rest of the detector.
+        reset_loop_tracker()
+        assert _check_loop(ws, "read_file", "after.py") is None
+
+    def test_abort_is_per_workspace(self, workspace, tmp_path_factory):
+        """Abort state in one workspace must not affect another."""
+        ws_a = str(workspace)
+        ws_b = str(tmp_path_factory.mktemp("other"))
+        for i in range(_STAGE_ABORT_THRESHOLD):
+            self._fire_one_loop(ws_a, f"scratch_{i}.py")
+        assert _check_loop(ws_a, "read_file", "x.py") is not None
+        assert _check_loop(ws_b, "read_file", "x.py") is None
 
 
 class TestAvailableTools:
