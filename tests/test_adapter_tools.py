@@ -729,3 +729,178 @@ class TestCheckCompletionDeployHint:
         passed, msg = _check_completion(tmp_path, "deploy")
         assert passed is True
         assert "VALIDATION PASSED" in msg
+
+
+class TestWriteFileStageAllowlist:
+    """_write_file must be gated by stage the same way _execute_shell is:
+    the requirements stage is a docs-only scope, so Python/YAML/etc writes
+    must be refused. Motivation: Microsoft Agent Framework was observed
+    writing email_validator.py during a requirements run, then deleting
+    it after the manager re-planned — wasted tokens that a write-scope
+    gate would have prevented up front.
+    """
+
+    def test_requirements_stage_blocks_python_write(self, workspace):
+        from desmet.adapters._shared.tools import _write_file
+
+        result = _write_file(
+            workspace,
+            "src/email_validator.py",
+            "def is_valid(x): return True\n",
+            stage="requirements",
+        )
+        assert result.startswith("BLOCKED"), f"expected BLOCKED prefix, got: {result!r}"
+        assert "requirements" in result
+        assert not (workspace / "src/email_validator.py").exists(), (
+            "blocked write must not create the file on disk"
+        )
+
+    def test_requirements_stage_allows_markdown_write(self, workspace):
+        from desmet.adapters._shared.tools import _write_file
+
+        result = _write_file(
+            workspace,
+            "docs/design/requirements.md",
+            "# Requirements\n",
+            stage="requirements",
+        )
+        assert "Successfully wrote" in result
+        assert (workspace / "docs/design/requirements.md").exists()
+
+    def test_requirements_stage_allows_mermaid_write(self, workspace):
+        from desmet.adapters._shared.tools import _write_file
+
+        result = _write_file(
+            workspace,
+            "docs/design/flow.mermaid",
+            "flowchart TD\nA-->B\n",
+            stage="requirements",
+        )
+        assert "Successfully wrote" in result
+        assert (workspace / "docs/design/flow.mermaid").exists()
+
+    def test_requirements_stage_allows_txt_write(self, workspace):
+        from desmet.adapters._shared.tools import _write_file
+
+        result = _write_file(workspace, "notes.txt", "hello\n", stage="requirements")
+        assert "Successfully wrote" in result
+
+    def test_none_stage_allows_any_write(self, workspace):
+        """stage=None means unfiltered — matches _check_shell_stage's contract."""
+        from desmet.adapters._shared.tools import _write_file
+
+        result = _write_file(workspace, "src/app.py", "print('hi')\n", stage=None)
+        assert "Successfully wrote" in result
+        assert (workspace / "src/app.py").exists()
+
+    def test_codegen_stage_unrestricted(self, workspace):
+        """Only stages listed in _STAGE_WRITE_ALLOWLIST are filtered."""
+        from desmet.adapters._shared.tools import _write_file
+
+        result = _write_file(workspace, "src/app.py", "print('hi')\n", stage="codegen")
+        assert "Successfully wrote" in result
+
+    def test_block_message_names_allowed_extensions(self, workspace):
+        """The blocked-message must tell the agent what IS allowed so it
+        can correct course instead of retrying blind."""
+        from desmet.adapters._shared.tools import _write_file
+
+        result = _write_file(
+            workspace, "src/app.py", "x=1\n", stage="requirements"
+        )
+        # One of the allowed extensions should appear in the guidance text
+        assert any(ext in result for ext in (".md", ".txt", ".mermaid"))
+
+
+class TestGoogleADKToolFormat:
+    """ADK's Gemini function-declaration schema rejects Python parameter
+    defaults (emits ~18 WARNING lines per stage in real runs). The
+    ToolFormat.GOOGLE_ADK variant returns the same callables but with
+    no defaults in the signature, so the schema builder is quiet."""
+
+    def test_format_exists(self):
+        from desmet.adapters._shared.tools import ToolFormat
+
+        assert hasattr(ToolFormat, "GOOGLE_ADK")
+
+    def test_list_directory_has_no_default(self, workspace):
+        import inspect
+
+        from desmet.adapters._shared.tools import ToolFormat, create_tools
+
+        tools = create_tools(workspace, ["list_directory"], fmt=ToolFormat.GOOGLE_ADK)
+        sig = inspect.signature(tools[0])
+        assert sig.parameters["path"].default is inspect.Parameter.empty, (
+            "ADK tools must have no default — Gemini schema rejects defaults"
+        )
+
+    def test_search_code_has_no_default(self, workspace):
+        import inspect
+
+        from desmet.adapters._shared.tools import ToolFormat, create_tools
+
+        tools = create_tools(workspace, ["search_code"], fmt=ToolFormat.GOOGLE_ADK)
+        sig = inspect.signature(tools[0])
+        assert sig.parameters["path"].default is inspect.Parameter.empty
+
+    def test_deploy_remote_has_no_default(self, workspace):
+        import inspect
+
+        from desmet.adapters._shared.tools import ToolFormat, create_tools
+
+        tools = create_tools(
+            workspace,
+            ["deploy_remote"],
+            fmt=ToolFormat.GOOGLE_ADK,
+            platform_id="google_adk",
+            story_id="s1",
+        )
+        sig = inspect.signature(tools[0])
+        assert sig.parameters["url"].default is inspect.Parameter.empty
+
+    def test_tools_still_callable_with_explicit_args(self, workspace):
+        from desmet.adapters._shared.tools import ToolFormat, create_tools
+
+        tools = create_tools(
+            workspace, ["list_directory", "read_file"], fmt=ToolFormat.GOOGLE_ADK
+        )
+        by_name = {t.__name__: t for t in tools}
+        listing = by_name["list_directory"](path=".")
+        assert "hello.py" in listing
+        content = by_name["read_file"](path="hello.py")
+        assert "print" in content
+
+    def test_write_file_still_stage_gated(self, workspace):
+        """ADK tools must still honor the write_file stage allowlist."""
+        from desmet.adapters._shared.tools import ToolFormat, create_tools
+
+        tools = create_tools(
+            workspace,
+            ["write_file"],
+            fmt=ToolFormat.GOOGLE_ADK,
+            stage_name="requirements",
+        )
+        result = tools[0](path="app.py", content="x=1\n")
+        assert result.startswith("BLOCKED")
+
+    def test_split_tools_recognises_adk_format(self, workspace):
+        """split_tools must use __name__ (not .name) for the GOOGLE_ADK format,
+        same as CALLABLE and AGENT_FRAMEWORK."""
+        from desmet.adapters._shared.tools import (
+            ToolFormat,
+            create_tools,
+            split_tools,
+        )
+
+        tools = create_tools(
+            workspace,
+            ["read_file", "write_file", "check_completion"],
+            fmt=ToolFormat.GOOGLE_ADK,
+            stage_name="requirements",
+        )
+        executor, reviewer = split_tools(tools, ToolFormat.GOOGLE_ADK)
+        exec_names = {t.__name__ for t in executor}
+        rev_names = {t.__name__ for t in reviewer}
+        assert "check_completion" not in exec_names
+        assert "check_completion" in rev_names
+        assert "read_file" in rev_names

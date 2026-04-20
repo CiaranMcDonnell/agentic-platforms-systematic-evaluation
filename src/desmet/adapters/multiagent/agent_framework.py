@@ -282,10 +282,15 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
         progress.agent_status("planner", f"{len(plan.steps)} steps planned")
 
         # -- Step 2: Build executor and reviewer agents -----------------------
-        executor_instructions = build_executor_instructions(
-            executor_persona,
-            plan,
-            system_msg,
+        # Embed the full task prompt in participant instructions. MagenticOne's
+        # manager dispatches participants with its own orchestration messages,
+        # which can drop the original user story — causing the executor to
+        # hallucinate unrelated tasks between rounds. Pinning the task to each
+        # agent's static instructions keeps context stable across re-plans.
+        executor_instructions = (
+            build_executor_instructions(executor_persona, plan, system_msg)
+            + "\n\n## Task\n"
+            + prompt
         )
 
         executor_tools, reviewer_tools = split_tools(tools, self.TOOL_FORMAT)
@@ -305,7 +310,8 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
             instructions=(
                 f"{reviewer_persona.backstory}\n\n"
                 "After the executor finishes, inspect the workspace and call "
-                "check_completion to verify all artifacts are present."
+                "check_completion to verify all artifacts are present.\n\n"
+                "## Task\n" + prompt
             ),
             client=self._client,
             tools=reviewer_tools,
@@ -372,9 +378,11 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                     current_message_chunks.append(str(event.data))
 
                 elif event.type == "magentic_orchestrator":
-                    # Manager plan/progress event — counts as an iteration
+                    # Manager plan/progress meta-event — recorded for trace
+                    # visibility but NOT counted as an iteration: a single
+                    # logical round fires this alongside executor_completed,
+                    # so counting both triple-inflates the iteration count.
                     _flush_message()
-                    total_iterations += 1
                     content = getattr(event.data, "content", None)
                     event_name = getattr(getattr(event.data, "event_type", None), "name", "unknown")
                     if isinstance(content, Message):
@@ -386,9 +394,9 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                     progress.agent_status("manager", event_name)
 
                 elif event.type == "output":
-                    # Final output — list[Message]; counts as an iteration
+                    # Final workflow output — fires once at end of run; not a
+                    # per-round iteration, so don't count it.
                     _flush_message()
-                    total_iterations += 1
                     if isinstance(event.data, list):
                         for msg in event.data:
                             text = getattr(msg, "text", "") or ""
@@ -400,7 +408,8 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                                 )
 
                 elif event.type == "executor_completed":
-                    # Agent finished — extract tool calls and token usage
+                    # Agent finished — the only event that represents a real
+                    # agent turn, so this is what counts as an iteration.
                     _flush_message()
                     total_iterations += 1
                     executor_name = getattr(event, "executor_id", "") or ""

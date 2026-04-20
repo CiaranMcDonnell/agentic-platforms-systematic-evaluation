@@ -337,6 +337,14 @@ def build_stage_result(
 
     completed = extra_fields.pop("completed", success)
 
+    # Propagate swallowed errors from the trace when the caller didn't
+    # pass one explicitly.  ADK (and any adapter that catches its own
+    # pipeline exceptions) appends to ``trace.errors``; without this
+    # fallback those failures never reach ``StageResult.error_message``
+    # and look like silent success-with-no-tools in the results JSON.
+    if error_message is None and trace.errors:
+        error_message = trace.errors[0]
+
     return result_cls(
         platform_id=platform_id,
         stage_name=stage_name,

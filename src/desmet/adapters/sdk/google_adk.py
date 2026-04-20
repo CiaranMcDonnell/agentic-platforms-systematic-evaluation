@@ -11,8 +11,59 @@ Architecture:
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any
+
+# ADK's ``inject_session_state`` rewrites any ``{name}`` in an agent
+# ``instruction`` as a session-state lookup (regex ``r'{+[^{}]*}+'`` + a
+# Python-identifier check).  If *name* is a valid identifier and absent
+# from state, ADK raises ``KeyError("Context variable not found: `name`.")``
+# and the whole pipeline aborts.  Our prompts routinely contain literal
+# ``{PORT}``, ``{"host": ...}``, and mermaid ``class Foo { … }`` blocks,
+# so every curly-brace identifier has to be neutralised before being
+# handed to ``Agent(instruction=…)``.
+#
+# The escape works by injecting a zero-width space inside the braces.
+# ADK still matches the sequence, but ``var_name.isidentifier()`` returns
+# ``False`` because ``\u200b`` is a Cf format char — so the match is
+# returned verbatim instead of triggering a state lookup.  The ZWSP is
+# invisible to the LLM reader.
+_ADK_BRACE_SENTINEL = "\u200b"
+_ADK_BRACE_PATTERN = re.compile(r"\{+[^{}]*\}+")
+
+
+def escape_adk_template(text: str) -> str:
+    """Neutralise curly-brace state-variable lookups inside ADK instructions.
+
+    Idempotent: re-escaping already-escaped text is a no-op.
+    """
+    if not text or "{" not in text:
+        return text
+
+    def _wrap(match: re.Match[str]) -> str:
+        body = match.group()
+        # Skip if already sentinel-wrapped (idempotency).
+        if _ADK_BRACE_SENTINEL in body:
+            return body
+        # Insert sentinel just inside the first ``{`` and just before the
+        # last ``}`` so ADK's ``lstrip('{').rstrip('}').strip()`` cannot
+        # recover a bare identifier.
+        first_close = body.rfind("}")
+        first_open_end = 0
+        for i, c in enumerate(body):
+            if c != "{":
+                first_open_end = i
+                break
+        return (
+            body[:first_open_end]
+            + _ADK_BRACE_SENTINEL
+            + body[first_open_end:first_close]
+            + _ADK_BRACE_SENTINEL
+            + body[first_close:]
+        )
+
+    return _ADK_BRACE_PATTERN.sub(_wrap, text)
 
 from desmet.adapters._shared.base import ToolAgentAdapter
 from desmet.adapters._shared.observation import ObservationCollector
@@ -37,7 +88,7 @@ _log = logging.getLogger(__name__)
 class GoogleADKAdapter(ToolAgentAdapter):
     """Google ADK adapter using SequentialAgent + LoopAgent orchestration."""
 
-    TOOL_FORMAT = ToolFormat.CALLABLE
+    TOOL_FORMAT = ToolFormat.GOOGLE_ADK
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         super().__init__(config)
@@ -178,7 +229,7 @@ class GoogleADKAdapter(ToolAgentAdapter):
             planner = Agent(
                 name=f"desmet_{stage_name}_planner",
                 model=self._model_id,
-                instruction=planner_persona.backstory,
+                instruction=escape_adk_template(planner_persona.backstory),
                 output_schema=ImplementationPlan,
                 output_key="plan",  # ADK stores validated output in session.state["plan"]
                 # ADK rejects output_schema alongside agent transfers — set
@@ -247,7 +298,7 @@ class GoogleADKAdapter(ToolAgentAdapter):
                 planner = Agent(
                     name=f"desmet_{stage_name}_planner_fallback",
                     model=self._model_id,
-                    instruction=(
+                    instruction=escape_adk_template(
                         f"{planner_persona.backstory}\n\n"
                         "Produce a numbered implementation plan listing steps, "
                         "files to create, and files to modify."
@@ -385,7 +436,7 @@ class GoogleADKAdapter(ToolAgentAdapter):
         executor_agent = Agent(
             name=f"desmet_{stage_name}_executor",
             model=self._model_id,
-            instruction=executor_instructions,
+            instruction=escape_adk_template(executor_instructions),
             tools=executor_tools,
             generate_content_config=gen_config,
             after_model_callback=_after_model_callback,
@@ -395,7 +446,7 @@ class GoogleADKAdapter(ToolAgentAdapter):
         reviewer_agent = Agent(
             name=f"desmet_{stage_name}_reviewer",
             model=self._model_id,
-            instruction=(
+            instruction=escape_adk_template(
                 f"{reviewer_persona.backstory}\n\n"
                 "After the executor finishes, inspect the workspace using "
                 "the available tools and call check_completion to verify "

@@ -361,6 +361,62 @@ class TestBuildStageResult:
 
         assert result.completed is False
 
+    def test_error_message_defaults_from_trace_errors(self) -> None:
+        """A swallowed exception stored on trace.errors must surface on the stage.
+
+        Regression guard: the ADK adapter catches pipeline exceptions and
+        appends them to ``trace.errors`` but was never propagating them to
+        ``StageResult.error_message``, so failures looked like silent
+        success-with-no-tools in the results JSON.
+        """
+        trace = start_trace()
+        trace.errors.append("Context variable not found: `PORT`.")
+        finish_trace(trace)
+
+        result = build_stage_result(
+            StageResult,
+            platform_id="google_adk",
+            stage_name="deploy",
+            trace=trace,
+            success=False,
+            iterations=1,
+        )
+
+        assert result.error_message == "Context variable not found: `PORT`."
+
+    def test_explicit_error_message_overrides_trace_errors(self) -> None:
+        """If the caller passes error_message, it wins over trace.errors."""
+        trace = start_trace()
+        trace.errors.append("inner failure")
+        finish_trace(trace)
+
+        result = build_stage_result(
+            StageResult,
+            platform_id="x",
+            stage_name="y",
+            trace=trace,
+            success=False,
+            iterations=1,
+            error_message="outer failure",
+        )
+
+        assert result.error_message == "outer failure"
+
+    def test_empty_trace_errors_leaves_error_message_none(self) -> None:
+        trace = start_trace()
+        finish_trace(trace)
+
+        result = build_stage_result(
+            StageResult,
+            platform_id="x",
+            stage_name="y",
+            trace=trace,
+            success=True,
+            iterations=1,
+        )
+
+        assert result.error_message is None
+
 
 # ── TestRecordNodeEvent ─────────────────────────────────────────────────
 

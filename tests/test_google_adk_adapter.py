@@ -18,7 +18,7 @@ class TestGoogleADKAdapterInterface:
     def test_imports(self):
         from desmet.adapters.sdk.google_adk import GoogleADKAdapter
         adapter = GoogleADKAdapter()
-        assert adapter.TOOL_FORMAT == ToolFormat.CALLABLE
+        assert adapter.TOOL_FORMAT == ToolFormat.GOOGLE_ADK
 
     def test_has_generate_requirements(self, adapter):
         assert hasattr(adapter, "generate_requirements")
@@ -215,4 +215,4 @@ class TestRegistryIntegration:
         from desmet.adapters.registry import get_adapter
         from desmet.adapters._shared.tools import ToolFormat
         adapter = get_adapter("google_adk")
-        assert adapter.TOOL_FORMAT == ToolFormat.CALLABLE
+        assert adapter.TOOL_FORMAT == ToolFormat.GOOGLE_ADK
