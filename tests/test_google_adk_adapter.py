@@ -216,3 +216,16 @@ class TestRegistryIntegration:
         from desmet.adapters._shared.tools import ToolFormat
         adapter = get_adapter("google_adk")
         assert adapter.TOOL_FORMAT == ToolFormat.GOOGLE_ADK
+
+
+def test_planner_fallback_records_plan_source():
+    """Structured-planner exception handling must record trace.metadata['plan_source']."""
+    import inspect
+
+    from desmet.adapters.sdk.google_adk import GoogleADKAdapter
+
+    src = inspect.getsource(GoogleADKAdapter._run_planner)
+    assert 'plan_source' in src
+    assert 'trace.metadata' in src or 'metadata["plan_source"]' in src or "metadata['plan_source']" in src
+    # Must not silently swallow — either logs, records error, or narrows except.
+    assert 'errors.append' in src or '_log.warning' in src

@@ -227,6 +227,7 @@ class GoogleADKAdapter(ToolAgentAdapter):
         # with tool-using agents.  The plan is extracted from session state
         # and injected into the executor via build_executor_instructions().
         plan: ImplementationPlan | None = None
+        plan_source = "structured"
         try:
             planner = Agent(
                 name=f"desmet_{stage_name}_planner",
@@ -289,10 +290,24 @@ class GoogleADKAdapter(ToolAgentAdapter):
             elif isinstance(plan_data, str):
                 try:
                     plan = ImplementationPlan.model_validate_json(plan_data)
-                except Exception:
+                except (ValueError, TypeError) as exc:
+                    _log.warning(
+                        "Structured plan JSON invalid; falling back to free-text parse: %s",
+                        exc,
+                    )
                     plan = parse_plan_text(plan_data)
-        except Exception as e:
-            _log.debug("Structured planner failed: %s — falling back to text", e)
+                    plan_source = "freetext"
+        except (NotImplementedError, TypeError, ValueError) as exc:
+            # Known provider/model incompatibilities with structured output.
+            _log.warning("Structured planner unavailable; falling back to free-text: %s", exc)
+            plan_source = "freetext"
+        except Exception as exc:  # noqa: BLE001 — we want to record, not suppress
+            # Unexpected failure — record to trace.errors so the run is auditable.
+            _log.warning("Structured planner failed unexpectedly: %s", exc)
+            collector.trace.errors.append(
+                f"planner_structured_failed: {type(exc).__name__}: {exc}"
+            )
+            plan_source = "fallback_error"
 
         # Fallback: free-text planning
         if plan is None:
@@ -345,13 +360,21 @@ class GoogleADKAdapter(ToolAgentAdapter):
                 duration_ms = (time.monotonic() - t0) * 1000
                 collector.record_llm_response(raw_usage=None, duration_ms=duration_ms)
                 plan = parse_plan_text(plan_text)
-            except Exception:
+                if plan_source == "structured":
+                    plan_source = "freetext"
+            except Exception as exc:  # noqa: BLE001 — we want to record, not suppress
+                _log.warning("Free-text planner fallback failed; using stub plan: %s", exc)
+                collector.trace.errors.append(
+                    f"planner_freetext_failed: {type(exc).__name__}: {exc}"
+                )
                 plan = ImplementationPlan(
                     steps=["Execute the task as described"],
                     files_to_create=[],
                     files_to_modify=[],
                 )
+                plan_source = "fallback_stub"
 
+        collector.trace.metadata["plan_source"] = plan_source
         progress.agent_status("planner", f"{len(plan.steps)} steps planned")
         return plan
 
