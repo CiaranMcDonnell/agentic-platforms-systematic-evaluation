@@ -114,15 +114,22 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
 
     @staticmethod
     def _create_client(cfg):
-        """Build an OpenAIChatClient from the resolved LLM config.
+        """Build an OpenAIChatCompletionClient from the resolved LLM config.
 
-        OpenAIChatClient doesn't accept ``timeout`` / ``max_retries`` in
-        its constructor, so we pre-build an ``AsyncOpenAI`` with those
-        applied and inject it via ``async_client``.
+        Use the Chat Completions client rather than ``OpenAIChatClient``
+        (which targets OpenAI's Responses API). MagenticOne re-submits
+        function-call items across manager loop iterations; the Responses
+        API rejects those with ``Duplicate item found with id fc_...``.
+        Chat Completions doesn't track items server-side, so the same
+        rehydrated history is accepted.
+
+        The constructor doesn't accept ``timeout`` / ``max_retries``, so
+        we pre-build an ``AsyncOpenAI`` with those applied and inject it
+        via ``async_client``.
 
         Defers the import so the module loads without agent-framework installed.
         """
-        from agent_framework.openai import OpenAIChatClient
+        from agent_framework.openai import OpenAIChatCompletionClient
         from openai import AsyncOpenAI
 
         async_client = AsyncOpenAI(
@@ -131,7 +138,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
             timeout=cfg.timeout_seconds,
             max_retries=cfg.max_retries,
         )
-        return OpenAIChatClient(model=cfg.model, async_client=async_client)
+        return OpenAIChatCompletionClient(model=cfg.model, async_client=async_client)
 
     async def initialize(self) -> None:
         try:
