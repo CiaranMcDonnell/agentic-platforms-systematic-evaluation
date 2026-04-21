@@ -832,6 +832,8 @@ class EvaluationRunner:
             }
             if sr.framework_metrics:
                 stage_entry["framework_metrics"] = sr.framework_metrics
+            if sr.resource_metrics:
+                stage_entry["resource_metrics"] = sr.resource_metrics
             # Include message trace when available
             if sr.trace and sr.trace.messages:
                 def _truncate(content: object, limit: int = 500) -> str:

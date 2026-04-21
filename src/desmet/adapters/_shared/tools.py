@@ -120,6 +120,25 @@ _cross_tool_history: dict[str, list[str]] = defaultdict(list)
 # arguments.  Reset between stages via reset_loop_tracker().
 _locked_targets: dict[str, set[str]] = defaultdict(set)
 
+# Agents sometimes route around a target-level lock by inventing a new
+# filename, causing the loop detector to fire on that target too, then
+# another, then another.  Each iteration costs tens of thousands of
+# tokens.  After the defense has fired ``_STAGE_ABORT_THRESHOLD`` times
+# in a stage the agent has clearly ignored every per-target warning, so
+# subsequent tool calls are refused with ``STAGE ABORTED`` — giving
+# the adapter a consistent signal to terminate the stage rather than
+# burning context up to the provider's window wall.  Reset between
+# stages via reset_loop_tracker().
+_STAGE_ABORT_THRESHOLD = 3
+_loop_fire_counts: dict[str, int] = defaultdict(int)
+
+
+def _truncate_for_log(value: str, limit: int = 200) -> str:
+    """Truncate *value* to *limit* chars, appending an ellipsis if cut."""
+    if len(value) <= limit:
+        return value
+    return value[:limit] + "…"
+
 
 def _extract_target(tool_name: str, call_key: str) -> str | None:
     """Extract a file-path target from a tool call, if possible.
@@ -173,7 +192,22 @@ def _check_loop(workspace: str, tool_name: str, call_key: str) -> str | None:
     extracted target is in the locked set is refused immediately — this
     prevents the LLM from working around the initial warning by
     switching tools or changing arguments.
+
+    After ``_STAGE_ABORT_THRESHOLD`` distinct loop events have fired in
+    the same stage the agent has ignored every per-target warning, so
+    every subsequent call is refused with ``STAGE ABORTED`` regardless
+    of tool or target.
     """
+    # ── Check -1: stage-level abort (sticky, global) ─────────────────
+    if _loop_fire_counts[workspace] >= _STAGE_ABORT_THRESHOLD:
+        return (
+            f"STAGE ABORTED: the loop defense has fired "
+            f"{_loop_fire_counts[workspace]} times in this stage and "
+            f"the agent has ignored every prior warning. No further "
+            f"tool calls will be honoured. Stop and let the reviewer "
+            f"validate what has been produced so far."
+        )
+
     # ── Check 0: locked target (sticky enforcement) ──────────────────
     target = _extract_target(tool_name, call_key)
     if target is not None and target in _locked_targets[workspace]:
@@ -203,10 +237,12 @@ def _check_loop(workspace: str, tool_name: str, call_key: str) -> str | None:
     tail = history[-_CONSECUTIVE_THRESHOLD:]
     if len(tail) == _CONSECUTIVE_THRESHOLD and len(set(tail)) == 1:
         _call_history[tracker_key] = []
+        _loop_fire_counts[workspace] += 1
         _log.warning(
-            "[DEFENSE] LOOP DETECTED — %s called %d times in a row with identical args",
+            "[DEFENSE] LOOP DETECTED — %s called %d times in a row with identical args: %s",
             tool_name,
             _CONSECUTIVE_THRESHOLD,
+            _truncate_for_log(call_key),
         )
         return (
             f"LOOP DETECTED: '{tool_name}' was called {_CONSECUTIVE_THRESHOLD} "
@@ -222,9 +258,12 @@ def _check_loop(workspace: str, tool_name: str, call_key: str) -> str | None:
         low_diversity = len(set(window)) <= 3
         if all_recon and low_diversity:
             _call_history[tracker_key] = []
+            _loop_fire_counts[workspace] += 1
+            sample = ", ".join(_truncate_for_log(c, 60) for c in sorted(set(window)))
             _log.warning(
-                "[DEFENSE] LOOP DETECTED — %d reconnaissance shell commands with no progress",
+                "[DEFENSE] LOOP DETECTED — %d reconnaissance shell commands with no progress (samples: %s)",
                 _LOOP_WINDOW,
+                sample,
             )
             return (
                 f"LOOP DETECTED: the last {_LOOP_WINDOW} shell commands were all "
@@ -251,6 +290,7 @@ def _check_loop(workspace: str, tool_name: str, call_key: str) -> str | None:
             # tool call on it will be refused by the locked-target check
             # at the top of this function.
             _locked_targets[workspace].add(target)
+            _loop_fire_counts[workspace] += 1
             _log.warning(
                 "[DEFENSE] LOOP DETECTED + LOCKED — %d cross-tool ops on '%s'",
                 _CROSS_TOOL_THRESHOLD,
@@ -273,6 +313,7 @@ def reset_loop_tracker() -> None:
     _call_history.clear()
     _cross_tool_history.clear()
     _locked_targets.clear()
+    _loop_fire_counts.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -432,6 +473,8 @@ def _read_file(workspace: Path, path: str) -> str:
         return f"Error: {exc}"
     if not full_path.exists():
         return f"File not found: {path}"
+    if full_path.is_dir():
+        return f"Error: path is a directory, not a file: {path}"
     if full_path.stat().st_size > _MAX_READ_SIZE:
         return f"Error: file too large ({full_path.stat().st_size} bytes, limit {_MAX_READ_SIZE})"
     return full_path.read_text(encoding="utf-8")
@@ -468,6 +511,8 @@ def _write_file(workspace: Path, path: str, content: str, *, stage: str | None =
         full_path = _safe_resolve(workspace, path)
     except ValueError as exc:
         return f"Error: {exc}"
+    if full_path.exists() and full_path.is_dir():
+        return f"Error: path is a directory, not a file: {path}"
     if full_path.suffix == ".mermaid":
         content = _strip_markdown_fences(content)
     full_path.parent.mkdir(parents=True, exist_ok=True)

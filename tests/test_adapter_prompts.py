@@ -219,6 +219,70 @@ class TestBuildDeployPrompt:
         # And ensure the example header isn't glued to the previous prose.
         assert "\n\nMinimal example:" in result
 
+    def test_required_deliverables_section_precedes_steps(self):
+        """The two deployment artefacts are non-negotiable and must be
+        surfaced BEFORE the task list.  Orchestrators that replan mid-run
+        (observed on Microsoft Agent Framework) lose the tail of the
+        prompt and end up producing generic Flask apps / requirements.txt
+        files instead of the artefacts the validator checks for.  Pulling
+        the contract into an up-front, unavoidable header keeps it in
+        scope across replans.
+        """
+        result = build_deploy_prompt(_make_story())
+        deliverables_idx = result.find("Required Deliverables")
+        steps_idx = result.find("## Steps")
+        assert deliverables_idx != -1, (
+            "Deploy prompt must include a 'Required Deliverables' section"
+        )
+        assert steps_idx != -1, "Deploy prompt must still include the Steps section"
+        assert deliverables_idx < steps_idx, (
+            "'Required Deliverables' must appear before '## Steps' so a "
+            "replanning orchestrator can't drop the artefact contract."
+        )
+
+    def test_required_deliverables_names_both_artefacts(self):
+        """The up-front section must name both files verbatim so a skim
+        lands on them even without reading further."""
+        result = build_deploy_prompt(_make_story())
+        deliverables = result.split("## Steps")[0]
+        deliverables_section = deliverables[deliverables.find("Required Deliverables") :]
+        assert "Dockerfile" in deliverables_section
+        assert "docker-compose.yaml" in deliverables_section
+
+    def test_scope_guard_forbids_out_of_story_artefacts(self):
+        """An agent that replans mid-run sometimes invents a Flask app or
+        unrelated requirements.txt. The prompt must explicitly scope the
+        deployment to the user story artefacts only.
+        """
+        result = build_deploy_prompt(_make_story()).lower()
+        # Either phrasing is acceptable — we just need an explicit scope
+        # clause that names the prohibition.  Checking for the key word
+        # "scope" keeps this flexible across rewrites.
+        assert "scope" in result or "do not invent" in result or "do not create" in result
+
+    def test_health_check_is_the_terminal_action(self):
+        """A successful health_check must be an explicit stop point.
+
+        Regression guard: on a live Sonnet run, CrewAI Deploy completed
+        the real work in 15 tool calls, validator passed, and then the
+        agent burned another 257k tokens running ``search_code /./ ``
+        and ``list_directory`` exploration calls for no reason. The
+        existing 'then STOP' line was too soft to hold against a
+        strong model looking for more to do.
+        """
+        result = build_deploy_prompt(_make_story()).lower()
+        # The prompt must tie termination to the health_check outcome
+        # specifically — a generic "stop when done" is what we already
+        # had and it wasn't enough.
+        assert "health_check" in result
+        # And must explicitly forbid further tool use after success.
+        assert (
+            "do not call any more tools" in result
+            or "do not call further tools" in result
+            or "do not invoke any further tools" in result
+            or "do not run any further tools" in result
+        )
+
 
 # ---------------------------------------------------------------------------
 # TestBuildTestingPrompt
