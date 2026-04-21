@@ -561,12 +561,8 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
             _log.warning("MagenticOne orchestration error: %s", e)
             collector.trace.errors.append(str(e))
 
-        run_duration_ms = (time.monotonic() - run_t0) * 1000
-
-        # Estimate LLM time (total run minus tool execution time)
-        tool_time = sum(tc.duration_ms for tc in collector.trace.tool_calls)
-        llm_time_estimate = max(0.0, run_duration_ms - tool_time)
-        collector.record_llm_response(raw_usage=None, duration_ms=llm_time_estimate)
+        # Wall-clock for reporting only — middleware records authoritative LLM duration.
+        collector.trace.metadata["wall_clock_ms"] = (time.monotonic() - run_t0) * 1000
 
         # -- Step 5: Final validation -----------------------------------------
         # Final success requires the workspace to actually pass validation.

@@ -215,3 +215,16 @@ def test_planner_fallback_records_plan_source():
     assert 'trace.metadata' in src or 'metadata["plan_source"]' in src or "metadata['plan_source']" in src
     # Must not silently swallow — either logs, records error, or narrows except.
     assert 'errors.append' in src or '_log.warning' in src
+
+
+def test_maf_does_not_double_record_llm_duration():
+    """End-of-run record_llm_response(raw_usage=None, duration_ms=llm_time_estimate)
+    must be gone — middleware already records per-call durations authoritatively."""
+    import inspect
+    from desmet.adapters.multiagent import agent_framework as maf
+
+    src = inspect.getsource(maf.AgentFrameworkAdapter._run_agent)
+    assert "llm_time_estimate" not in src, (
+        "End-of-run llm_time_estimate catch-up still present; middleware "
+        "already records per-call durations, so this inflates total duration ~2x."
+    )
