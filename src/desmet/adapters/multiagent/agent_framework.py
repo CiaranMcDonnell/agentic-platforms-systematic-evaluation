@@ -228,6 +228,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
 
         # -- Step 1: Planner agent (structured output) ------------------------
         plan: ImplementationPlan | None = None
+        plan_source = "structured"
         try:
             planner = Agent(
                 name=f"desmet_{stage_name}_planner",
@@ -243,10 +244,24 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
             if text:
                 try:
                     plan = ImplementationPlan.model_validate_json(text)
-                except Exception:
-                    pass
-        except Exception:
-            pass  # structured output not supported — fall back below
+                except (ValueError, TypeError) as exc:
+                    # JSON/pydantic validation failure — fall through to free-text.
+                    _log.warning(
+                        "Structured planner returned invalid JSON; falling back to free-text: %s",
+                        exc,
+                    )
+                    plan_source = "freetext"
+        except (NotImplementedError, TypeError, ValueError) as exc:
+            # Known provider/model incompatibilities with structured output.
+            _log.warning("Structured planner unavailable; falling back to free-text: %s", exc)
+            plan_source = "freetext"
+        except Exception as exc:  # noqa: BLE001 — we want to record, not suppress
+            # Unexpected failure — record to trace.errors so the run is auditable.
+            _log.warning("Structured planner failed unexpectedly: %s", exc)
+            collector.trace.errors.append(
+                f"planner_structured_failed: {type(exc).__name__}: {exc}"
+            )
+            plan_source = "fallback_error"
 
         if plan is None:
             # Free-text fallback: parse steps from plain text
@@ -264,12 +279,21 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                 planner_result = await planner.run(prompt)
                 text = getattr(planner_result, "text", "") or ""
                 plan = parse_plan_text(text)
-            except Exception:
+                if plan_source == "structured":
+                    plan_source = "freetext"
+            except Exception as exc:  # noqa: BLE001 — we want to record, not suppress
+                _log.warning("Free-text planner fallback failed; using stub plan: %s", exc)
+                collector.trace.errors.append(
+                    f"planner_freetext_failed: {type(exc).__name__}: {exc}"
+                )
                 plan = ImplementationPlan(
                     steps=["Execute the task as described"],
                     files_to_create=[],
                     files_to_modify=[],
                 )
+                plan_source = "fallback_stub"
+
+        collector.trace.metadata["plan_source"] = plan_source
 
         total_iterations += 1
         plan_json = json.dumps(plan.model_dump())

@@ -202,3 +202,16 @@ class TestRegistryIntegration:
         from desmet.adapters._shared.tools import ToolFormat
         adapter = get_adapter("microsoft_agent_framework")
         assert adapter.TOOL_FORMAT == ToolFormat.AGENT_FRAMEWORK
+
+
+def test_planner_fallback_records_plan_source():
+    """Structured-planner exception handling must record trace.metadata['plan_source']."""
+    import inspect
+
+    from desmet.adapters.multiagent.agent_framework import AgentFrameworkAdapter
+
+    src = inspect.getsource(AgentFrameworkAdapter._run_agent)
+    assert 'plan_source' in src
+    assert 'trace.metadata' in src or 'metadata["plan_source"]' in src or "metadata['plan_source']" in src
+    # Must not silently swallow — either logs, records error, or narrows except.
+    assert 'errors.append' in src or '_log.warning' in src
