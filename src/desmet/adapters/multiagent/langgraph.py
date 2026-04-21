@@ -224,13 +224,26 @@ class LangGraphAdapter(ToolAgentAdapter):
             )
             messages = [sys] + state["messages"]
 
-            # Try structured output first
+            # Try structured output first. Use include_raw=True so usage_metadata
+            # from the underlying LLM call is preserved — otherwise the structured
+            # path silently discards planner tokens while the free-text fallback
+            # records them, biasing cost metrics depending on which path ran.
             plan: ImplementationPlan | None = None
+            raw_msg = None
             plan_source = "structured"
             try:
-                structured_llm = llm.with_structured_output(ImplementationPlan)
+                structured_llm = llm.with_structured_output(
+                    ImplementationPlan, include_raw=True
+                )
                 result = await structured_llm.ainvoke(messages)
-                if isinstance(result, ImplementationPlan):
+                if isinstance(result, dict):
+                    raw_msg = result.get("raw")
+                    parsed = result.get("parsed")
+                    if isinstance(parsed, ImplementationPlan):
+                        plan = parsed
+                elif isinstance(result, ImplementationPlan):
+                    # Defensive: some LangChain versions may still return the
+                    # parsed model directly despite include_raw=True.
                     plan = result
             except (NotImplementedError, TypeError, ValueError) as exc:
                 # Known provider/model incompatibilities with structured output.
@@ -251,10 +264,14 @@ class LangGraphAdapter(ToolAgentAdapter):
                 if all_files:
                     plan_text_str += "\n\nFiles: " + ", ".join(all_files)
                 plan_text = plan_text_str
-                # Synthesize an AIMessage carrying the text + plan object
+                # Synthesize an AIMessage carrying the text + plan object.
+                # Copy usage_metadata and response_metadata from the raw LLM
+                # response so _extract_and_record_usage sees planner tokens.
+                raw_resp_meta = getattr(raw_msg, "response_metadata", None) or {}
                 response = AIMessage(
                     content=plan_text,
-                    response_metadata={"_plan_obj": plan},
+                    response_metadata={**raw_resp_meta, "_plan_obj": plan},
+                    usage_metadata=getattr(raw_msg, "usage_metadata", None),
                 )
                 if collector is not None:
                     collector.trace.metadata["plan_source"] = plan_source

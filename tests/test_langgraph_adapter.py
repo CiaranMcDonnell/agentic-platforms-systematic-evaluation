@@ -188,6 +188,23 @@ def test_run_reviewer_does_not_double_record_duration():
             )
 
 
+def test_structured_planner_preserves_token_usage():
+    """with_structured_output must be called with include_raw=True so usage_metadata
+    from the raw response is preserved and recorded by _extract_and_record_usage."""
+    import inspect
+    from desmet.adapters.multiagent import langgraph as lg
+
+    src = inspect.getsource(lg.LangGraphAdapter._build_planner_subgraph)
+    assert "include_raw=True" in src, (
+        "with_structured_output must be called with include_raw=True — otherwise "
+        "the structured-planner path discards usage_metadata, under-counting "
+        "planner tokens vs the free-text fallback."
+    )
+    assert "usage_metadata" in src, (
+        "Synthesized AIMessage must carry usage_metadata copied from raw response."
+    )
+
+
 def test_run_reviewer_records_duration_on_empty_messages():
     """Empty messages list must still record reviewer duration (fallback path)."""
     import inspect
