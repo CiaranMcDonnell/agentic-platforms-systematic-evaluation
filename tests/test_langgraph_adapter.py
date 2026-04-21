@@ -162,3 +162,40 @@ def test_planner_fallback_records_plan_source():
     assert 'trace.metadata' in src or 'metadata["plan_source"]' in src or "metadata['plan_source']" in src
     # Must not silently swallow — either logs, records error, or narrows except.
     assert 'errors.append' in src or '_log.warning' in src
+
+
+def test_run_reviewer_does_not_double_record_duration():
+    """Reviewer must not UNCONDITIONALLY call record_llm_response(raw_usage=None,
+    duration_ms=X) after already recording per-message usage — that double-counts
+    duration. The only permitted catch-up is the guarded fallback for the
+    empty-messages edge case (see test_run_reviewer_records_duration_on_empty_messages)."""
+    import inspect
+    from desmet.adapters.multiagent import langgraph as lg
+
+    # reviewer_wrapper is a nested function inside _build_graph; inspect the
+    # outer method's source to catch the anti-pattern wherever it appears.
+    src = inspect.getsource(lg.LangGraphAdapter._build_graph)
+    # Any record_llm_response(raw_usage=None, ...) call must be guarded by
+    # `if first` (the empty-messages fallback). If it appears outside such a
+    # guard, we're back to the double-counting anti-pattern.
+    for idx, line in enumerate(src.splitlines()):
+        if "record_llm_response(raw_usage=None" in line:
+            # Look back up to 3 lines for the `if first` guard.
+            window = "\n".join(src.splitlines()[max(0, idx - 3):idx])
+            assert "if first" in window, (
+                "Reviewer calls record_llm_response(raw_usage=None, ...) without "
+                "an `if first` guard — double-counts duration."
+            )
+
+
+def test_run_reviewer_records_duration_on_empty_messages():
+    """Empty messages list must still record reviewer duration (fallback path)."""
+    import inspect
+    from desmet.adapters.multiagent import langgraph as lg
+
+    src = inspect.getsource(lg.LangGraphAdapter._build_graph)
+    # The fallback recording must exist for the empty-messages case.
+    assert "if first" in src and "record_llm_response(raw_usage=None" in src, (
+        "Missing fallback that records reviewer_duration when message loop "
+        "does not execute — _llm_duration_total_ms would silently undercount."
+    )

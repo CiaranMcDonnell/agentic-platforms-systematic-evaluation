@@ -508,9 +508,22 @@ class LangGraphAdapter(ToolAgentAdapter):
             result = await reviewer_sg.ainvoke({"messages": messages}, config=config)
             reviewer_duration = (time.monotonic() - reviewer_t0) * 1000
 
+            # Fold the reviewer wall-clock duration into the FIRST per-message
+            # usage record so it is recorded once (not added on top of the
+            # per-message records). Subsequent messages record usage only
+            # (duration_ms=0.0). This avoids double-counting duration in
+            # _llm_duration_total_ms, which was biasing Efficiency metrics.
+            first = True
             for msg in result.get("messages", []):
-                _extract_and_record_usage(msg, duration_ms=0.0)
-            if collector is not None:
+                _extract_and_record_usage(
+                    msg,
+                    duration_ms=reviewer_duration if first else 0.0,
+                )
+                first = False
+
+            # Edge case: reviewer produced 0 messages (e.g., subgraph errored).
+            # Still record the wall-clock so _llm_duration_total_ms isn't under-counted.
+            if first and collector is not None:
                 collector.record_llm_response(raw_usage=None, duration_ms=reviewer_duration)
 
             last_msg = result["messages"][-1] if result.get("messages") else None
