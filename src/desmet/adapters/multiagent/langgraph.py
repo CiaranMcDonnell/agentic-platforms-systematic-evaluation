@@ -9,6 +9,7 @@ Architecture:
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 import uuid
@@ -36,6 +37,9 @@ from desmet.harness.models import PlatformInfo
 from desmet.llm_config import Provider
 from desmet.llm_config import get_config as get_llm_config
 from desmet.observability import get_langchain_callback
+
+
+_log = logging.getLogger(__name__)
 
 
 # ── State schemas ──────────────────────────────────────────────────────────
@@ -193,13 +197,17 @@ class LangGraphAdapter(ToolAgentAdapter):
 
     # ── Subgraph builders ──────────────────────────────────────────────────
 
-    def _build_planner_subgraph(self, llm) -> Any:
+    def _build_planner_subgraph(self, llm, collector: ObservationCollector | None = None) -> Any:
         """Single 'plan' node: Technical Lead persona produces a numbered plan.
 
         Tries LangChain structured output first (``with_structured_output``),
         falls back to free-text parsing when the provider does not support it.
         The structured ``ImplementationPlan`` (if obtained) is stashed in the
         response metadata so the parent wrapper can extract it.
+
+        ``collector`` is optional; when provided, the planner records
+        ``plan_source`` in ``trace.metadata`` and appends to ``trace.errors``
+        on unexpected structured-output failures so runs are auditable.
         """
         planner_persona = get_sub_persona("planner")
 
@@ -218,13 +226,24 @@ class LangGraphAdapter(ToolAgentAdapter):
 
             # Try structured output first
             plan: ImplementationPlan | None = None
+            plan_source = "structured"
             try:
                 structured_llm = llm.with_structured_output(ImplementationPlan)
                 result = await structured_llm.ainvoke(messages)
                 if isinstance(result, ImplementationPlan):
                     plan = result
-            except Exception:
-                pass  # fall back to text parsing
+            except (NotImplementedError, TypeError, ValueError) as exc:
+                # Known provider/model incompatibilities with structured output.
+                _log.warning("Structured planner unavailable; falling back to free-text: %s", exc)
+                plan_source = "freetext"
+            except Exception as exc:  # noqa: BLE001 — we want to record, not suppress
+                # Unexpected failure — record to trace.errors so the run is auditable.
+                _log.warning("Structured planner failed unexpectedly: %s", exc)
+                if collector is not None:
+                    collector.trace.errors.append(
+                        f"planner_structured_failed: {type(exc).__name__}: {exc}"
+                    )
+                plan_source = "fallback_error"
 
             if plan is not None:
                 plan_text_str, _ = format_plan_text(plan)
@@ -237,10 +256,16 @@ class LangGraphAdapter(ToolAgentAdapter):
                     content=plan_text,
                     response_metadata={"_plan_obj": plan},
                 )
+                if collector is not None:
+                    collector.trace.metadata["plan_source"] = plan_source
                 return {"messages": [response]}
 
             # Fallback: free-text plan
+            if plan_source == "structured":
+                plan_source = "freetext"
             response = await llm.ainvoke(messages)
+            if collector is not None:
+                collector.trace.metadata["plan_source"] = plan_source
             return {"messages": [response]}
 
         builder = StateGraph(SubgraphState)
@@ -305,7 +330,7 @@ class LangGraphAdapter(ToolAgentAdapter):
 
         executor_tools, reviewer_tools = split_tools(tools, self.TOOL_FORMAT)
 
-        planner_sg = self._build_planner_subgraph(llm)
+        planner_sg = self._build_planner_subgraph(llm, collector=collector)
         executor_sg = self._build_executor_subgraph(llm, executor_tools)
         reviewer_sg = self._build_reviewer_subgraph(llm, reviewer_tools)
 

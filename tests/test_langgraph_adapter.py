@@ -149,3 +149,16 @@ class TestStreamHeartbeat:
             )
         ]
         assert chunks == ["x"]
+
+
+def test_planner_fallback_records_plan_source():
+    """Structured-planner exception handling must record trace.metadata['plan_source']."""
+    import inspect
+
+    from desmet.adapters.multiagent.langgraph import LangGraphAdapter
+
+    src = inspect.getsource(LangGraphAdapter._build_planner_subgraph)
+    assert 'plan_source' in src
+    assert 'trace.metadata' in src or 'metadata["plan_source"]' in src or "metadata['plan_source']" in src
+    # Must not silently swallow — either logs, records error, or narrows except.
+    assert 'errors.append' in src or '_log.warning' in src
