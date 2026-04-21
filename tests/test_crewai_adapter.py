@@ -569,3 +569,18 @@ def test_event_handlers_register_per_instance():
     # Conversely a2's llm_call_count *did* increment, confirming a2's
     # handler took the full path.
     assert a2._llm_call_count == 1
+
+
+def test_iteration_count_is_per_stage_not_cumulative():
+    """total_iterations must reflect per-stage calls, not accumulate across stages."""
+    from desmet.adapters.multiagent.crewai import CrewAIAdapter
+
+    adapter = CrewAIAdapter()
+    adapter._llm_call_count = 7
+    if hasattr(adapter, "_last_usage_snapshot"):
+        adapter._last_usage_snapshot = {"prompt_tokens": 5000}
+
+    adapter._reset_per_stage_counters()
+    assert adapter._llm_call_count == 0
+    if hasattr(adapter, "_last_usage_snapshot"):
+        assert not adapter._last_usage_snapshot

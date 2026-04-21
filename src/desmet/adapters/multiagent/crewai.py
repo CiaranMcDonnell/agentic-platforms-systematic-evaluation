@@ -107,6 +107,17 @@ class CrewAIAdapter(ToolAgentAdapter):
         self._crew = None
         self._initialized = False
 
+    def _reset_per_stage_counters(self) -> None:
+        """Zero per-stage counters at the top of _run_agent.
+
+        Without this, _llm_call_count accumulates across every stage and
+        every story on the same adapter instance, so trace.total_iterations
+        becomes cumulative rather than per-stage.
+        """
+        self._llm_call_count = 0
+        if hasattr(self, "_last_usage_snapshot"):
+            self._last_usage_snapshot = {}
+
     async def health_check(self) -> bool:
         return self._initialized
 
@@ -506,6 +517,13 @@ class CrewAIAdapter(ToolAgentAdapter):
         returns success=False.
         """
         import asyncio
+
+        # Reset per-stage counters FIRST — before any llm_calls_before
+        # snapshot or trace assignment.  Without this, _llm_call_count
+        # accumulates across every stage and story on the same adapter
+        # instance, making trace.total_iterations cumulative rather than
+        # per-stage and biasing Efficiency/Autonomy rubric scores.
+        self._reset_per_stage_counters()
 
         llm = self._create_llm(context)
         cfg = get_llm_config(
