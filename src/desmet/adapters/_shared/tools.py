@@ -133,6 +133,13 @@ _STAGE_ABORT_THRESHOLD = 3
 _loop_fire_counts: dict[str, int] = defaultdict(int)
 
 
+def _truncate_for_log(value: str, limit: int = 200) -> str:
+    """Truncate *value* to *limit* chars, appending an ellipsis if cut."""
+    if len(value) <= limit:
+        return value
+    return value[:limit] + "…"
+
+
 def _extract_target(tool_name: str, call_key: str) -> str | None:
     """Extract a file-path target from a tool call, if possible.
 
@@ -232,9 +239,10 @@ def _check_loop(workspace: str, tool_name: str, call_key: str) -> str | None:
         _call_history[tracker_key] = []
         _loop_fire_counts[workspace] += 1
         _log.warning(
-            "[DEFENSE] LOOP DETECTED — %s called %d times in a row with identical args",
+            "[DEFENSE] LOOP DETECTED — %s called %d times in a row with identical args: %s",
             tool_name,
             _CONSECUTIVE_THRESHOLD,
+            _truncate_for_log(call_key),
         )
         return (
             f"LOOP DETECTED: '{tool_name}' was called {_CONSECUTIVE_THRESHOLD} "
@@ -251,9 +259,11 @@ def _check_loop(workspace: str, tool_name: str, call_key: str) -> str | None:
         if all_recon and low_diversity:
             _call_history[tracker_key] = []
             _loop_fire_counts[workspace] += 1
+            sample = ", ".join(_truncate_for_log(c, 60) for c in sorted(set(window)))
             _log.warning(
-                "[DEFENSE] LOOP DETECTED — %d reconnaissance shell commands with no progress",
+                "[DEFENSE] LOOP DETECTED — %d reconnaissance shell commands with no progress (samples: %s)",
                 _LOOP_WINDOW,
+                sample,
             )
             return (
                 f"LOOP DETECTED: the last {_LOOP_WINDOW} shell commands were all "
