@@ -7,6 +7,7 @@ the executor retries with conversation carry-forward.
 """
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -23,6 +24,9 @@ from desmet.harness.context import StageContext
 from desmet.harness.models import PlatformInfo
 from desmet.llm_config import Provider
 from desmet.llm_config import get_config as get_llm_config
+
+
+_log = logging.getLogger(__name__)
 
 
 # ── Data models ───────────────────────────────────────────────────────────────
@@ -187,6 +191,7 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
         # Try structured output (output_type) first — only works with
         # OpenAI models.  Fall back to free-text planning for other models.
         plan: ImplementationPlan | None = None
+        plan_source = "structured"
         try:
             planner = Agent(
                 name=f"desmet_{stage_name}_planner",
@@ -199,8 +204,17 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
 
             if isinstance(planner_result.final_output, ImplementationPlan):
                 plan = planner_result.final_output
-        except Exception:
-            pass  # structured output not supported — fall back below
+        except (NotImplementedError, TypeError, ValueError) as exc:
+            # Known provider/model incompatibilities with structured output.
+            _log.warning("Structured planner unavailable; falling back to free-text: %s", exc)
+            plan_source = "freetext"
+        except Exception as exc:  # noqa: BLE001 — we want to record, not suppress
+            # Unexpected failure — record to trace.errors so the run is auditable.
+            _log.warning("Structured planner failed unexpectedly: %s", exc)
+            collector.trace.errors.append(
+                f"planner_structured_failed: {type(exc).__name__}: {exc}"
+            )
+            plan_source = "fallback_error"
 
         if plan is None:
             # Free-text fallback: no output_type, parse steps from text
@@ -217,6 +231,10 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
             planner_result = await Runner.run(planner, input=prompt, max_turns=3)
             text = str(planner_result.final_output or "")
             plan = parse_plan_text(text)
+            if plan_source == "structured":
+                plan_source = "freetext"
+
+        collector.trace.metadata["plan_source"] = plan_source
 
         iters, tool_call_count = self._extract_trace(
             collector, planner_result, progress=progress,

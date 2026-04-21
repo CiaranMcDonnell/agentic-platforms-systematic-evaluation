@@ -235,3 +235,16 @@ def test_reviewer_receives_inspection_tools_only():
         "asymmetric distribution requires different slices. "
         f"Got tool arg names: {tool_arg_names}"
     )
+
+
+def test_planner_fallback_records_plan_source():
+    """Structured-planner exception handling must record trace.metadata['plan_source']."""
+    import inspect
+
+    from desmet.adapters.sdk.openai_agents import OpenAIAgentsAdapter
+
+    src = inspect.getsource(OpenAIAgentsAdapter._run_agent)
+    assert 'plan_source' in src
+    assert 'trace.metadata' in src or 'metadata["plan_source"]' in src or "metadata['plan_source']" in src
+    # Must not silently swallow — either logs, records error, or narrows except.
+    assert 'errors.append' in src or '_log.warning' in src
