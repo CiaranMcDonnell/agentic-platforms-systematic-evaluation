@@ -14,7 +14,7 @@ from typing import Any
 from desmet.adapters._shared.base import ToolAgentAdapter
 from desmet.adapters._shared.planning import ImplementationPlan, build_executor_instructions, parse_plan_text
 from desmet.adapters._shared.prompts import get_stage_persona, get_sub_persona
-from desmet.adapters._shared.tools import ToolFormat
+from desmet.adapters._shared.tools import ToolFormat, split_tools
 from desmet.adapters._shared.observation import ObservationCollector
 from desmet.adapters._shared.retry import ProgressReporter, RetryPolicy
 from desmet.adapters._shared.validation import validate_workspace
@@ -227,13 +227,20 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
         progress.agent_status("planner", f"{len(plan.steps)} steps planned")
 
         # ── Step 2: Build executor + reviewer agents ───────────────────────
+        # Asymmetric tool distribution (parity invariant): the reviewer
+        # gets inspection tools only (read_file, list_directory,
+        # search_code, check_completion).  Giving the reviewer write or
+        # execute tools would let it "fix" the workspace itself, which
+        # defeats the point of having a separate reviewer.
+        executor_tools, reviewer_tools = split_tools(tools, ToolFormat.OPENAI_AGENTS)
+
         guardrail = _make_workspace_guardrail(stage_name, str(context.workspace))
 
         reviewer_agent = Agent(
             name=f"desmet_{stage_name}_reviewer",
             instructions=reviewer_persona.backstory,
             model=self._model,
-            tools=tools,
+            tools=reviewer_tools,
             output_guardrails=[guardrail],
             model_settings=ModelSettings(temperature=context.temperature),
         )
@@ -247,7 +254,7 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
             name=f"desmet_{stage_name}_executor",
             instructions=executor_instructions,
             model=self._model,
-            tools=tools,
+            tools=executor_tools,
             handoffs=[reviewer_agent],
             model_settings=ModelSettings(temperature=context.temperature),
         )

@@ -176,3 +176,62 @@ def test_run_agent_validates_on_success_path():
         "would skip validation when the executor returns a final output "
         "without handing off to the reviewer (guardrail never fires)."
     )
+
+
+def test_reviewer_receives_inspection_tools_only():
+    """Reviewer must be built via split_tools so it does not receive write/execute tools.
+
+    Checks both that split_tools is called AND that the reviewer Agent(...)
+    construction uses the reviewer-tools slice (not the full `tools` list).
+    """
+    import ast
+    import inspect
+    import textwrap
+    from desmet.adapters.sdk import openai_agents
+
+    src = textwrap.dedent(inspect.getsource(openai_agents.OpenAIAgentsAdapter._run_agent))
+    assert "split_tools(" in src, (
+        "split_tools not used for reviewer tool asymmetry — reviewer likely "
+        "receives the full tool set."
+    )
+    assert "ToolFormat.OPENAI_AGENTS" in src or "OPENAI_AGENTS" in src, (
+        "ToolFormat.OPENAI_AGENTS not referenced in _run_agent."
+    )
+
+    # Walk the AST and find every Agent(...) call with a `tools=` kwarg.
+    # Collect the identifier names used as the `tools` value. The full
+    # tool set is passed in as the function parameter `tools`; the
+    # executor and reviewer must use *distinct* variable names so neither
+    # is handed the raw parameter.
+    tree = ast.parse(src)
+    tool_arg_names: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        is_agent_call = (
+            (isinstance(func, ast.Name) and func.id == "Agent")
+            or (isinstance(func, ast.Attribute) and func.attr == "Agent")
+        )
+        if not is_agent_call:
+            continue
+        for kw in node.keywords:
+            if kw.arg == "tools" and isinstance(kw.value, ast.Name):
+                tool_arg_names.append(kw.value.id)
+
+    # Any Agent(tools=tools) — passing the raw parameter through — is a
+    # violation: it means that agent receives the full tool set including
+    # write/execute tools.
+    assert "tools" not in tool_arg_names, (
+        "An Agent(...) is constructed with tools=tools (the raw parameter), "
+        "which means it receives the full tool set. Reviewer and executor "
+        "must each receive a split slice from split_tools(). "
+        f"Got tool arg names: {tool_arg_names}"
+    )
+    # And the two constructions must use different variables (executor_tools
+    # vs reviewer_tools) — not the same split slice for both.
+    assert len(set(tool_arg_names)) >= 2, (
+        "Executor and reviewer appear to share the same tool list — the "
+        "asymmetric distribution requires different slices. "
+        f"Got tool arg names: {tool_arg_names}"
+    )
