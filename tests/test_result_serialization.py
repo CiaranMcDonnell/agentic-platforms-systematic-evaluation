@@ -98,6 +98,19 @@ class TestDeployResultSerialization:
         assert restored.build_success is True
 
 
+def test_agent_trace_has_metadata_field():
+    """AgentTrace must have a mutable metadata dict for adapter annotations like plan_source."""
+    from desmet.harness.trace import AgentTrace
+    t = AgentTrace()
+    assert hasattr(t, "metadata")
+    assert t.metadata == {}
+    t.metadata["plan_source"] = "structured"
+    assert t.metadata == {"plan_source": "structured"}
+    # Instances must get independent dicts (default_factory, not shared default).
+    t2 = AgentTrace()
+    assert t2.metadata == {}
+
+
 class TestRequirementsResultSerialization:
     def test_roundtrip(self):
         r = RequirementsResult(

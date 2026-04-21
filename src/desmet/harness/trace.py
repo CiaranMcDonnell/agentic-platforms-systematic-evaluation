@@ -47,6 +47,7 @@ class AgentTrace:
     final_state: dict[str, Any] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
     node_events: list[dict[str, Any]] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def duration_seconds(self) -> float:
@@ -94,6 +95,7 @@ class AgentTrace:
             "final_state": self.final_state,
             "errors": self.errors,
             "node_events": self.node_events,
+            "metadata": self.metadata,
         }
 
     @classmethod
@@ -135,4 +137,5 @@ class AgentTrace:
             final_state=data.get("final_state", {}),
             errors=data.get("errors", []),
             node_events=data.get("node_events", []),
+            metadata=data.get("metadata", {}),
         )
