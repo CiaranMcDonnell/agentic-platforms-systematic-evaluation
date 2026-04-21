@@ -294,14 +294,26 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
                 collector.record_llm_response(raw_usage=None, duration_ms=llm_time_estimate)
 
                 # Reaching here means Runner.run() completed without
-                # OutputGuardrailTripwireTriggered → the work passed
-                # validation.  Report success even if the iteration
-                # count happens to land at or above max_iterations: a
-                # stage that produced the required artifacts within the
-                # budget is a success, not a budget overrun.
-                progress.validation_passed()
-                validation_succeeded = True
-                break
+                # OutputGuardrailTripwireTriggered.  The guardrail only
+                # fires when the executor hands off to the reviewer; if
+                # the executor returns a final output directly, the
+                # workspace was never validated.  Validate unconditionally
+                # here so executor-final-output runs cannot report
+                # success without the artifacts actually being present.
+                success, feedback = policy.validate()
+                if success:
+                    progress.validation_passed()
+                    validation_succeeded = True
+                    break
+                else:
+                    last_feedback = feedback
+                    total_iterations += 1
+                    progress.validation_failed(
+                        attempt + 1, policy.total_attempts(), last_feedback,
+                    )
+                    if total_iterations >= context.max_iterations:
+                        break
+                    continue
 
             except OutputGuardrailTripwireTriggered:
                 total_iterations += 1

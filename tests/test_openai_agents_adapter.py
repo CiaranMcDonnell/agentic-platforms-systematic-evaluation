@@ -131,3 +131,48 @@ class TestOpenAIAgentsAdapterInterface:
     def test_failure_handling_info(self, adapter):
         info = adapter.get_failure_handling_info()
         assert info["has_auto_recovery"] is True
+
+
+def test_run_agent_validates_on_success_path():
+    """On the success path (no tripwire, no MaxTurnsExceeded), policy.validate()
+    must be called inside the retry-loop Try.body — not only inside except
+    handlers or via the post-loop fallback. Pre-fix, the only validate() calls
+    were in except handlers plus the post-loop fallback; the success branch of
+    Runner.run was reported as success without ever validating the workspace."""
+    import ast
+    import inspect
+    import textwrap
+    from desmet.adapters.sdk import openai_agents
+
+    src = textwrap.dedent(inspect.getsource(openai_agents.OpenAIAgentsAdapter._run_agent))
+    tree = ast.parse(src)
+
+    def _is_policy_validate_call(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "validate"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "policy"
+        )
+
+    # Collect policy.validate() calls that live inside the body of any Try
+    # statement (i.e., the success path), as opposed to ExceptHandler bodies
+    # (tripwire / MaxTurnsExceeded) or the top-level post-loop fallback.
+    in_try_body: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Try):
+            for stmt in node.body:
+                for child in ast.walk(stmt):
+                    if _is_policy_validate_call(child):
+                        in_try_body.add(id(child))
+
+    success_path_calls = [
+        node for node in ast.walk(tree)
+        if _is_policy_validate_call(node) and id(node) in in_try_body
+    ]
+    assert success_path_calls, (
+        "No policy.validate() call on the Runner.run success path — adapter "
+        "would skip validation when the executor returns a final output "
+        "without handing off to the reviewer (guardrail never fires)."
+    )
