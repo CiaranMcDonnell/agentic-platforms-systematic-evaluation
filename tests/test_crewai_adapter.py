@@ -484,3 +484,88 @@ class TestSuccessAfterBudget:
             "validator never passed → success must be False, regardless of "
             "iteration count (run 68cab451 deploy stage bug)"
         )
+
+
+def test_event_handlers_register_per_instance():
+    """Regression: each adapter instance must register its own handler
+    closures, and each closure must capture its own ``self``.
+
+    The bug this guards against: a single shared class-level flag caused
+    only the first instance's handlers to be registered.  Events
+    dispatched while the second instance was the "active" adapter would
+    then be routed to the first instance's collector, corrupting traces
+    when two adapters existed in the same process (e.g. sequential
+    stages or parallel runs).
+
+    This test verifies the *behavioral* fix, not just the flag location:
+    we emit a real event on ``crewai_event_bus`` with ``a2._current_collector``
+    set (and ``a1._current_collector`` still ``None``), then assert that
+    only ``a2``'s collector received the recording call.
+    """
+    # The import-location assertion still matters — it ensures we can't
+    # regress to a class-level flag — so keep it alongside the behavioral
+    # check.
+    from desmet.adapters.multiagent.crewai import CrewAIAdapter
+    a1 = CrewAIAdapter()
+    a2 = CrewAIAdapter()
+    assert a1._event_handlers_registered is True
+    assert a2._event_handlers_registered is True
+    assert "_event_handlers_registered" in a1.__dict__
+    assert "_event_handlers_registered" in a2.__dict__
+
+    # Behavioral check — requires crewai.events to construct and emit a
+    # real event through the shared event bus.
+    pytest.importorskip("crewai.events")
+    from unittest.mock import MagicMock
+
+    from crewai.events.event_bus import crewai_event_bus
+    from crewai.events.types.llm_events import (
+        LLMCallCompletedEvent,
+        LLMCallType,
+    )
+
+    # a2 is the "active" adapter — its collector should receive the event.
+    # a1 stays inert (collector=None) — its handler should early-return.
+    fake_collector_a2 = MagicMock()
+    a2._current_collector = fake_collector_a2
+    a2._current_progress = None
+    assert a1._current_collector is None, (
+        "a1 must stay inert — the bug is that a1's closure would steal "
+        "events intended for a2"
+    )
+
+    event = LLMCallCompletedEvent(
+        call_id="test-call-1",
+        response="hello from the LLM",
+        call_type=LLMCallType.LLM_CALL,
+        model="test-model",
+    )
+    # source can be any object — the handler pulls ``_token_usage`` off
+    # it via ``getattr(..., None)`` so a bare object is fine.
+    crewai_event_bus.emit(source=object(), event=event)
+
+    # a2's collector must have been called — record_llm_response is the
+    # first side-effect the handler performs when a collector is present.
+    assert fake_collector_a2.record_llm_response.call_count == 1, (
+        "a2's handler closure must capture a2's own self and route the "
+        "event to a2's collector"
+    )
+    # Sanity: the call was made with the event's model, proving the
+    # closure really did read our emitted event (not stale state).
+    _, kwargs = fake_collector_a2.record_llm_response.call_args
+    assert kwargs.get("model") == "test-model"
+
+    # a1's state must remain untouched — the regression is precisely that
+    # a1's shared closure would fire on events meant for a2.
+    assert a1._current_collector is None, (
+        "a1's handler must not mutate a1's collector state — and since "
+        "it was None, no side effects should have occurred"
+    )
+    assert a1._llm_call_count == 0, (
+        "a1's llm_call_count must not increment — that would prove "
+        "a1's handler ran the full path (the original bug)"
+    )
+
+    # Conversely a2's llm_call_count *did* increment, confirming a2's
+    # handler took the full path.
+    assert a2._llm_call_count == 1

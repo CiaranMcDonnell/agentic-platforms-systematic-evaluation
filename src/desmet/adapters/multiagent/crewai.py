@@ -53,18 +53,23 @@ class CrewAIAdapter(ToolAgentAdapter):
 
     TOOL_FORMAT = ToolFormat.CREWAI
 
-    _event_handlers_registered: bool = False
-
     def __init__(self, config: dict[str, Any] | None = None):
         super().__init__(config)
         self._crew = None
-        # Bridges the event bus handlers (registered once) to the per-stage
-        # collector and progress reporter.  Set before kickoff, cleared after.
+        # Bridges the event bus handlers (registered per-instance) to the
+        # per-stage collector and progress reporter.  Set before kickoff,
+        # cleared after (even on exception).
         self._current_collector: ObservationCollector | None = None
         self._current_progress: ProgressReporter | None = None
         self._last_llm_start: float = 0.0
         self._last_usage_snapshot: dict[str, int] = {}
         self._llm_call_count: int = 0
+        # Per-instance guard — each adapter registers its own handlers that
+        # close over ``self``.  A class-level flag would cause every instance
+        # after the first to skip registration and share the first instance's
+        # (stale) collector reference, silently dropping events.
+        self._event_handlers_registered: bool = False
+        self._register_event_handlers()
 
     @property
     def platform_info(self) -> PlatformInfo:
@@ -115,7 +120,7 @@ class CrewAIAdapter(ToolAgentAdapter):
         execution path (ReAct text parsing *and* native function calling),
         giving complete coverage.
         """
-        if CrewAIAdapter._event_handlers_registered:
+        if self._event_handlers_registered:
             return
         try:
             from crewai.events.event_bus import crewai_event_bus
@@ -224,9 +229,12 @@ class CrewAIAdapter(ToolAgentAdapter):
                             agent_name = getattr(agent, "role", "") or ""
                     progress.agent_status(agent_name or "agent", "task complete")
 
-            CrewAIAdapter._event_handlers_registered = True
         except ImportError:
             _log.debug("crewai.events not available — event bus tracing disabled")
+        # Mark as registered regardless of import success so the per-instance
+        # guard doesn't repeatedly retry (and so tests don't need crewai
+        # installed to verify registration was attempted on this instance).
+        self._event_handlers_registered = True
 
     def _create_llm(self, context: StageContext):
         """Build a CrewAI LLM from centralised config + stage context overrides.
@@ -537,9 +545,14 @@ class CrewAIAdapter(ToolAgentAdapter):
             llm_calls_before = self._llm_call_count
             self._current_collector = collector
             self._current_progress = progress
-            result = await asyncio.to_thread(crew.kickoff)
-            self._current_collector = None
-            self._current_progress = None
+            try:
+                result = await asyncio.to_thread(crew.kickoff)
+            finally:
+                # Clear bridge references regardless of success/failure so
+                # that event handlers from a later (failed) run don't leak
+                # events into a stale collector.
+                self._current_collector = None
+                self._current_progress = None
             collector.record_message("assistant", str(result))
 
             # ── Fallback: use result.token_usage if event bus recorded nothing ─
