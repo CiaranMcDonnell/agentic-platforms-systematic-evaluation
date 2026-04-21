@@ -11,7 +11,6 @@ Architecture:
 from __future__ import annotations
 
 import logging
-import re
 import time
 from typing import Any
 
@@ -30,40 +29,43 @@ from typing import Any
 # returned verbatim instead of triggering a state lookup.  The ZWSP is
 # invisible to the LLM reader.
 _ADK_BRACE_SENTINEL = "\u200b"
-_ADK_BRACE_PATTERN = re.compile(r"\{+[^{}]*\}+")
-
-
 def escape_adk_template(text: str) -> str:
     """Neutralise curly-brace state-variable lookups inside ADK instructions.
 
-    Idempotent: re-escaping already-escaped text is a no-op.
+    ADK's inject_session_state regex is ``r'{+[^{}]*}+'`` plus an
+    ``isidentifier()`` check on the stripped body. We insert a zero-width
+    space immediately after every '{' and immediately before every '}' so
+    the stripped body always contains a ZWSP, which fails
+    ``isidentifier()`` and is therefore returned verbatim by ADK instead
+    of triggering a state lookup.
+
+    Idempotent: a '{' already followed by the sentinel is left alone.
     """
     if not text or "{" not in text:
         return text
 
-    def _wrap(match: re.Match[str]) -> str:
-        body = match.group()
-        # Skip if already sentinel-wrapped (idempotency).
-        if _ADK_BRACE_SENTINEL in body:
-            return body
-        # Insert sentinel just inside the first ``{`` and just before the
-        # last ``}`` so ADK's ``lstrip('{').rstrip('}').strip()`` cannot
-        # recover a bare identifier.
-        first_close = body.rfind("}")
-        first_open_end = 0
-        for i, c in enumerate(body):
-            if c != "{":
-                first_open_end = i
-                break
-        return (
-            body[:first_open_end]
-            + _ADK_BRACE_SENTINEL
-            + body[first_open_end:first_close]
-            + _ADK_BRACE_SENTINEL
-            + body[first_close:]
-        )
-
-    return _ADK_BRACE_PATTERN.sub(_wrap, text)
+    out: list[str] = []
+    n = len(text)
+    i = 0
+    while i < n:
+        c = text[i]
+        if c == "{":
+            out.append(c)
+            # Idempotency: skip if already followed by sentinel.
+            if i + 1 < n and text[i + 1] == _ADK_BRACE_SENTINEL:
+                out.append(_ADK_BRACE_SENTINEL)
+                i += 2
+                continue
+            out.append(_ADK_BRACE_SENTINEL)
+        elif c == "}":
+            # Idempotency: skip if already preceded by sentinel.
+            if out and out[-1] != _ADK_BRACE_SENTINEL:
+                out.append(_ADK_BRACE_SENTINEL)
+            out.append(c)
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)
 
 from desmet.adapters._shared.base import ToolAgentAdapter
 from desmet.adapters._shared.observation import ObservationCollector

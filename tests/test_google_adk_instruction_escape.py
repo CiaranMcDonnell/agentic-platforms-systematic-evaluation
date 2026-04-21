@@ -90,3 +90,21 @@ class TestEscapeAdkTemplate:
         once = escape_adk_template("${PORT}:8000")
         twice = escape_adk_template(once)
         assert inject(once) == inject(twice)
+
+    def test_nested_braces_do_not_raise(self, inject):
+        """Mermaid-like nested braces must survive ADK templating."""
+        template = "class Foo { bar: Baz {} }\n{PORT}"
+        escaped = escape_adk_template(template)
+        result = inject(escaped)
+        assert "Foo" in result
+        assert "Baz" in result
+        assert "PORT" in result
+
+    def test_deeply_nested_braces(self, inject):
+        """Multiple levels of nesting must all survive templating."""
+        template = "{{ outer { inner { deepest } } }}"
+        escaped = escape_adk_template(template)
+        result = inject(escaped)
+        assert "outer" in result
+        assert "inner" in result
+        assert "deepest" in result
