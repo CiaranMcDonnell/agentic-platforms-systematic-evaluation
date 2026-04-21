@@ -463,6 +463,8 @@ def _read_file(workspace: Path, path: str) -> str:
         return f"Error: {exc}"
     if not full_path.exists():
         return f"File not found: {path}"
+    if full_path.is_dir():
+        return f"Error: path is a directory, not a file: {path}"
     if full_path.stat().st_size > _MAX_READ_SIZE:
         return f"Error: file too large ({full_path.stat().st_size} bytes, limit {_MAX_READ_SIZE})"
     return full_path.read_text(encoding="utf-8")
@@ -499,6 +501,8 @@ def _write_file(workspace: Path, path: str, content: str, *, stage: str | None =
         full_path = _safe_resolve(workspace, path)
     except ValueError as exc:
         return f"Error: {exc}"
+    if full_path.exists() and full_path.is_dir():
+        return f"Error: path is a directory, not a file: {path}"
     if full_path.suffix == ".mermaid":
         content = _strip_markdown_fences(content)
     full_path.parent.mkdir(parents=True, exist_ok=True)

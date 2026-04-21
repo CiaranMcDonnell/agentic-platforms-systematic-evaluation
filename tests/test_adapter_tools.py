@@ -327,6 +327,25 @@ class TestCreateToolsCallable:
         result = read_file(path="nonexistent.py")
         assert "File not found" in result
 
+    def test_read_file_returns_error_for_directory(self, workspace):
+        """Passing a directory path must return an error string, not raise
+        IsADirectoryError — ADK surfaces raises as pipeline-terminating
+        errors, which masks the actual problem."""
+        tools = create_tools(workspace, ["read_file"])
+        read_file = tools[0]
+        result = read_file(path="subdir")
+        assert "directory" in result.lower()
+        assert "subdir" in result
+
+    def test_write_file_returns_error_for_directory(self, workspace):
+        """Writing to an existing directory path must return an error string
+        rather than raising IsADirectoryError."""
+        tools = create_tools(workspace, ["write_file"])
+        write_file = tools[0]
+        result = write_file(path="subdir", content="data")
+        assert "directory" in result.lower()
+        assert "subdir" in result
+
     def test_write_file_creates_file(self, workspace):
         tools = create_tools(workspace, ["write_file"])
         write_file = tools[0]
