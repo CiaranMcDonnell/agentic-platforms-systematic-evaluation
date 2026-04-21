@@ -339,7 +339,14 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
             middleware=[middleware],
         )
 
-        max_rounds = max(3, context.max_iterations - 1)
+        # Cap at 12 rounds: the deploy stage's real tool-call work finishes
+        # by round ~10 in practice, and anything beyond that is MagenticOne
+        # manager-spin (executor/reviewer return "nothing to do" text but
+        # the manager keeps re-dispatching, cumulatively resubmitting
+        # history). A hard cap bounds the token cost at ~250k instead of
+        # letting it grow to >1M. Not a fix for the root cause — which
+        # lives in MagenticOne's completion detection — just a bound.
+        max_rounds = min(context.max_iterations - 1, 12)
 
         workflow = MagenticBuilder(
             participants=[executor_agent, reviewer_agent],
