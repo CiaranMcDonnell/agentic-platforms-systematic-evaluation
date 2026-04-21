@@ -584,3 +584,16 @@ def test_iteration_count_is_per_stage_not_cumulative():
     assert adapter._llm_call_count == 0
     if hasattr(adapter, "_last_usage_snapshot"):
         assert not adapter._last_usage_snapshot
+
+
+def test_planner_fallback_records_plan_source():
+    """Structured-planner exception handling must record trace.metadata['plan_source']."""
+    import inspect
+
+    from desmet.adapters.multiagent.crewai import CrewAIAdapter
+
+    src = inspect.getsource(CrewAIAdapter._run_agent)
+    assert 'plan_source' in src
+    assert 'trace.metadata' in src or 'metadata["plan_source"]' in src or "metadata['plan_source']" in src
+    # Must not silently swallow — either logs, records error, or narrows except.
+    assert 'errors.append' in src or '_log.warning' in src

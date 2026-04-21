@@ -586,13 +586,42 @@ class CrewAIAdapter(ToolAgentAdapter):
                 tasks_output = getattr(result, "tasks_output", None)
                 if tasks_output:
                     first_output = tasks_output[0]
+                    plan_source = "structured"
                     # Try pydantic output first (structured output from CrewAI)
                     pydantic_out = getattr(first_output, "pydantic", None)
                     if isinstance(pydantic_out, ImplementationPlan):
                         structured_plan = pydantic_out
                     else:
-                        structured_plan = parse_plan_text(str(first_output))
+                        try:
+                            structured_plan = parse_plan_text(str(first_output))
+                            plan_source = "freetext"
+                        except (TypeError, ValueError) as exc:
+                            # Known parser incompatibilities — fall back to stub.
+                            _log.warning(
+                                "Free-text plan parse failed; using stub plan: %s", exc
+                            )
+                            structured_plan = ImplementationPlan(
+                                steps=[str(first_output)],
+                                files_to_create=[],
+                                files_to_modify=[],
+                            )
+                            plan_source = "fallback_stub"
+                        except Exception as exc:  # noqa: BLE001 — we want to record, not suppress
+                            # Unexpected failure — record to trace.errors so the run is auditable.
+                            _log.warning(
+                                "Free-text plan parse failed unexpectedly: %s", exc
+                            )
+                            collector.trace.errors.append(
+                                f"planner_structured_failed: {type(exc).__name__}: {exc}"
+                            )
+                            structured_plan = ImplementationPlan(
+                                steps=[str(first_output)],
+                                files_to_create=[],
+                                files_to_modify=[],
+                            )
+                            plan_source = "fallback_error"
                     plan_text = str(first_output)
+                    collector.trace.metadata["plan_source"] = plan_source
 
             # ── Validate workspace ───────────────────────────────────────
             passed, feedback = policy.validate()
