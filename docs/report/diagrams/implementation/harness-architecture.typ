@@ -1,23 +1,23 @@
 // Harness Architecture Diagram — injected into report via #include
 // Component diagram: evaluation harness system, portrait A4
 
-// ── Colours ───────────────────────────────────────────────────────────────────
+// ── Colours (muted, print-safe academic palette, shared with pipeline diagram)
 
-#let h-fill   = rgb("#e3f2fd")   // Blue — harness infrastructure
-#let h-stroke = rgb("#1565c0")
-#let a-fill   = rgb("#fff3e0")   // Orange — platform adapters
-#let a-stroke = rgb("#e65100")
-#let o-fill   = rgb("#f3e5f5")   // Purple — outputs / storage / UI
-#let o-stroke = rgb("#6a1b9a")
-#let m-fill   = rgb("#fff8e1")   // Gold — metrics / dimensions
-#let m-stroke = rgb("#f57f17")
-#let x-fill   = rgb("#e8f5e9")   // Green — cross-cutting concerns
-#let x-stroke = rgb("#2e7d32")
+#let h-fill   = rgb("#DCE7F1")   // muted blue       — harness infrastructure
+#let h-stroke = rgb("#2C5282")
+#let a-fill   = rgb("#F5E1C8")   // muted terracotta — platform adapters / stages
+#let a-stroke = rgb("#B8691F")
+#let o-fill   = rgb("#E4DAEA")   // dusty purple     — outputs / storage / UI
+#let o-stroke = rgb("#6B4B8A")
+#let m-fill   = rgb("#F5EBC8")   // ochre            — metrics / dimensions
+#let m-stroke = rgb("#A8851F")
+#let x-fill   = rgb("#D4E4D0")   // sage             — cross-cutting concerns
+#let x-stroke = rgb("#4A7A3F")
 #let arr-col  = luma(80)
 
 // ── Sizing constants ─────────────────────────────────────────────────────────
 
-#let bw  = 13.0cm   // full-width block
+#let bw  = 15cm   // full-width block
 #let bs  = 7pt      // body text size
 #let ss  = 6pt      // small text size
 #let xs  = 5.5pt    // extra-small text
@@ -75,7 +75,7 @@
 // ── Figure body ──────────────────────────────────────────────────────────────
 
 #figure(
-  placement: top,
+  placement: auto,
   kind: image,
   [
     #align(center)[
@@ -86,14 +86,14 @@
         // ── 1. CLI (thin strip) ─────────────────────────────────────────────
         rect(width: bw, fill: h-fill, stroke: 0.8pt + h-stroke, radius: 3pt, inset: (x: 8pt, y: 4pt))[
           #text(size: bs, weight: "bold")[desmet CLI]
-          #text(size: ss, fill: luma(80))[ — entry point; launches WebUI management console via Uvicorn (port 8042)]
+          #text(size: ss, fill: luma(80))[ — entry point; launches the WebUI management console via Uvicorn]
         ],
 
         down-arrow(),
 
         // ── 2. WebUI ────────────────────────────────────────────────────────
         comp-box(
-          label: "WebUI  (FastAPI — desmet.webui.api)",
+          label: "WebUI  (FastAPI — desmet.webui.api, port 8042)",
           detail: text(size: ss)[
             Management console and API backend. REST endpoints for platform management, benchmark execution, and results visualisation. WebSocket for live logs.
           ],
@@ -102,20 +102,24 @@
 
         down-arrow(),
 
-        // ── 3. Side-by-side: Runner | Infrastructure ────────────────────────
+        // ── 3. Side-by-side: Runner ── uses ──> Infrastructure ─────────────
         grid(
-          columns: (1fr, 0.2cm, 1fr),
-          gutter: 0pt, align: top,
+          columns: (1fr, 1.8cm, 1fr),
+          gutter: 0pt, align: horizon,
 
           comp-box(
             label: "Runner  (harness/runner.py)",
             detail: text(size: ss)[
-              Orchestrates evaluation across platforms and stories. Instantiates adapters via Registry, invokes stages sequentially, collects typed StageResult objects.
+              Orchestrates evaluation across platforms and scenarios. Instantiates adapters via Registry, invokes stages sequentially, collects typed StageResult objects.
             ],
             w: 100%,
           ),
 
-          [],
+          align(center)[
+            #text(size: 6.5pt, fill: arr-col, style: "italic")[ensures running]
+            #v(-2pt)
+            #text(size: 14pt, fill: arr-col)[#sym.arrow.r]
+          ],
 
           comp-box(
             label: "Infrastructure  (infra.py)",
@@ -130,23 +134,27 @@
 
         down-arrow(),
 
-        // ── 4. Side-by-side: Story Loader | BasePlatformAdapter ─────────────
+        // ── 4. Scenario Loader ── StageContext ──> BasePlatformAdapter ────
         grid(
-          columns: (1fr, 0.2cm, 1fr),
+          columns: (1fr, 1.8cm, 1fr),
           gutter: 0pt,
-          align: top,
+          align: horizon,
 
           comp-box(
-            label: "Story Loader  (stage1)",
+            label: "Scenario Loader  (stage1)",
             detail: [
-              #text(size: ss)[Reads YAML story definitions. Validates fields, resolves prompts and Gherkin, constructs StageContext.]
+              #text(size: ss)[Reads YAML scenario definitions. Validates fields, resolves prompts and Gherkin, constructs StageContext.]
               #v(1pt)
               #text(size: xs, fill: h-stroke)[basic / intermediate / advanced]
             ],
             w: 100%,
           ),
 
-          [],
+          align(center)[
+            #text(size: 6.5pt, fill: arr-col, style: "italic")[StageContext]
+            #v(-2pt)
+            #text(size: 14pt, fill: arr-col)[#sym.arrow.r]
+          ],
 
           comp-box(
             label: "BasePlatformAdapter  (ABC)",
@@ -157,7 +165,12 @@
           ),
         ),
 
-        down-arrow(),
+        // Arrow to stages labelled to clarify that the stages ARE adapter methods
+        align(center)[
+          #v(3pt)
+          #text(size: xs, fill: arr-col, style: "italic")[invokes 4-stage method interface]
+        ],
+        down-arrow(h: 4pt),
 
         // ── 5. Pipeline Stages ───────────────────────────────────────────────
         rect(width: bw, fill: a-fill, stroke: 0.8pt + a-stroke, radius: 3pt, inset: 0pt)[
@@ -194,7 +207,7 @@
           #text(size: ss, weight: "bold")[StageResult]
           #text(size: ss, fill: luma(80))[ — typed output with AgentTrace (tokens, time, tool calls)]
           #h(4pt)
-          #text(size: xs, fill: luma(100))[RequirementsResult #sym.bar.v CodeResult #sym.bar.v TestResult #sym.bar.v DeployResult]
+          #text(size: xs, fill: luma(100))[subclasses: RequirementsResult · CodeResult · TestResult · DeployResult]
         ],
 
         down-arrow(),
@@ -211,7 +224,7 @@
               #v(1pt)
               #grid(
                 columns: (auto, auto), gutter: (3pt, 1pt),
-                ..("Pipeline Comp.", "Efficiency", "Orchestration", "Autonomy").map(d =>
+                ..("Pipeline Completeness", "Efficiency", "Orchestration", "Autonomy").map(d =>
                   [#rect(width: 4pt, height: 4pt, fill: m-stroke, radius: 1pt, stroke: none)[] #text(size: xs, weight: "bold")[#d]]
                 )
               )
@@ -222,11 +235,11 @@
           [],
 
           comp-box(
-            label: "Results Storage",
+            label: "Results Storage  (DuckDB)",
             detail: [
-              #text(size: xs, style: "italic", fill: o-stroke)[results/{platform}/{story_id}/]
+              #text(size: xs, style: "italic", fill: o-stroke)[results/desmet.duckdb · runs + executions tables]
               #v(1pt)
-              #text(size: ss)[Stage outputs, traces, token logs, rubric evidence.]
+              #text(size: ss)[Stage outputs, traces, token logs, rubric evidence; SQL-queryable and Pandas-exportable.]
             ],
             bg: o-fill, accent: o-stroke, w: 100%,
           ),
@@ -244,16 +257,24 @@
 
         v(4pt),
 
-        // ── 8. Cross-cutting (compact strip) ────────────────────────────────
-        rect(width: bw, fill: x-fill, stroke: 0.7pt + x-stroke, radius: 3pt, inset: (x: 8pt, y: 4pt))[
+        // ── 8. Cross-cutting (two-column strip, content-height only) ────────
+        rect(width: bw, fill: x-fill, stroke: 0.7pt + x-stroke, radius: 3pt, inset: (x: 10pt, y: 6pt))[
+          #set text(hyphenate: false)
           #grid(
-            columns: (auto, 1fr, 0.3cm, auto, 1fr),
-            gutter: 0pt, align: left + top,
-            text(size: ss, weight: "bold", fill: x-stroke)[LLM Config ],
-            text(size: xs)[Centralised model, temperature, provider (OpenAI, Anthropic, Google, OpenRouter).],
-            [],
-            text(size: ss, weight: "bold", fill: x-stroke)[Observability ],
-            text(size: xs)[Structured logging (structlog) + optional Langfuse tracing for LLM calls and pipeline spans.],
+            columns: (1fr, 1fr),
+            column-gutter: 14pt,
+            stroke: (x, _) => if x == 1 { (left: 0.8pt + x-stroke.lighten(40%)) },
+            inset: (x: 0pt, y: 0pt),
+            [
+              #text(size: ss, weight: "bold", fill: x-stroke)[LLM Config]
+              #v(2pt)
+              #text(size: xs)[Centralised model name, temperature, and provider selection (OpenAI, Anthropic, Google, OpenRouter).]
+            ],
+            pad(left: 10pt, [
+              #text(size: ss, weight: "bold", fill: x-stroke)[Observability]
+              #v(2pt)
+              #text(size: xs)[Structured logging (structlog) + optional Langfuse tracing for LLM calls and pipeline spans.]
+            ]),
           )
         ],
 
@@ -283,7 +304,5 @@
       #text(size: xs)[ Cross-Cutting]
     ]
   ],
-  caption: [
-    Evaluation Harness Architecture. The _desmet_ CLI launches a FastAPI-based WebUI that serves as the management console. The WebUI delegates benchmark execution to the Runner, which dispatches user stories through platform-specific adapters. Each adapter executes four pipeline stages, producing typed StageResult objects. The Metrics Collector computes dimension scores; Results Storage persists JSON artifacts; the Dashboard data layer provides chart generation consumed by the WebUI. Cross-cutting concerns — centralised LLM configuration and structured observability — span all components.
-  ],
+  caption: [Evaluation harness architecture (logical component view; primary invocation flow shown, deployment view in @fig-platform-isolation).],
 ) <fig-harness-arch>

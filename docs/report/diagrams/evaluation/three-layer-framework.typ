@@ -15,7 +15,7 @@
 
 // ── Shared sizing ─────────────────────────────────────────────────────────────
 
-#let lw = 12cm   // layer box width
+#let lw = 15cm   // layer box width
 #let ls = 8pt    // standard body text size
 
 // ── Arrow connector ───────────────────────────────────────────────────────────
@@ -82,7 +82,7 @@
     // Three-column body
     #pad(x: 10pt, top: 8pt, bottom: if extra-body != none { 4pt } else { 8pt })[
       #grid(
-        columns: (3.1cm, 1fr, 3.1cm),
+        columns: (3.4cm, 1fr, 4.0cm),
         gutter: 10pt,
         // Column 1: practitioner question
         [
@@ -177,15 +177,18 @@
           number: "3",
           name: "Pipeline Benchmarking",
           question: "How well does it do it?",
-          method: [Empirical benchmarking via a 4-stage agentic pipeline run against a fixed story backlog across all 10 platforms. Stages scored with qualitative rubrics and quantitative metrics.],
+          method: [Empirical benchmarking via a 4-stage agentic pipeline run against a fixed scenario backlog across all 9 platforms. Stages scored with qualitative rubrics and quantitative metrics.],
           outputs: [
-            1–5 Likert per dimension: \
-            #v(1pt)
-            - Effectiveness \
-            - Efficiency \
-            - Quality \
-            - Autonomy \
-            #v(3pt)
+            1–5 Likert per dimension:
+            #v(2pt)
+            #align(left)[
+              #set list(indent: 2pt, body-indent: 4pt, spacing: 2pt)
+              - Pipeline Completeness
+              - Efficiency
+              - Orchestration
+              - Autonomy
+            ]
+            #v(4pt)
             Aggregated DESMET score per platform.
           ],
           fill: l3-fill,
@@ -218,10 +221,5 @@
       )
     ]
   ],
-  caption: [
-    Three-Layer Evaluation Framework.
-    Each layer answers a distinct practitioner question at increasing analytical depth.
-    Layers 1 and 2 provide qualitative screening (Yes / Partial / No).
-    Layer 3 is the novel empirical contribution — pipeline benchmarking scored on a 1--5 Likert scale across four DESMET dimensions.
-  ],
+  caption: [Three-layer evaluation framework.],
 ) <fig-three-layer>
