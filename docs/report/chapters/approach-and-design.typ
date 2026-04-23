@@ -179,4 +179,4 @@ Per-stage rubric scores are aggregated into four cross-cutting dimension scores 
   caption: [Cross-cutting Evaluation Dimensions (Framework-Centric)],
 )
 
-The specific aggregation formulas (normalisation constants, component weights, and 1--5 scaling) are defined in @appendix-scoring-rubric. Equal weighting is applied by default, with sensitivity analysis exploring alternative weightings for different practitioner scenarios (e.g., usability-weighted for rapid prototyping, reliability-weighted for production deployment). These four dimensions provide the basis for radar charts and ranked cross-platform comparisons in the results analysis.
+The specific aggregation formulas (normalisation constants, component weights, and 1--5 scaling) are defined in @appendix-scoring-rubric. Equal weighting is applied by default, with sensitivity analysis exploring alternative weightings for different practitioner scenarios.
