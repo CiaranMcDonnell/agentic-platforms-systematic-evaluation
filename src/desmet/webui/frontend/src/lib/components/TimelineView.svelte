@@ -56,10 +56,30 @@
             parseMs(traceData.trace.timestamp),
     );
     let totalMs = $derived(Math.max(traceData.trace.latency_ms, 1));
-    let spans = $derived(
+    let allSpans = $derived(
         flatten(traceData.observations, origin)
-            .filter((s) => s.duration_ms >= 1) // hide only zero-duration placeholder spans
+            .filter((s) => s.duration_ms >= 1)
             .sort((a, b) => a.start_rel_ms - b.start_rel_ms),
+    );
+
+    // Micro-span filter (percentage of total trace duration)
+    type ThresholdPct = 0 | 0.5 | 1 | 5;
+    let thresholdPct = $state<ThresholdPct>(1);
+    let showMicro = $state(false);
+
+    let microCutoffMs = $derived((thresholdPct / 100) * totalMs);
+    let majorSpans = $derived(
+        thresholdPct === 0
+            ? allSpans
+            : allSpans.filter((s) => s.duration_ms >= microCutoffMs),
+    );
+    let microSpans = $derived(
+        thresholdPct === 0
+            ? []
+            : allSpans.filter((s) => s.duration_ms < microCutoffMs),
+    );
+    let visibleSpans = $derived(
+        showMicro ? [...majorSpans, ...microSpans] : majorSpans,
     );
 
     function barColor(type: string, level: string): string {
@@ -75,17 +95,63 @@
     function widthPct(dur: number): string {
         return Math.max(0.5, (dur / totalMs) * 100).toFixed(2) + "%";
     }
+
+    // Adaptive time formatting: show ms for sub-second values, seconds above.
+    function fmtTime(ms: number): string {
+        if (ms < 1) return ms.toFixed(1) + "ms";
+        if (ms < 1000) return Math.round(ms) + "ms";
+        return (ms / 1000).toFixed(2) + "s";
+    }
+    function fmtTimeShort(ms: number): string {
+        if (ms < 1000) return Math.round(ms) + "ms";
+        if (ms < 10_000) return (ms / 1000).toFixed(2) + "s";
+        return (ms / 1000).toFixed(1) + "s";
+    }
 </script>
 
 <div class="tl-wrap">
-    <!-- Axis labels -->
-    <div class="tl-axis">
-        <span>0</span>
-        <span>{(totalMs / 2 / 1000).toFixed(1)}s</span>
-        <span>{(totalMs / 1000).toFixed(1)}s</span>
+    <!-- Controls: micro-span threshold -->
+    <div class="tl-controls">
+        <span class="ctrl-lbl">Hide spans under</span>
+        <div class="threshold-chips">
+            {#each [0, 0.5, 1, 5] as ThresholdPct[] as pct}
+                <button
+                    class="chip"
+                    class:active={thresholdPct === pct}
+                    onclick={() => (thresholdPct = pct)}
+                    title={pct === 0
+                        ? "Show every span"
+                        : `Hide spans shorter than ${pct}% of trace (${fmtTime((pct / 100) * totalMs)})`}
+                >
+                    {pct === 0 ? "Off" : pct + "%"}
+                </button>
+            {/each}
+        </div>
+        {#if microSpans.length > 0}
+            <button
+                class="ctrl-btn"
+                onclick={() => (showMicro = !showMicro)}
+                title="Toggle the {microSpans.length} spans below the threshold"
+            >
+                {showMicro ? "Hide" : "Show"}
+                {microSpans.length} micro span{microSpans.length === 1
+                    ? ""
+                    : "s"}
+            </button>
+        {/if}
+        <span class="tl-count">
+            {majorSpans.length} of {allSpans.length} spans
+        </span>
     </div>
 
-    <!-- Timeline body (grid + rows) -->
+    <!-- Axis labels (adaptive units) -->
+    <div class="tl-axis">
+        <span>0</span>
+        <span>{fmtTimeShort(totalMs / 2)}</span>
+        <span>{fmtTimeShort(totalMs)}</span>
+    </div>
+
+    <!-- Timeline body (scrolls); grid + rows -->
     <div class="tl-body">
         <div class="tl-grid">
             <div class="grid-line" style="left:0%"></div>
@@ -96,8 +162,10 @@
         </div>
 
         <div class="tl-rows">
-            {#each spans as s (s.id)}
-                <div class="tl-row">
+            {#each visibleSpans as s (s.id)}
+                {@const isMicro =
+                    thresholdPct > 0 && s.duration_ms < microCutoffMs}
+                <div class="tl-row" class:tl-row-micro={isMicro}>
                     <div class="tl-label" title={s.name}>{s.name}</div>
                     <div class="tl-track">
                         <div
@@ -107,15 +175,15 @@
                             )};width:{widthPct(
                                 s.duration_ms,
                             )};background:{barColor(s.type, s.level)}"
-                            title="{s.name} | {(s.duration_ms / 1000).toFixed(
-                                3,
-                            )}s{s.tokens_total
+                            title="{s.name} | {fmtTime(
+                                s.duration_ms,
+                            )}{s.tokens_total
                                 ? ' | ' + s.tokens_total + ' tok'
                                 : ''}{s.model ? ' | ' + s.model : ''}"
                         ></div>
                     </div>
                     <div class="tl-dur">
-                        {(s.duration_ms / 1000).toFixed(2)}s
+                        {fmtTime(s.duration_ms)}
                     </div>
                 </div>
             {/each}
@@ -145,9 +213,73 @@
     .tl-wrap {
         font-size: 12px;
         font-family: var(--sans);
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        min-height: 0;
     }
     .tl-body {
         position: relative;
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+    }
+
+    /* ── Controls ──────────────────── */
+    .tl-controls {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 10px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid var(--border);
+        flex-wrap: wrap;
+        flex-shrink: 0;
+    }
+    .ctrl-lbl {
+        font-size: 11px;
+        color: var(--text-2);
+    }
+    .threshold-chips {
+        display: flex;
+        gap: 4px;
+    }
+    .chip {
+        padding: 3px 10px;
+        font-size: 11px;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--text-2);
+        cursor: pointer;
+        font-family: var(--sans);
+    }
+    .chip:hover {
+        color: var(--text-1);
+    }
+    .chip.active {
+        background: var(--bg-2);
+        color: var(--text-0);
+        border-color: var(--text-2);
+    }
+    .ctrl-btn {
+        padding: 4px 10px;
+        font-size: 11px;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        background: var(--bg-2);
+        color: var(--text-1);
+        cursor: pointer;
+        font-family: var(--sans);
+    }
+    .ctrl-btn:hover {
+        border-color: var(--border-hover);
+        color: var(--text-0);
+    }
+    .tl-count {
+        font-size: 11px;
+        color: var(--text-2);
+        margin-left: auto;
     }
 
     .tl-axis {
@@ -158,6 +290,7 @@
         font-family: var(--mono);
         margin-bottom: 4px;
         padding: 0 100px 0 140px;
+        flex-shrink: 0;
     }
 
     .tl-grid {
@@ -191,6 +324,9 @@
         gap: 8px;
         height: 22px;
     }
+    .tl-row-micro {
+        opacity: 0.55;
+    }
     .tl-label {
         width: 132px;
         flex-shrink: 0;
@@ -223,7 +359,7 @@
         opacity: 1;
     }
     .tl-dur {
-        width: 44px;
+        width: 54px;
         flex-shrink: 0;
         font-family: var(--mono);
         font-size: 10px;
@@ -239,6 +375,7 @@
         border-top: 1px solid var(--border);
         font-size: 11px;
         color: var(--text-2);
+        flex-shrink: 0;
     }
     .leg {
         display: flex;

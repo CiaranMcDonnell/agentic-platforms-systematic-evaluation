@@ -216,9 +216,13 @@
             {#if activeTab === "timeline"}
                 <TimelineView {traceData} />
             {:else if activeTab === "messages"}
-                <MessageThreadView {traceData} />
+                <div class="scroll-area">
+                    <MessageThreadView {traceData} />
+                </div>
             {:else if activeTab === "tools"}
-                <ToolsLogView {traceData} />
+                <div class="scroll-area">
+                    <ToolsLogView {traceData} />
+                </div>
             {:else}
                 <!-- Spans tab: expand-all + filter chips -->
                 <div class="spans-controls">
@@ -249,14 +253,16 @@
                     </div>
                     <span class="spans-count">{filteredCount} spans</span>
                 </div>
-                <div class="trace-tree">
-                    {#each filteredObs as obs (obs.id)}
-                        <SpanNode
-                            observation={obs}
-                            rootLatency={traceData.trace.latency_ms}
-                            {expandAll}
-                        />
-                    {/each}
+                <div class="scroll-area">
+                    <div class="trace-tree">
+                        {#each filteredObs as obs (obs.id)}
+                            <SpanNode
+                                observation={obs}
+                                rootLatency={traceData.trace.latency_ms}
+                                {expandAll}
+                            />
+                        {/each}
+                    </div>
                 </div>
             {/if}
         </div>
@@ -282,7 +288,9 @@
         border-radius: 8px;
         padding: 16px;
         max-height: 800px;
-        overflow: hidden auto;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
     }
 
     /* ── Summary pills ─────────────── */
@@ -293,6 +301,7 @@
         margin-bottom: 14px;
         padding-bottom: 14px;
         border-bottom: 1px solid var(--border);
+        flex-shrink: 0;
     }
     .pill {
         display: flex;
@@ -332,6 +341,7 @@
         border: 1px solid var(--border);
         border-radius: 6px;
         padding: 3px;
+        flex-shrink: 0;
     }
     .tab-btn {
         flex: 1;
@@ -360,7 +370,18 @@
 
     /* ── Tab content ───────────────── */
     .tab-content {
-        min-height: 200px;
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+
+    /* For non-timeline tabs, the child can simply scroll the whole area. */
+    :global(.tab-content > .scroll-area) {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
     }
 
     /* ── Spans tab controls ────────── */
@@ -371,6 +392,7 @@
         margin-bottom: 10px;
         padding-bottom: 10px;
         border-bottom: 1px solid var(--border);
+        flex-shrink: 0;
     }
     .ctrl-btn {
         padding: 4px 10px;

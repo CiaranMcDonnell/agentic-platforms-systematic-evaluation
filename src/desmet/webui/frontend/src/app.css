@@ -40,6 +40,42 @@ body {
     background: rgba(255, 255, 255, 0.15);
 }
 
+/* ── Scrollbars ────────────────────────── */
+/* Chromium/WebKit: full custom styling. Note: setting scrollbar-color or
+   scrollbar-width on an element makes Chromium switch to the "standard"
+   thin scrollbar and ignore ::-webkit-scrollbar rules — so we MUST NOT
+   set those properties globally. Firefox-only fallback uses @supports. */
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+    background: var(--bg-0);
+}
+::-webkit-scrollbar-track {
+    background: var(--bg-0);
+}
+::-webkit-scrollbar-thumb {
+    background: #2a2a2a;
+    border: 2px solid var(--bg-0);
+    border-radius: 6px;
+    min-height: 40px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #3d3d3d;
+}
+::-webkit-scrollbar-thumb:active {
+    background: var(--text-3);
+}
+::-webkit-scrollbar-corner {
+    background: var(--bg-0);
+}
+/* Firefox only (doesn't support ::-webkit-scrollbar) */
+@supports not selector(::-webkit-scrollbar) {
+    * {
+        scrollbar-width: thin;
+        scrollbar-color: #2a2a2a var(--bg-0);
+    }
+}
+
 /* ── Cards ─────────────────────────────── */
 .card {
     background: var(--bg-1);
