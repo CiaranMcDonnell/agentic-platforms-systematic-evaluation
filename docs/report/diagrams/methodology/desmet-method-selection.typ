@@ -34,7 +34,7 @@
 // ── Sizing ──────────────────────────────────────────────────────────────────────
 
 #let col-w   = 3.9cm
-#let full-w  = 13.0cm
+#let full-w  = 15cm
 #let item-sz = 7.5pt
 #let note-sz = 6.5pt
 #let crit-sz = 7.5pt
@@ -160,7 +160,6 @@
 // ── Figure body ─────────────────────────────────────────────────────────────────
 
 #figure(
-  placement: top,
   kind: image,
   [
     #align(center)[
@@ -325,15 +324,5 @@
       ] // end block
     ] // end align center
   ],
-  caption: [
-    DESMET evaluation method selection for this study. The nine DESMET methods span
-    three categories: Quantitative, Qualitative, and Hybrid. Four decision criteria
-    narrow the field: the expected benefits of agentic tools resist precise
-    quantification, eliminating purely quantitative methods; the absence of a large
-    accessible user population rules out survey-based approaches; the architectural
-    heterogeneity of the ten platforms favours qualitative feature screening; and
-    the availability of standardised software engineering tasks enables objective
-    benchmarking. The resulting approach combines Qualitative Screening (Layers 1–2)
-    with Hybrid Benchmarking (Layer 3).
-  ],
+  caption: [DESMET evaluation method selection for this study.],
 ) <fig-desmet-selection>

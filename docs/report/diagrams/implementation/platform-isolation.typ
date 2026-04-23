@@ -24,7 +24,6 @@
 // ── Figure ───────────────────────────────────────────────────────────────────
 
 #figure(
-  placement: top,
   kind: image,
   [
     #align(center)[
@@ -165,10 +164,5 @@
       ],
     )
   ],
-  caption: [
-    Platform isolation architecture.
-    The evaluation runner dispatches each SDK platform to its own Docker container with isolated dependencies, avoiding version conflicts between frameworks.
-    Visual platforms run via Docker Compose.
-    If no container image exists, the runner falls back to in-process execution (dashed).
-  ],
+  caption: [Platform isolation architecture.],
 ) <fig-platform-isolation>

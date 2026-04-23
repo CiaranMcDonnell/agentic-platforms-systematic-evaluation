@@ -3,27 +3,28 @@
 
 #import "@preview/fletcher:0.5.7" as fletcher: diagram, node, edge, shapes
 
-// ── Colours ──────────────────────────────────────────────────────────────────
+// ── Colours (muted, print-safe academic palette) ────────────────────────────
 
-#let stage-fill    = rgb("#e3f2fd")
-#let stage-stroke  = rgb("#1565c0")
-#let dim-fill      = rgb("#fff8e1")
-#let dim-stroke    = rgb("#f57f17")
-#let dec-fill      = rgb("#e8f5e9")
-#let dec-stroke    = rgb("#2e7d32")
-#let art-fill      = rgb("#f3e5f5")
-#let art-stroke    = rgb("#6a1b9a")
-#let start-fill    = rgb("#212121")
-#let fork-fill     = rgb("#424242")
-#let pp-fill       = rgb("#fff3e0")
-#let pp-stroke     = rgb("#e65100")
+#let stage-fill    = rgb("#DCE7F1")  // muted blue
+#let stage-stroke  = rgb("#2C5282")
+#let dim-fill      = rgb("#F5EBC8")  // ochre
+#let dim-stroke    = rgb("#A8851F")
+#let dec-fill      = rgb("#D4E4D0")  // sage
+#let dec-stroke    = rgb("#4A7A3F")
+#let art-fill      = rgb("#E4DAEA")  // dusty purple
+#let art-stroke    = rgb("#6B4B8A")
+#let start-fill    = rgb("#2D3748")
+#let fork-fill     = rgb("#4A5568")
+#let pp-fill       = rgb("#F5E1C8")  // muted terracotta
+#let pp-stroke     = rgb("#B8691F")
+#let retry-stroke  = rgb("#A0413A")  // brick red for feedback loop
 
-#let nw  = 2.0cm     // shared-stage node width
-#let ppw = 1.6cm     // per-platform node width
-#let dw  = 1.4cm     // diamond width
+#let nw  = 2.8cm     // shared-stage node width
+#let ppw = 2.4cm     // per-platform node width
+#let dw  = 1.5cm     // diamond width
 #let dh  = 1.1cm     // diamond height
 #let ns  = 7pt       // shared node text size
-#let pps = 6pt       // per-platform text size
+#let pps = 6.5pt     // per-platform text size
 #let ds  = 6pt       // decision text size
 #let art-s = 5.5pt   // artifact text size
 
@@ -52,9 +53,9 @@
         node((0, 0), [], shape: circle, width: 0.45cm, height: 0.45cm,
           fill: start-fill, stroke: none),
 
-        // Story Input — shared harness infrastructure
+        // Scenario Input — shared harness infrastructure
         node((1, 0),
-          align(center, text(size: ns, weight: "bold")[Story Input \ #text(weight: "regular", size: 5.5pt)[(YAML loading, context prep.)]]),
+          align(center, text(size: ns, weight: "bold")[Scenario Input \ #text(weight: "regular", size: 5.5pt)[(YAML loading, context prep.)]]),
           shape: rect, corner-radius: 4pt, width: nw,
           fill: stage-fill, stroke: 0.8pt + stage-stroke, inset: 4pt),
 
@@ -109,17 +110,17 @@
         // ── Parallel region label (above pipeline, framing stages 1-4) ──
 
         node((6.5, -0.45),
-          text(size: 7pt, weight: "bold", fill: pp-stroke)[Per-Platform Parallel Execution (×10 platforms × 4 stories)],
+          text(size: 7pt, weight: "bold", fill: pp-stroke)[Per-Platform Parallel Execution (×9 platforms × 4 scenarios)],
           stroke: none, fill: none),
 
         // ── ROW 1 — Artifacts ──────────────────────────────────────────
 
         node((1, 1),
-          align(center)[#text(size: art-s, fill: art-stroke)[Story Backlog (YAML) \ Gherkin Features \ Prompt Templates]],
+          align(center)[#text(size: art-s, fill: art-stroke)[Scenario Backlog (YAML) \ Gherkin Features \ Prompt Templates]],
           shape: rect, corner-radius: 2pt, width: nw, fill: art-fill, stroke: 0.5pt + art-stroke, inset: 3pt),
 
         node((4, 1),
-          align(center)[#text(size: art-s, fill: art-stroke)[Requirements \ Acceptance Criteria \ UML Diagrams (Mermaid)]],
+          align(center)[#text(size: art-s, fill: art-stroke)[Requirements \ Acceptance Criteria \ UML Diagrams]],
           shape: rect, corner-radius: 2pt, width: ppw, fill: art-fill, stroke: 0.5pt + art-stroke, inset: 3pt),
 
         node((5, 1),
@@ -146,18 +147,25 @@
             #v(3pt)
             #set text(size: 7pt)
             #grid(
-              columns: (1fr, 1fr, 1fr, 1fr),
-              gutter: 8pt,
-              [1. Effectiveness], [2. Efficiency], [3. Quality], [4. Autonomy],
+              columns: (auto, auto, auto, auto),
+              column-gutter: 14pt,
+              [1. Pipeline Completeness], [2. Efficiency], [3. Orchestration], [4. Autonomy],
             )
           ],
-          shape: rect, corner-radius: 5pt, width: 8cm,
+          shape: rect, corner-radius: 5pt, width: 11cm,
           fill: dim-fill, stroke: 1pt + dim-stroke, inset: 8pt),
 
-        // Dashed arrows from dimensions to key pipeline nodes
-        edge((6.5, -1), (4, 0), "-->", stroke: (dash: "dashed", paint: dim-stroke, thickness: 0.5pt)),
-        edge((6.5, -1), (9, 0), "-->", stroke: (dash: "dashed", paint: dim-stroke, thickness: 0.5pt)),
-        edge((6.5, -1), (12, 0), "-->", stroke: (dash: "dashed", paint: dim-stroke, thickness: 0.5pt)),
+        // Layer 3 span indicator: a dashed bracket below the dimensions box
+        // covering Stage 1 → Comparative Analysis (the measured span), plus a
+        // single down-arrow from the dimensions box to the bracket.
+        edge((6.5, -1), (6.5, -0.55), "->",
+          stroke: (dash: "dashed", paint: dim-stroke, thickness: 0.7pt)),
+        edge((4, -0.5), (12, -0.5), "-",
+          stroke: (dash: "dashed", paint: dim-stroke, thickness: 0.5pt)),
+        edge((4, -0.5), (4, -0.35), "-",
+          stroke: (dash: "dashed", paint: dim-stroke, thickness: 0.5pt)),
+        edge((12, -0.5), (12, -0.35), "-",
+          stroke: (dash: "dashed", paint: dim-stroke, thickness: 0.5pt)),
 
         // ── Edges — Main flow ──────────────────────────────────────────
 
@@ -169,9 +177,19 @@
         edge((6, 0), (7, 0), "->"),
 
         edge((7, 0), (9, 0), "->",
-          label: text(size: 5.5pt, fill: dec-stroke)[Yes]),
+          label: box(fill: white, inset: (x: 2pt, y: 0.5pt),
+            text(size: 7pt, weight: "bold", fill: dec-stroke)[Yes]),
+          label-pos: 0.5),
         edge((7, 0), (5, 0), "->",
-          label: text(size: 5.5pt, fill: red)[No], stroke: 0.7pt + red, bend: 30deg),
+          stroke: 0.8pt + retry-stroke, bend: 30deg),
+
+        // "No" label placed manually on the retry curve (fletcher's edge
+        // labels don't render reliably on bent edges)
+        node((6.7, 0.5),
+          box(fill: white, inset: (x: 3pt, y: 1pt), stroke: 0.4pt + retry-stroke,
+            radius: 2pt,
+            text(size: 7pt, weight: "bold", fill: retry-stroke)[No]),
+          stroke: none, fill: none),
 
         edge((9, 0), (10, 0), "->"),
         edge((10, 0), (12, 0), "->"),
@@ -226,11 +244,11 @@
       gutter: 0.5cm,
       [
         #text(size: 7pt, weight: "bold")[Multi-Agent Frameworks] \
-        #text(size: 7.5pt)[LangGraph · CrewAI · AutoGen]
+        #text(size: 7.5pt)[LangGraph · CrewAI]
       ],
       [
         #text(size: 7pt, weight: "bold")[Agent SDK Runtimes] \
-        #text(size: 7.5pt)[OpenAI Agents SDK · Google ADK · Semantic Kernel]
+        #text(size: 7.5pt)[OpenAI Agents SDK · Google ADK · Microsoft Agent Framework]
       ],
       [
         #text(size: 7pt, weight: "bold")[Visual / Workflow Platforms] \
@@ -238,7 +256,7 @@
       ],
     )
   ],
-  caption: [Evaluation Pipeline — UML Activity Diagram. User stories flow through four per-platform stages (orange), with cross-cutting dimensions (yellow) measured throughout. Shared harness stages shown in blue.],
+  caption: [Evaluation pipeline UML activity diagram.],
 ) <fig-pipeline-activity>
 
 ]

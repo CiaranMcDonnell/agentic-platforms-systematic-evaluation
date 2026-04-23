@@ -158,6 +158,8 @@ Parameter purposes:
 
 === Minimal Coded-Adapter Example
 
+The adapter class declares imports, tool format, and lifecycle methods:
+
 #figure(
   ```python
   from desmet.adapters._shared.base import ToolAgentAdapter
@@ -187,7 +189,9 @@ Parameter purposes:
       async def initialize(self) -> None:
           from desmet.llm_config import get_config
           cfg = get_config(model=self.config.get("model"))
-          self._client = my_platform_sdk.Client(api_key=cfg.api_key, model=cfg.model)
+          self._client = my_platform_sdk.Client(
+              api_key=cfg.api_key, model=cfg.model,
+          )
           self._initialized = True
 
       async def shutdown(self) -> None:
@@ -196,7 +200,14 @@ Parameter purposes:
 
       async def health_check(self) -> bool:
           return self._initialized and self._client is not None
+  ```,
+  caption: [Coded adapter — imports, class declaration, and lifecycle],
+)
 
+The `_run_agent` method contains the platform-specific execution loop --- the only platform-specific logic the adapter author needs to write:
+
+#figure(
+  ```python
       async def _run_agent(
           self,
           stage_name: str,
@@ -209,8 +220,8 @@ Parameter purposes:
           progress: ProgressReporter,
       ) -> tuple[int, bool]:
           collector.record_message("user", prompt)
-
           total_iterations = 0
+
           for attempt in range(policy.total_attempts()):
               result = await self._client.run(
                   prompt=prompt, system=system_msg, tools=tools,
@@ -219,11 +230,15 @@ Parameter purposes:
 
               # Record observation data
               collector.record_llm_response(
-                  raw_usage={"prompt_tokens": result.input_tokens,
-                             "completion_tokens": result.output_tokens},
+                  raw_usage={
+                      "prompt_tokens": result.input_tokens,
+                      "completion_tokens": result.output_tokens,
+                  },
               )
               for tc in result.tool_calls:
-                  collector.record_tool_execution(tc.name, tc.args, tc.result)
+                  collector.record_tool_execution(
+                      tc.name, tc.args, tc.result,
+                  )
                   progress.tool_call(tc.name, tc.args)
 
               total_iterations += result.steps
@@ -233,16 +248,18 @@ Parameter purposes:
               if passed:
                   progress.validation_passed()
                   break
-              progress.validation_failed(attempt + 1, policy.total_attempts(), feedback)
+              progress.validation_failed(
+                  attempt + 1, policy.total_attempts(), feedback,
+              )
 
           collector.mark_iterations(total_iterations)
           hit_limit = total_iterations >= context.max_iterations
           return total_iterations, hit_limit
   ```,
-  caption: [Complete minimal coded-adapter implementation],
+  caption: [Coded adapter --- `_run_agent` execution loop],
 )
 
-The four SDLC stage methods are inherited from `ToolAgentAdapter` — no need to implement them.
+The four SDLC stage methods are inherited from `ToolAgentAdapter` --- no need to implement them.
 
 === Tool Formats
 
@@ -292,6 +309,8 @@ The `workspace` path is already translated to the container-side path (`/desmet-
 
 === Minimal Visual-Adapter Example
 
+The adapter class declares imports, constructor, and `platform_info`:
+
 #figure(
   ```python
   import httpx
@@ -314,17 +333,25 @@ The `workspace` path is already translated to the container-side path (`/desmet-
       @property
       def platform_info(self) -> PlatformInfo:
           return load_platform_info("my_platform")
+  ```,
+  caption: [Visual adapter --- imports, constructor, and metadata],
+)
 
+Lifecycle methods (`initialize`, `shutdown`, `health_check`) manage the HTTP client and verify platform reachability:
+
+#figure(
+  ```python
       async def initialize(self) -> None:
           self._client = httpx.AsyncClient(
               base_url=self.base_url, timeout=300.0,
           )
-          # Verify reachability
           resp = await self._client.get("/health")
           if resp.status_code != 200:
-              raise RuntimeError(f"Platform not reachable at {self.base_url}")
+              raise RuntimeError("Platform not reachable")
           from desmet.llm_config import get_config
-          self._model_name = get_config(model=self.config.get("model")).model
+          self._model_name = get_config(
+              model=self.config.get("model"),
+          ).model
           self._initialized = True
 
       async def shutdown(self) -> None:
@@ -341,14 +368,24 @@ The `workspace` path is already translated to the container-side path (`/desmet-
               return resp.status_code == 200
           except Exception:
               return False
+  ```,
+  caption: [Visual adapter --- lifecycle methods],
+)
 
-      # ── VisualPlatformAdapter contract ──────────────────────────
+The platform contract methods wrap the workflow CRUD REST endpoints:
+
+#figure(
+  ```python
       async def create_workflow(self, definition: dict) -> str:
-          resp = await self._client.post("/api/workflows", json=definition)
+          resp = await self._client.post(
+              "/api/workflows", json=definition,
+          )
           resp.raise_for_status()
           return resp.json()["id"]
 
-      async def execute_workflow(self, workflow_id: str, inputs: dict) -> dict:
+      async def execute_workflow(
+          self, workflow_id: str, inputs: dict,
+      ) -> dict:
           resp = await self._client.post(
               f"/api/workflows/{workflow_id}/run", json=inputs,
           )
@@ -356,37 +393,49 @@ The `workspace` path is already translated to the container-side path (`/desmet-
           return resp.json()
 
       async def delete_workflow(self, workflow_id: str) -> None:
-          await self._client.delete(f"/api/workflows/{workflow_id}")
+          await self._client.delete(
+              f"/api/workflows/{workflow_id}",
+          )
+  ```,
+  caption: [Visual adapter --- workflow CRUD contract],
+)
 
-      # ── VisualAgentAdapter abstract methods ─────────────────────
+`_run_workflow` and `_collect_execution_metrics` are the two abstract methods the author must implement; the retry loop, trace management, and SDLC methods are all inherited:
+
+#figure(
+  ```python
       async def _run_workflow(
           self, stage_name: str, prompt: str,
           system_msg: str, workspace: str,
       ) -> dict:
-          # Build your workflow JSON with the prompt, system message, and
-          # workspace path interpolated.  Each run is a full create →
-          # execute → cleanup cycle.
           definition = build_my_workflow(
               stage_name, prompt, system_msg, workspace,
               model=self._model_name,
           )
           workflow_id = await self.create_workflow(definition)
           try:
-              return await self.execute_workflow(workflow_id, {"prompt": prompt})
+              return await self.execute_workflow(
+                  workflow_id, {"prompt": prompt},
+              )
           finally:
               try:
                   await self.delete_workflow(workflow_id)
               except Exception:
                   pass
 
-      def _collect_execution_metrics(self, trace, exec_data: dict) -> None:
+      def _collect_execution_metrics(
+          self, trace, exec_data: dict,
+      ) -> None:
           usage = exec_data.get("token_usage", {})
           inp = usage.get("prompt_tokens", 0)
           out = usage.get("completion_tokens", 0)
           if inp or out:
-              record_usage(trace, int(inp), int(out), model=self._model_name)
+              record_usage(
+                  trace, int(inp), int(out),
+                  model=self._model_name,
+              )
   ```,
-  caption: [Complete minimal visual-adapter implementation],
+  caption: [Visual adapter --- abstract method implementations],
 )
 
 For visual platforms that run in Docker, also add a service entry to `infrastructure/docker-compose.yaml` and add the workspace volume mount (`${DESMET_RESULTS_DIR:-../results}:/desmet-results`) so the platform's code-execution environment can see the stage workspace.
@@ -412,7 +461,7 @@ That's the only bookkeeping. The `list_available_platforms()` function auto-deri
 
 == Step 4: Verify
 
-Run the smoke-test story on the new adapter:
+Run the smoke-test scenario on the new adapter:
 
 #figure(
   ```bash
@@ -433,7 +482,7 @@ The management console discovers platforms dynamically through the `/api/platfor
 - *Platform list* --- shown with its category, runtime, and readiness status
 - *New Run form* --- available as a selectable platform for benchmark runs
 - *Dashboard* --- included in radar charts, rankings, and scoring matrices after results are collected
-- *Scoring panel* --- ready for manual rubric grading per story
+- *Scoring panel* --- ready for manual rubric grading per scenario
 
 The web UI distinguishes between _registered_ platforms (in `ADAPTER_REGISTRY`) and _implemented_ platforms (import-succeeds + not a stub). Stub and unimportable adapters appear in the UI but cannot be selected for runs.
 
@@ -473,3 +522,28 @@ A small number of call sites still enumerate platforms by name rather than deriv
 )
 
 None of these block the adapter from running — the smoke test in Step 4 will still pass with only the four mandatory steps completed. They are listed here so adapter authors can decide whether to touch them based on their platform's characteristics.
+
+== Adapter Measurement Fidelity Audit
+
+A structured review of all five implemented SDK and multi-agent adapters identified and addressed several classes of bug that could bias cross-platform comparisons. Fixes are accompanied by regression tests and landed in branch `fix/adapter-scoring-accuracy`.
+
+*Identified and fixed:*
+
+- *CrewAI silent event-drop* — class-level handler registration dropped events when the same adapter instance serviced more than one scenario; instance-scoped registration restores per-run capture.
+- *Cumulative iteration counters* — `trace.total_iterations` was inflated with run order; per-stage reset applied.
+- *Guardrail-only validation in OpenAI Agents SDK* — executor-final-output runs reported success without a workspace check; an explicit post-execution workspace validator was added.
+- *Missing asymmetric-tool distribution in OpenAI Agents SDK* — the reviewer agent received write tools alongside inspection tools; reviewer toolset narrowed to read-only to preserve the generation/review separation.
+- *Silently-swallowed planner fallbacks in all five adapters* — `except Exception: pass` obscured structured-output failures; replaced with explicit fallback source recording.
+- *Over-defensive regex escape in Google ADK* — relied on ADK's own regex to backstop nested braces; narrowed to the actual failure mode.
+- *Token/duration double-counting in LangGraph* — reviewer duration catch-up and structured-planner usage discarding both inflated wall-clock; eliminated.
+- *Wall-clock catch-up in Microsoft Agent Framework* — on top of middleware-recorded per-call durations; removed.
+
+*Investigated and ruled out:* Two further concerns flagged by the review were checked against installed SDK versions and do not manifest under the current harness configuration. `raw_responses` inflation across retries in the OpenAI SDK adapter: OpenAI Agents SDK 0.4.2 `Runner.run` initialises a fresh per-call `model_responses` list. Streamed `usage_metadata` summation in the ADK adapter: the default non-streaming `RunConfig` yields a single final `usage_metadata` per LLM call rather than cumulative partials.
+
+*Deferred as methodology decisions* (documented in @limitations as known cross-platform comparability gaps affecting Efficiency, Autonomy, and Orchestration):
+
+- *Iteration-count semantics differ across adapters* — LangGraph counts graph-node steps, CrewAI counts LLM calls (including tool sub-calls), Microsoft Agent Framework counts executor turns (manager turns excluded), OpenAI SDK counts `new_items`, and Google ADK counts events with author (inflating 3--5× relative to peers). Units have not been normalised.
+- *CrewAI outer-retry multiplier* — the outer-retry loop multiplies effective iteration budget by up to 3× versus peers.
+- *LangGraph reviewer tool dropping* — the reviewer subgraph is given tools via `bind_tools` but has no tool-execution node, so those calls are silently dropped.
+
+Per-platform absolute numbers remain interpretable; relative rankings on the affected dimensions should be read with the qualification that measurement units are not uniform across adapter families.

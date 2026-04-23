@@ -6,39 +6,13 @@ This chapter describes the technical implementation of the evaluation infrastruc
 
 == Evaluation Harness Architecture
 
-The evaluation is driven by a purpose-built Python harness (`desmet`) that orchestrates pipeline execution across all platforms. The harness is designed around three principles: platform-agnostic orchestration, automated metric collection, and structured result storage.
-
-@fig-stage-detail shows the per-stage metrics and outputs defined for each pipeline stage, and @fig-dimension-formulas presents the four cross-cutting dimension aggregation formulas.
-
-#include "../diagrams/implementation/pipeline-stage-detail.typ"
-
-=== Core Components
-
-The harness comprises the following core modules:
-
-- *Runner* (`harness/runner.py`): Orchestrates the four-stage pipeline for a given platform and story, invoking the adapter's stage methods sequentially and collecting results.
-- *Base Adapter* (`harness/adapter.py`): Abstract base class defining the four-method interface that all platform adapters must implement.
-- *Story Loader* (`stages/stage1_stories/loader.py`): Loads and validates YAML story definitions, preparing the `StageContext` passed to each pipeline stage.
-- *Metrics Collector* (`harness/metrics.py`): Collects per-stage metrics (tokens, timing, costs) and computes cross-cutting dimension scores.
-
-// TODO: Expand with implementation details — how the runner handles errors,
-// how stage results chain into subsequent stages, etc.
-
-@fig-harness-arch shows the component architecture of the evaluation harness.
+The evaluation is driven by a purpose-built Python harness (`desmet`) that orchestrates pipeline execution across all platforms. The harness is designed around three principles: platform-agnostic orchestration, automated metric collection, and structured result storage. The core modules are a *Runner* (`harness/runner.py`) that orchestrates the four-stage pipeline for a given platform and scenario; a *Base Adapter* (`harness/adapter.py`) defining the four-method interface all platform adapters must implement; a *Scenario Loader* (`harness/story_loader.py`) that validates YAML scenario definitions and prepares the `StageContext` passed to each stage; and a *Metrics Collector* (`harness/metrics.py`) that records per-stage metrics and computes cross-cutting dimension scores. @fig-harness-arch shows the component architecture.
 
 #include "../diagrams/implementation/harness-architecture.typ"
 
 == Platform Adapter Design
 
-=== Adapter Interface
-
-All platform adapters extend `BasePlatformAdapter` and implement four methods corresponding to the pipeline stages:
-
-// TODO: Include a code listing or table showing the 4-method interface:
-// generate_requirements(), generate_code(), generate_tests(), build_and_deploy()
-// with their input/output types (StageContext → StageResult).
-
-=== Implemented Adapters
+All platform adapters extend `BasePlatformAdapter` and implement four methods corresponding to the pipeline stages: `generate_requirements`, `generate_code`, `generate_tests`, and `build_and_deploy`. Tool-based adapters (SDK and multi-agent) extend the intermediate `ToolAgentAdapter`, which provides a shared `_execute_stage` template---prompt construction, tool creation, trace lifecycle, retry orchestration, and result building---leaving each adapter with only one platform-specific method (`_run_agent`). Visual/workflow adapters extend `VisualAgentAdapter` (`adapters/_shared/visual_base.py`), which provides an analogous `_execute_visual_stage` retry loop for REST-mediated platforms running as Docker containers.
 
 #figure(
   table(
@@ -49,78 +23,56 @@ All platform adapters extend `BasePlatformAdapter` and implement four methods co
     table.header(
       [*Platform*], [*Adapter Status*], [*Notes*],
     ),
-    [LangGraph], [Implemented], [Three-node StateGraph with InMemorySaver checkpointing],
-    [CrewAI], [Implemented], [Sequential Crew with role-based agents and iteration budget control],
-    [OpenAI Agents SDK], [Implemented], [3-agent handoff chain with output guardrails],
-    [Google ADK], [Implemented], [SequentialAgent + LoopAgent orchestration],
-    [Microsoft Agent Framework], [Implemented], [MagenticOne manager-driven orchestration],
-    [Flowise], [Implemented], [Spec-driven chatflow builder using the live node catalogue, with per-run tool and credential registration],
-    [LangFlow], [Implemented], [Catalogue-wrapped React-Flow graph with pre-computed tool introspection and a per-run API key],
-    [Dify], [Partial], [Init, auth, and app creation automated; Layer~3 execution blocked by Dify~1.13's marketplace-only plugin ecosystem (see @limitations)],
-    [N8n], [Implemented], [REST API v1 workflow creation with provider-specific credential mapping (`openRouterApi`/`openAiApi`/`anthropicApi`)],
+    [LangGraph], implemented-cell, [Three-node StateGraph with InMemorySaver checkpointing],
+    [CrewAI], implemented-cell, [Sequential Crew with role-based agents and iteration budget control],
+    [OpenAI Agents SDK], implemented-cell, [3-agent handoff chain with output guardrails],
+    [Google ADK], implemented-cell, [SequentialAgent + LoopAgent orchestration],
+    [Microsoft Agent Framework], implemented-cell, [MagenticOne manager-driven orchestration],
+    [Flowise], implemented-cell, [Spec-driven chatflow builder using the live node catalogue, with per-run tool and credential registration],
+    [LangFlow], implemented-cell, [Catalogue-wrapped React-Flow graph with pre-computed tool introspection and a per-run API key],
+    [Dify], partial-cell, [Init, auth, and app creation automated; Layer~3 execution blocked by the marketplace-only plugin ecosystem introduced in Dify~v1.0 (see @limitations)],
+    [N8n], implemented-cell, [REST API v1 workflow creation with provider-specific credential mapping (`openRouterApi`/`openAiApi`/`anthropicApi`)],
   ),
   caption: [Platform Adapter Implementation Status],
 )
 
-Each implemented adapter extends `ToolAgentAdapter` and provides a single method---`_run_agent`---containing the platform-specific agent execution logic. The shared base class handles prompt construction, tool creation, trace lifecycle, retry orchestration, and result building. The descriptions below focus on each adapter's idiomatic use of its platform's native capabilities.
+*SDK and multi-agent adapters.* Each adapter uses its platform's idiomatic orchestration primitives. LangGraph implements a three-node `StateGraph` with `InMemorySaver` checkpointing, threading `ParentState` (plan text, retry count, validator feedback) through planner → executor → reviewer nodes with a conditional edge from the reviewer back to the executor on validation failure @langchain2024langgraph. CrewAI constructs a sequential `Crew` with role-based agents, using an iteration budget split (20/60/20 first attempt, 0/80/20 on retry) and a `check_completion` tool with `result_as_answer=True` to prevent the 50-iteration token burn that occurs when agents exhaust their iteration limit without producing a final answer @crewai2024. OpenAI Agents SDK uses a three-agent handoff chain with Pydantic-validated structured planner output and a reviewer output guardrail that triggers retry on validation failure @openai2025agents_sdk. Google ADK composes a `SequentialAgent` chaining planner → `LoopAgent` (executor--reviewer pair) with a native `exit_loop` tool, supporting non-Gemini models via LiteLLM format strings @google2025adk. Microsoft Agent Framework employs `MagenticBuilder` to construct a manager-driven team with built-in stall detection and a `UsageTrackingMiddleware` layer inserted into the chat pipeline for token interception @microsoft2025agent_framework.
 
-*LangGraph* (`adapters/multiagent/langgraph.py`): Implements a three-node `StateGraph` with `InMemorySaver` checkpointing. The parent graph threads `ParentState` (plan text, retry count, validator feedback) through planner → executor → reviewer nodes, with a conditional edge from the reviewer back to the executor on validation failure. Each node is a compiled subgraph with private `SubgraphState` accumulating `BaseMessage` history via LangGraph's `add_messages` reducer. This architecture exploits LangGraph's native state persistence: conversation history survives across retries without manual serialisation, and the checkpoint mechanism enables post-hoc replay of agent interactions for trace analysis @langchain2024langgraph.
-
-*CrewAI* (`adapters/multiagent/crewai.py`): Constructs a sequential `Crew` with three role-based agents (planner, executor, reviewer), each configured with a backstory, goal, and tool set. CrewAI's iteration budget is distributed across agents using a 20/60/20 split (planner/executor/reviewer) on first attempt, shifting to 0/80/20 on retry to allocate more capacity to the executor. A `check_completion` tool with `result_as_answer=True` enables the executor to signal early completion, preventing the 50-iteration token burn that occurs when CrewAI agents exhaust their iteration limit without producing a final answer @crewai2024. Token usage is captured via a native `OpenAICompletion` callback registered through CrewAI's event bus.
-
-*OpenAI Agents SDK* (`adapters/sdk/openai_agents.py`): Uses a three-agent handoff chain where each agent is defined with a system prompt, tool set, and optional structured output schema. The planner agent produces an `ImplementationPlan` via Pydantic-validated structured output. Agent transitions use the SDK's native handoff mechanism, passing conversation context forward. The reviewer agent carries an output guardrail---a workspace validator that checks for expected artefacts---which triggers a retry loop on failure, using the SDK's built-in guardrail-to-retry pipeline @openai2025agents_sdk.
-
-*Google ADK* (`adapters/sdk/google_adk.py`): Orchestrates agents using ADK's compositional primitives: a `SequentialAgent` chains planner → `LoopAgent` → validation, where the `LoopAgent` wraps the executor--reviewer pair with a native `exit_loop` tool that the reviewer invokes when validation passes. Non-Gemini models are supported via LiteLLM format strings (e.g., `openai/gpt-4o`), enabling the same adapter to evaluate ADK's orchestration with different LLM providers. Per-call token and tool usage is captured through ADK callbacks registered on each agent @google2025adk.
-
-*Microsoft Agent Framework* (`adapters/multiagent/agent_framework.py`): Employs `MagenticBuilder` to construct a manager-driven team with built-in stall detection and round-count limits. The manager agent delegates tasks to specialist agents (planner, executor, reviewer), monitors progress, and triggers automatic re-planning when stall detection fires after `MAX_STALL_COUNT` consecutive unproductive rounds. Token usage is intercepted by a `UsageTrackingMiddleware` layer inserted into the chat pipeline, which records per-call usage from the LLM response objects before forwarding them to the `ObservationCollector` @microsoft2025agent_framework.
-
-The four visual/workflow platform adapters share a different base class---`VisualAgentAdapter` (`adapters/_shared/visual_base.py`)---which provides the `_execute_visual_stage` retry loop and result building. Unlike the SDK-based adapters that invoke platform libraries in-process, visual adapters communicate with their platforms over REST APIs, with each platform running as a Docker container managed by the harness infrastructure.
-
-*Flowise* (`adapters/visual/flowise.py`): Communicates with Flowise via its REST API to programmatically create AI Agent chatflows for each pipeline stage. Rather than shipping static JSON templates---which are fragile across Flowise versions---the adapter fetches the live node specification for each component it needs (`GET /api/v1/nodes/{name}`: `chatOpenRouter`, `customTool`, `bufferMemory`, `toolAgent`) and builds the React Flow graph programmatically, classifying each node input as either a parameter or an anchor using Flowise's own `INPUT_PARAMS_TYPE` constant. Connections between nodes are expressed as `{{nodeId.data.instance}}` references inside the target's `inputs` dictionary, which is how Flowise's runtime actually resolves wiring---visible edges are UI state. At stage start, the adapter registers the stage-scoped workspace tools (`execute_shell`, `read_file`, `write_file`) via `POST /api/v1/tools` and a provider-specific credential via `POST /api/v1/credentials` (e.g., `openRouterApi`), referencing both by ID in the chatflow definition. The stage prompt is sent via `/api/v1/prediction/{id}`; tool invocations are surfaced in the response's `usedTools` array and parsed into per-call `ToolCall` trace entries.
-
-*LangFlow* (`adapters/visual/langflow.py`): Builds agent flows from the full component catalogue returned by `GET /api/v1/all`. Each catalogue entry is already the `data.node` portion of a React Flow node, so the adapter wraps catalogue entries in the outer envelope and overrides specific template field values. Three version-specific mechanics required non-obvious handling: the `api_key` field on the OpenRouter component carries `load_from_db: true` by default, which causes LangFlow to interpret the value as a Global Variable name---an explicit field-flag override (`load_from_db: false`) is needed to use the literal key; the `/api/v1/run/{flow_id}` endpoint rejects the auto-login session Bearer token and requires an `x-api-key` header from `POST /api/v1/api_key/`, which the adapter mints at init and deletes on shutdown; and the `PythonCodeStructuredTool` component expects three artefacts that LangFlow's UI normally populates (`_classes`, `_functions` keyed as a dict by function name, and per-argument `{fn}|{arg}` template fields), which the adapter re-creates by parsing the tool code with Python's `ast` module to match LangFlow's `update_build_config` behaviour. Flows are created via `POST /api/v1/flows/` (trailing slash required on collection endpoints), executed, and deleted. Tool calls surface from the nested response through several alternative paths (`message.data.content_blocks[type=tool_use]`, `message.additional_kwargs.tool_calls`, or source-attribution on Python structured tool outputs) that the adapter walks defensively.
-
-*Dify* (`adapters/visual/dify.py`): A partial integration covering Layers~1 and~2 only. Dify's two-API architecture (Console API for management, Service API for execution with per-app keys) is preserved as documented @dify2024, but Dify~1.13's shift to a marketplace-only model-provider ecosystem blocks the end of the adapter lifecycle: no LLM provider ships in-box, and providers must be fetched from the Dify marketplace and installed per-workspace before apps can select a model. The adapter automates everything up to that boundary: init-password validation via `POST /console/api/init` with the container's `INIT_PASSWORD`, admin setup and login with base64-encoded passwords, the CSRF-token handshake required by all mutating endpoints, and agent-app creation in `agent-chat` mode. Appropriate error messaging is surfaced at the execution boundary to distinguish platform gaps from harness bugs. This boundary is discussed as a finding in @limitations rather than a missing feature.
-
-*N8n* (`adapters/visual/n8n.py`): Communicates with n8n's REST API v1 to create and execute AI Agent workflows. At init the adapter auto-provisions an owner account (`/rest/owner/setup`, idempotent) and mints an API key via `/rest/api-keys` with the required `label`, `scopes`, and `expiresAt` fields; the raw key is only returned on creation, so the adapter captures it eagerly. Credential provisioning uses provider-specific n8n credential types---`openRouterApi` with just `{apiKey}` for OpenRouter (the URL is hidden by the component), `anthropicApi` for Anthropic, and `openAiApi` with the full conditional-header field set required by the public API schema for OpenAI-compatible providers. Workflow definitions wire an AI Agent node to tool nodes; runs are triggered via `/api/v1/workflows/{id}/run` and the adapter polls `/api/v1/executions/{id}` until completion. N8n's execution log is the richest of the visual platforms: `runData` is keyed by node name with per-node `startedAt` and `executionTime`, inputs, outputs, and status---the adapter records per-node events for graph reconstruction and per-tool-call `ToolCall` entries with real timing.
+*Visual/workflow adapters.* Rather than shipping static JSON templates---which are fragile across platform versions---each visual adapter fetches live component catalogues at stage start and builds flows programmatically. Flowise retrieves per-component specifications via `GET /api/v1/nodes/{name}` and classifies inputs using its own `INPUT_PARAMS_TYPE` constant, expressing connections as `{{nodeId.data.instance}}` references inside the target's `inputs` dictionary (the mechanism Flowise's runtime actually resolves); tools and credentials are registered per-run via `POST /api/v1/tools` and `POST /api/v1/credentials`. LangFlow wraps full-catalogue entries (`GET /api/v1/all`) with targeted field overrides and required three version-specific mechanics: overriding `load_from_db: true` on credential fields, minting an `x-api-key` header for `/api/v1/run/{flow_id}`, and re-creating `PythonCodeStructuredTool` template artefacts by parsing tool code with Python's `ast` module. Dify is a partial integration: init, auth, CSRF handshake, and agent-app creation automate cleanly, but Dify~1.13's marketplace-only plugin ecosystem blocks end-to-end execution since no LLM provider ships in-box (discussed as a finding in @limitations) @dify2024. N8n provides the richest visual-platform execution log: `runData` is keyed by node name with per-node `startedAt` and `executionTime`, enabling per-node event reconstruction and real per-tool-call timing, with credentials provisioned via provider-specific types (`openRouterApi`, `anthropicApi`, `openAiApi`).
 
 == Pipeline Stage Implementation
 
-=== Stage 1: Requirements \& Design
+The four pipeline stages share a common execution pattern provided by `ToolAgentAdapter._execute_stage`: a planner agent produces a structured `ImplementationPlan` (Pydantic-validated, with plaintext fallback for LLMs with weaker structured-output fidelity), an executor agent receives enriched instructions containing parsed plan steps and target files via `build_executor_instructions`, and a reviewer agent validates the workspace under asymmetric tool distribution (inspection-only tools, no write access)---preserving the separation between generation and review that the _Orchestration_ rubric dimension evaluates. If validation fails, the executor retries with the reviewer's feedback appended to its conversation history. Stage outputs chain forward via `context.get_prior_result()`, so downstream stages have full upstream context without re-deriving it. After each stage, the base class runs a workspace audit (`audit_workspace`) that checks for out-of-scope file modifications.
 
-The first pipeline stage transforms a user story into structured requirements and a UML design artefact. The story definition is loaded from YAML by the story loader (`harness/loader.py`), which validates the schema and prepares a `StageContext` containing the story metadata, workspace path, allowed tools, and a progress callback for live reporting.
+Stages differ primarily in tool surface and stage-specific concerns.
 
-The stage follows the shared three-agent pattern (planner → executor → reviewer) provided by `ToolAgentAdapter._execute_stage`. The planner agent receives the story description and acceptance criteria via `build_requirements_prompt` and produces an `ImplementationPlan`---a Pydantic model specifying implementation steps, file paths, and dependencies. If the LLM's response cannot be parsed as valid JSON, a plaintext fallback parser extracts numbered steps from the raw output, ensuring robustness across models with varying structured-output fidelity.
+*Stage~1 — Requirements and design.* Writes structured requirements and Mermaid diagram sources, rendering them via the Mermaid CLI (`mmdc`) through `execute_shell` so downstream stages and reviewers can inspect the rendered SVG.
 
-The executor agent receives enriched instructions constructed by `build_executor_instructions`, which injects a `## Plan` section (the parsed plan steps) and a `## Files` inventory (target files from the story definition) into the system prompt. The executor writes structured requirements to the workspace via the `write_file` tool and generates PlantUML diagram source via the `generate_uml` tool. The reviewer agent then validates that the workspace contains the expected artefacts; if validation fails, the executor retries with the reviewer's feedback appended to its conversation history.
+*Stage~2 — Code generation.* Writes source files into an isolated workspace initialised from a baseline template (`data/baseline/`), providing a consistent starting point without constraining the agent's implementation choices.
 
-The stage output is a `RequirementsResult` containing the structured requirements JSON, PlantUML source string, and execution metadata (iterations, tool calls, token usage).
+*Stage~3 — Test generation.* Introduces the `run_tests` tool (pytest for Python, jest for JavaScript) with an error-recovery loop enabling the agent to iteratively fix failing tests until tests pass or the iteration budget is exhausted.
 
-=== Stage 2: Code Generation
+*Stage~4 — Build and deployment.* Evaluates each platform's ability to orchestrate a complete deployment sequence: rather than delegating to a CI/CD system @shahin2017cicd, the agent is given direct tool access and must determine the correct execution order itself.
 
-The code generation stage receives the requirements and UML design from Stage~1 via the `StageContext` chaining mechanism: `context.get_prior_result("requirements")` retrieves the preceding stage's output, which `build_codegen_prompt` incorporates into the executor's prompt alongside the original story description. This chaining ensures the code generation agent has full context without re-deriving requirements.
+Targeting a remote host is itself a deliberate measurement choice: a local-only deploy (e.g. `docker compose up` on the harness host) would collapse into a single-tool invocation, giving every platform the same trivial trace and erasing the _Orchestration_ signal the stage is designed to capture. SSH-to-remote instead forces multi-step coordination across git, SSH, and Docker---push, pull, build, restart, probe---which is precisely the sequencing behaviour _Orchestration_ is intended to measure (see @appendix-deploy-setup).
 
-The executor agent writes source files to an isolated workspace directory using the `write_file` tool. Each platform--story combination receives a clean workspace initialised from a baseline project template (`data/baseline/`), providing a consistent starting point (e.g., `pyproject.toml`, directory structure) without constraining the agent's implementation choices. The `read_file` and `list_files` tools enable the agent to inspect its own output and the baseline structure.
+A single `deploy_remote` tool exposes three actions---`push` (commit and push workspace changes to the deploy repository), `restart` (SSH to target, pull branch, `docker compose up -d --build`), and `health_check` (SSH and curl the service endpoint)---ensuring the evaluation measures platform orchestration rather than CI system capability. Each platform--scenario combination pushes to a dedicated branch (`{platform_id}/{story_id}`); on the target server a restricted `desmet` user with a whitelisted shell (permitting only `git pull`, `docker compose`, `docker ps`, `curl`) and Tailscale-restricted SSH access provides defence-in-depth isolation (see @appendix-deploy-setup). This stage contributes to _Orchestration_ (push → restart → health check sequencing), _Error Recovery_ (retrying failed restarts), and _Autonomy_ (calling `health_check` unprompted to verify deployments).
 
-Tool dispatch, retry logic, and result construction are handled entirely by the `_execute_stage` template method. The adapter-specific `_run_agent` implementation manages only the platform SDK invocation---for example, LangGraph compiles and invokes its `StateGraph`, while CrewAI kicks off a sequential `Crew`. After execution, the base class runs a workspace audit (`audit_workspace`) that checks for out-of-scope file modifications, logging warnings if the agent wrote files outside the expected target paths.
+== Metrics Collection and Token Tracking <sec-metrics>
 
-The stage output is a `CodeResult` recording the files produced, tool call count, and execution metadata.
+The harness captures resource consumption metrics at each pipeline stage through three mechanisms.
 
-=== Stage 3: Test Generation
+*Token tracking.* Uses an `ObservationCollector` wrapped around each stage invocation, with adapter-specific sources feeding per-LLM-call counts into the collector: OpenAI-compatible adapters extract `usage.prompt_tokens`/`usage.completion_tokens`, CrewAI uses a native `OpenAICompletion` callback registered on the event bus, and the Agent Framework inserts a `UsageTrackingMiddleware` into the chat pipeline.
 
-The test generation stage receives the requirements and generated source code from prior stages and produces a test suite. The executor agent is provided with the full workspace contents (source files from Stage~2) and tasked with writing tests that exercise the acceptance criteria defined in the story.
+*Wall-clock timing.* Recorded by the `EvaluationRunner` at stage boundaries.
 
-This stage introduces two capabilities not present in earlier stages. First, the `run_tests` tool enables the agent to invoke a test runner (pytest for Python projects, jest for JavaScript) and receive structured output including pass/fail counts, failure messages, and coverage data where available. Second, an error-recovery loop allows the agent to iteratively fix failing tests: when `run_tests` reports failures, the agent can read the failing test output, modify the test or source code, and re-invoke the runner---continuing until tests pass or the iteration budget is exhausted.
+*Cost estimation.* Derives from token counts and per-provider pricing tables.
 
-The reviewer agent in this stage operates under asymmetric tool distribution: it receives only inspection tools (`read_file`, `list_files`) and cannot modify the workspace. This design ensures the reviewer provides an independent assessment of test adequacy without the ability to ``fix'' issues itself, preserving the separation between generation and review that the scoring rubric evaluates under the _Orchestration_ dimension.
+All metrics are persisted to a DuckDB-backed `ResultStore` (`harness/store.py`) that maintains `runs` (run-level metadata) and `executions` (per-platform-per-scenario records) tables, supporting both DuckDB SQL queries and Pandas DataFrame export. The `MetricsCollector` computes the four cross-cutting dimension scores defined in the Design chapter from lists of `StoryMetrics` facades; when repeated runs are configured (`RunnerConfig.repeats > 1`), it also produces `VarianceMetrics` (mean and population standard deviation across runs) enabling assessment of result stability under non-deterministic LLM outputs.
 
-The stage output is a `TestResult` recording tests run, tests passed, coverage delta, and execution metadata.
+=== Hybrid Auto-Derived and Manual Scoring
 
-=== Stage 4: Build \& Deploy
-
-The final pipeline stage evaluates each platform's ability to orchestrate a complete deployment sequence. Rather than delegating to a CI/CD system such as GitHub Actions, the agent is given direct tool access and must determine the correct execution order itself. This design choice ensures the evaluation measures the platform's orchestration capability, not the CI system's @shahin2017cicd.
-
-The agent interacts with a single `deploy_remote` tool exposing three actions:
+The four cross-cutting dimensions are computed by `EvaluationMetrics.calculate_dimension_scores` in `harness/metrics.py` under a deliberate split: three dimensions are auto-derived end-to-end from trace signals, while _Autonomy_ retains the evaluator's 0--3 rubric score as its primary input. _Pipeline Completeness_ blends the scenario completion ratio with the averaged rubric score seeded from each `StageResult.success` flag; _Efficiency_ is fully automatic, combining wall-clock, token, cost, and memory ratios against configured budgets; and _Orchestration_ averages three rubric fields (`tool_integration`, `error_recovery`, `trace_quality`) that the trace audit populates from observation data. The auto-safe dimensions all rest on objective counters whose ground truth is unambiguous from the trace. _Autonomy_ is scored manually through the web-based management console because judging whether an intervention is substantive versus a routine tool response requires human interpretation that counters cannot reliably recover; the manual rubric is optionally blended 50/50 with `human_interventions` only when adapters log non-zero values. Full rubric criteria appear in @appendix-scoring-rubric.
 
 #figure(
   table(
@@ -129,46 +81,19 @@ The agent interacts with a single `deploy_remote` tool exposing three actions:
     inset: 8pt,
     align: left,
     table.header(
-      [*Action*], [*Operation*], [*What it measures*],
+      [*Dimension*], [*Source*], [*Signal*],
     ),
-    [`push`], [Commits workspace changes and pushes to the deploy repository via git], [Can the platform trigger artifact delivery?],
-    [`restart`], [SSH to the target server, pulls the branch, runs `docker compose up -d --build`], [Can the platform start/restart a service?],
-    [`health_check`], [SSH to the target server and curls the service endpoint], [Does the platform verify its own work?],
+    [Pipeline Completeness], [Auto-derived], [Completion ratio + rubric seeded from `StageResult.success`],
+    [Efficiency], [Auto-derived], [Wall-clock, token, cost, and memory ratios against budgets],
+    [Orchestration], [Auto-derived], [Averaged `tool_integration`, `error_recovery`, `trace_quality` from trace audit],
+    [Autonomy], [Manual], [Evaluator 0--3 rubric via @sec-webui; optional 50/50 blend with logged `human_interventions`],
   ),
-  caption: [Deploy stage tool actions and their evaluation purpose],
+  caption: [Auto-derived versus manual cross-cutting dimensions.],
 )
-
-The harness initialises the workspace as a git repository with the deploy remote pre-configured before the stage begins. Each platform--story combination pushes to a dedicated branch (`{platform_id}/{story_id}`), providing isolation within a single repository. On the target server, nginx routes platform-specific subdomains to unique container ports, and a Cloudflare-proxied origin certificate handles TLS termination.
-
-The deploy target runs a restricted user (`desmet`) with a whitelisted shell that permits only `git pull`, `docker compose`, `docker ps`, and `curl`. SSH access is restricted to a Tailscale VPN. This security model prevents any agent-initiated action from affecting other services on the shared server while still providing a realistic deployment environment.
-
-This stage contributes to multiple evaluation dimensions: _Orchestration_ (correct sequencing of push → restart → health check), _Error Recovery_ (retrying a failed restart or diagnosing a health check failure), and _Autonomy_ (whether the agent calls `health_check` unprompted to verify the deployment).
-
-== Metrics Collection and Token Tracking
-
-=== Automatic Instrumentation <sec-metrics>
-
-The harness captures resource consumption metrics at each pipeline stage through three mechanisms:
-
-- *Token tracking*: The `_execute_stage` template method wraps each stage invocation in an `ObservationCollector` that records per-LLM-call token counts. Each adapter feeds provider-specific usage data into the collector---for example, OpenAI-compatible adapters extract `usage.prompt_tokens` and `usage.completion_tokens` from response objects, while CrewAI uses a native `OpenAICompletion` callback registered on the event bus, and the Agent Framework inserts a `UsageTrackingMiddleware` into the chat pipeline. The collector aggregates these per-call counts into stage-level totals.
-
-- *Wall-clock timing*: The `EvaluationRunner` records `datetime.now(timezone.utc)` before and after each stage invocation, yielding `wall_clock_seconds` per stage. Stage-level timings are aggregated into story-level totals for efficiency scoring.
-
-- *Cost estimation*: API costs are estimated from token counts using per-provider pricing tables. Since pricing varies by model and provider, costs are recorded as estimates and flagged as such in the results.
-
-All metrics are persisted to a DuckDB-backed `ResultStore` (`harness/store.py`) that maintains two tables: `runs` (run-level metadata including model, temperature, platform/story filters) and `executions` (per-platform-per-story execution records with all quantitative metrics and rubric scores). The store supports both programmatic querying (via DuckDB SQL) and DataFrame export (via Pandas), enabling the dashboard data layer to generate charts and summary tables without re-parsing JSON artefacts.
-
-=== Cross-cutting Dimension Computation
-
-The `MetricsCollector` class (`harness/metrics.py`) computes the four cross-cutting dimension scores defined in the Design chapter. The `calculate_dimension_scores` method operates on a list of `StoryMetrics` facades (each wrapping a `StoryResult` with additional metrics-only fields) and produces `DimensionScore` entries on a 1--5 Likert scale.
-
-Pipeline Completeness combines the story completion ratio with the average pipeline completeness rubric score (0--3). Efficiency combines three components---time ratio (wall-clock relative to budget), token ratio (total tokens relative to a 100,000-token budget), and cost ratio (API cost relative to a \$0.50-per-story budget)---falling back to a two-component average when cost data is unavailable. Orchestration averages the three orchestration-related rubric scores (tool integration, error recovery, trace quality) and rescales from 0--3 to 1--5. Autonomy is computed as $5 - min(4, overline(I))$ where $overline(I)$ is the mean human interventions per stage, ensuring that fewer interventions yield higher scores.
-
-When repeated runs are configured (`RunnerConfig.repeats > 1`), the collector also computes `VarianceMetrics`---mean and population standard deviation for wall-clock time, token usage, cost, tool calls, iterations, and success rate---enabling assessment of result stability across non-deterministic LLM outputs.
 
 === Metric Coverage Across Visual Platforms <sec-metric-coverage>
 
-The SDK-based adapters all emit the same metric set directly into the `AgentTrace` because they invoke platform libraries in-process and instrument the LLM call site. Visual platforms, in contrast, expose a single REST response per stage, and the level of execution detail in that response varies substantially across platforms. @tab-visual-metric-coverage summarises which framework-metric signals are recoverable from each visual platform's default response.
+The SDK-based adapters all emit the same metric set directly into the `AgentTrace` because they invoke platform libraries in-process and instrument the LLM call site. Visual platforms, in contrast, expose a single REST response per stage, and the level of execution detail varies substantially across platforms. @tab-visual-metric-coverage summarises which framework-metric signals are recoverable from each visual platform's default response.
 
 #figure(
   table(
@@ -187,161 +112,40 @@ The SDK-based adapters all emit the same metric set directly into the `AgentTrac
     [`framework_overhead_ms`], [✓], [—], [—], [—],
     [per-node events], [✓], [—], [—], [—],
   ),
-  caption: [Framework-metric signals recoverable from each visual platform's default REST response. ✓ = surfaced and parsed; — = not exposed by the platform. #super[\*] Dify exposes aggregate token usage via `metadata.usage` on chat responses, but end-to-end agent execution is blocked by the plugin-based model ecosystem (see @limitations). Unavailable signals are deliberately reported as `None` rather than synthesised from proxies.],
+  caption: [Framework-metric signals recoverable from each visual platform.],
 ) <tab-visual-metric-coverage>
 
-The dispersion is itself a cross-category finding. N8n's per-node `runData` log is the richest of the visual platforms and the only one that permits latency and overhead decomposition. Flowise's `usedTools` array captures tool inputs, outputs, and per-call error flags but drops token usage for `toolAgent` flows regardless of streaming mode. LangFlow surfaces both token usage (on `message.data.usage_metadata`) and tool calls through several structurally different response paths depending on version, which the adapter walks defensively. Dify exposes aggregate token usage but does not include per-tool-call traces in the default Service API output. Each adapter's `get_observability_info()` declares these capability flags programmatically (`exposes_per_tool_call`, `exposes_tool_timing`, `exposes_token_usage`, `exposes_node_events`), so downstream analyses can cite the observability boundary rather than treating all zeros identically.
+In @tab-visual-metric-coverage, ✓ denotes a signal surfaced and parsed by the adapter and --- denotes a signal not exposed by the platform. Dify exposes aggregate token usage via `metadata.usage` on chat responses, but end-to-end agent execution is blocked by the plugin-based model ecosystem (see @limitations). Unavailable signals are deliberately reported as `None` rather than synthesised from proxies.
+
+The dispersion is itself a cross-category finding. N8n's per-node `runData` log is the only visual-platform signal that permits latency and overhead decomposition. Flowise captures tool inputs, outputs, and per-call error flags but drops token usage for `toolAgent` flows regardless of streaming mode. LangFlow surfaces token usage and tool calls through several structurally different response paths depending on version, which the adapter walks defensively. Dify exposes aggregate token usage but not per-tool-call traces. Each adapter's `get_observability_info()` declares these capability flags programmatically (`exposes_per_tool_call`, `exposes_tool_timing`, `exposes_token_usage`, `exposes_node_events`), so downstream analyses can cite the observability boundary rather than treating all zeros identically.
 
 == Web-Based Management Console <sec-webui>
 
-The evaluation harness includes a purpose-built web-based management console that serves as the primary instrument for conducting evaluations. Rather than a convenience wrapper around CLI commands, the console operationalises the evaluation methodology: it embeds the scoring rubric, provides trace-level evidence for qualitative judgements, visualises multi-agent orchestration patterns, and produces the cross-platform comparison analysis. This section describes its architecture, capabilities, and role in the evaluation workflow.
+The evaluation harness includes a purpose-built web-based management console that serves as the primary instrument for conducting evaluations. The console operationalises the evaluation methodology: it embeds the scoring rubric, provides trace-level evidence for qualitative judgements, visualises multi-agent orchestration patterns, and produces the cross-platform comparison analysis.
 
-=== Architecture
+*Backend.* A FastAPI application (`src/desmet/webui/api.py`) exposes approximately 45 REST endpoints and two WebSocket channels (live log streaming during pipeline execution; Docker image build progress).
 
-The console follows a two-tier architecture. The backend is a FastAPI application (`src/desmet/webui/api.py`) exposing approximately 45 REST endpoints and two WebSocket channels---one for live log streaming during pipeline execution, one for Docker image build progress. The frontend is a Svelte~5 single-page application compiled to static assets and served by the backend on port~8042. Reactive state management uses Svelte~5 runes (`$state`, `$derived`) with a centralised data layer (`data.svelte`) that polls the backend for infrastructure health, platform status, and run progress.
+*Frontend.* A Svelte~5 single-page application compiled to static assets and served by the backend on port~8042, with reactive state management via runes (`$state`, `$derived`) and a centralised data layer polling for infrastructure health, platform status, and run progress. The console launches automatically via the `desmet` CLI (see @appendix-getting-started) and starts the Langfuse tracing infrastructure as a core dependency. All evaluation data flows through the same `ResultStore` used by the CLI, ensuring consistency between console-driven and programmatic evaluations.
 
-The console launches automatically via the `desmet` CLI (see @appendix-getting-started) and starts the Langfuse tracing infrastructure as a core dependency on startup. All evaluation data flows through the same `ResultStore` (DuckDB-backed, see @sec-metrics) used by the CLI, ensuring consistency between console-driven and programmatic evaluations.
+*Navigation.* Pages are organised into two groups: _Manage_ (Dashboard for infrastructure/adapter status, Platforms for Docker service control, Scenarios for browsing the user-scenario catalogue, New Run for pipeline launch, Run Detail for live WebSocket log streaming) and _Results_ (Overview with ECharts aggregate visualisations, Scoring, Scenario Detail for per-scenario cross-platform metrics, Comparison for radar/ranking/heatmap charts).
 
-=== Evaluation Workflow Pages
+The Scoring page (@fig-webui-scoring) is the centrepiece of the evaluation workflow, operationalising the 0--3 rubric defined in the Design chapter.
 
-The console is organised into two navigation groups---_Manage_ (pipeline execution) and _Results_ (analysis and scoring)---reflecting the two phases of an evaluation session.
+*Evidence panels.* The evaluator selects a platform--scenario combination and is presented with three tabbed evidence panels alongside the scoring form: a Langfuse span tree rendered as a nested timeline with expandable detail drawers; a LangSmith run tree (for LangGraph runs) with state snapshots and checkpoint data; and a novel _agent communication graph_---a directed visualisation constructed from Langfuse observation data that makes multi-agent orchestration patterns directly observable.
 
-==== Pipeline Execution
+*Agent communication graph.* Agent nodes are grouped into cluster containers reflecting the platform's topology (a CrewAI sequential crew appears as a container with planner, executor, and reviewer arranged in sequence; a MagenticOne team shows a central manager with edges to specialists), laid out hierarchically via ELK (`elkjs`), and rendered using `@xyflow/svelte` with custom node and animated-edge components. Clicking a node opens an observation drawer showing the full LLM call detail (prompt, response, token usage, timing). The graph directly supports scoring the _Orchestration_ and _Autonomy_ dimensions---revealing whether agents genuinely collaborated or merely executed sequentially, whether the reviewer received the executor's output, and whether error recovery involved re-planning or simple retry.
 
-Five pages support the execution phase:
-
-- *Dashboard*: Provides an at-a-glance overview of the evaluation environment. Cards display infrastructure service health (Langfuse, Redis, Postgres), the number of implemented platform adapters, available LLM providers with per-provider model counts discovered at startup, and a summary of recent evaluation runs. Infrastructure services can be started and stopped directly from the dashboard. @fig-webui-dashboard shows the dashboard layout.
-
-#figure(
-  image("../figures/webui/dashboard.png", width: 95%),
-  caption: [Management console dashboard showing infrastructure health, LLM provider discovery, and recent evaluation runs],
-) <fig-webui-dashboard>
-
-- *Platforms*: Lists all nine platforms with their adapter implementation status, category, and Docker container state. For platforms backed by Docker services (visual/workflow platforms), start and stop controls are provided. The page also surfaces platform-level developer metrics where available.
-
-- *Stories*: Displays all user stories loaded from `data/stories/`, filterable by difficulty level (basic, intermediate, advanced). Each story card shows the title, description, acceptance criteria count, time budget, and maximum iteration limit. Selecting a story navigates to a detail view with the full acceptance criteria list.
-
-- *New Run*: The launch page for pipeline execution. The evaluator selects one or more platforms, one or more stories, and optionally overrides the LLM model and temperature. Clicking _Start_ creates a run record in the `ResultStore`, initialises the `EvaluationRunner`, and redirects to the Run Detail page for live monitoring.
-
-- *Run Detail*: Displays real-time execution progress via a WebSocket connection. A live log viewer streams structured log output from the runner, including stage transitions, tool invocations, token usage snapshots, and error events. A status badge tracks the run lifecycle (queued → running → completed / failed / cancelled). A cancel button sends a stop signal to the runner, enabling early termination of runs that are consuming excessive tokens or time.
-
-==== Analysis and Scoring
-
-Four pages support the results analysis phase:
-
-- *Results Overview*: Presents aggregate metrics across all completed runs. ECharts-rendered visualisations include completion rate bar charts (per platform), dimension score bar charts (per dimension across platforms), efficiency breakdowns (time vs.\ token vs.\ cost components), and story-level comparison charts. All charts are generated server-side and delivered as ECharts option JSON, ensuring consistent rendering.
-
-- *Scoring*: The centrepiece of the evaluation workflow. This page operationalises the 0--3 scoring rubric defined in the Design chapter. The evaluator selects a platform--story combination and is presented with three tabbed evidence panels alongside the scoring form:
-
-  + _Langfuse trace_: A hierarchical span tree rendered from Langfuse observation data, showing each LLM call, tool invocation, and agent transition with token counts, timing, and input/output content. Spans are rendered as a nested timeline with expandable detail drawers.
-
-  + _LangSmith trace_: For LangGraph runs, a complementary run tree fetched from LangSmith, providing LangGraph-specific state snapshots and checkpoint data.
-
-  + _Agent graph_: A directed graph visualisation of the multi-agent communication topology (described in detail below).
-
-  The scoring form presents each of the six rubric dimensions (pipeline completeness, tool integration, error recovery, time efficiency, autonomy, trace quality) with a 0--3 slider and a free-text notes field. Scores are persisted via the `ResultStore` and immediately reflected in the comparison charts. Previously submitted scores are pre-loaded when revisiting a platform--story combination, enabling iterative refinement. @fig-webui-scoring shows the scoring page layout.
+*Rubric form and aggregation.* The scoring form presents each of the six rubric dimensions with a 0--3 slider and free-text notes field; scores persist via the `ResultStore` and are pre-loaded when revisiting a combination, enabling iterative refinement. Previously submitted scores feed immediately into the Comparison page's radar chart overlay (four cross-cutting dimensions), ranking bar chart, and score-matrix heatmap.
 
 #figure(
   image("../figures/webui/scoring.png", width: 95%),
-  caption: [Scoring page showing per-dimension rubric sliders (top) and Langfuse execution trace with timeline, messages, and tool calls (bottom)],
+  caption: [Management console scoring page.],
 ) <fig-webui-scoring>
-
-- *Story Detail*: Provides a per-story cross-platform view. For a selected story, displays each platform's execution metrics (tokens, time, cost, iterations, tool calls) and scoring status. A _Score this_ link navigates directly to the Scoring page with the platform and story pre-selected, streamlining the evaluator's workflow through the story set.
-
-- *Comparison*: The synthesis page that produces the cross-platform analysis. A radar chart overlays all scored platforms on the four cross-cutting dimensions (Pipeline Completeness, Efficiency, Orchestration, Autonomy). A bar chart ranks platforms by overall score. A score matrix heatmap shows per-platform per-dimension scores with colour intensity encoding magnitude. Dimension-specific bar charts can be selected from a dropdown for detailed single-dimension comparison. @fig-webui-comparison shows the comparison page.
-
-#figure(
-  image("../figures/webui/comparison.png", width: 95%),
-  caption: [Comparison page showing efficiency breakdown bar charts and per-story wall-clock time comparison across platforms],
-) <fig-webui-comparison>
-
-=== Agent Communication Graph
-
-The agent graph is a novel visualisation component that makes multi-agent orchestration patterns directly observable. During qualitative scoring, the evaluator can inspect how agents communicated, delegated, and coordinated---information that is critical for scoring the _Orchestration_ dimension but difficult to extract from raw trace logs.
-
-The graph is constructed from Langfuse trace data via a server-side endpoint (`/api/dashboard/graph/{platform_id}/{story_id}`) that extracts agent nodes and message edges from the observation tree. The frontend renders this as an interactive directed graph using the following pipeline:
-
-+ *Trace parsing*: The backend traverses the Langfuse observation hierarchy, identifying agent-level spans (generations and chains) and extracting parent--child relationships and message content.
-
-+ *Graph construction*: Agent nodes are grouped into cluster containers reflecting the platform's orchestration topology---for example, a CrewAI sequential crew appears as a container with planner, executor, and reviewer nodes arranged in sequence, while a MagenticOne team shows a central manager node with edges to specialist agents.
-
-+ *ELK layout*: The graph input is passed to ELK (Eclipse Layout Kernel) via `elkjs` for automatic hierarchical layout, producing positioned nodes and routed edges that minimise crossings.
-
-+ *Interactive rendering*: The laid-out graph is rendered using `@xyflow/svelte` with custom node components (`AgentNode` for leaf agents, `AgentClusterNode` for containers) and custom edge components (`TransitionEdge` with animated message flow). Clicking a node opens an `ObservationDrawer` showing the full LLM call detail (prompt, response, token usage, timing). A `TimelineCard` component shows the chronological execution sequence alongside the spatial graph.
-
-This visualisation directly supports the evaluation methodology: the graph reveals whether a platform's agents actually collaborated (multiple agents with bidirectional edges) or merely executed sequentially (linear chain), whether the reviewer agent received the executor's output, and whether error recovery involved re-planning or simple retry. These observations inform the qualitative scoring of Orchestration and Autonomy dimensions. @fig-webui-agent-graph shows the agent graph for a representative multi-agent execution.
-
-#figure(
-  image("../figures/webui/agent-graph.png", width: 95%),
-  caption: [Agent communication graph showing multi-agent orchestration topology with cluster containers, message edges, and observation detail drawer],
-) <fig-webui-agent-graph>
-
-=== Observability Integration
-
-The console integrates with two observability providers to give the evaluator comprehensive trace evidence:
-
-- *Langfuse*: The primary tracing backend, started automatically on console launch. The `TraceViewer` component renders the full observation tree with expandable spans. The `SpanNode` component shows per-span token counts, duration, and a truncated preview of input/output content. The `TimelineView` provides a horizontal timeline of all spans for temporal analysis. Trace data is fetched via the Langfuse client SDK (`webui/langfuse_client.py`), which handles authentication, pagination, and observation tree assembly.
-
-- *LangSmith*: A secondary provider enabled for LangGraph evaluations. The `LangSmithTraceViewer` component renders the LangGraph-specific run tree, including state checkpoint data and graph node transitions. Availability is checked lazily on first access and indicated in the Scoring page tab bar.
-
-Dual-provider support allows the evaluator to cross-reference traces---for example, comparing Langfuse's framework-agnostic span tree with LangSmith's LangGraph-specific state transitions to verify that checkpoint data is being recorded correctly.
 
 == Extending the Framework
 
-The evaluation framework is designed for extensibility. Researchers or practitioners wishing to evaluate additional agentic platforms or modify the benchmark pipeline can do so with minimal changes. This section documents the extension points.
+The evaluation framework is designed for extensibility. Adding a new tool-based adapter requires implementing a single `_run_agent` method on a subclass of `ToolAgentAdapter`, registering the class in `src/desmet/adapters/registry.py`, and adding platform metadata to `config/platforms.yaml`---no changes to the runner, metrics, or web UI are required. New scenarios are added as YAML files in `data/stories/` conforming to the `UserStory` schema. Deploy targets are configured via environment variables (`DEPLOY_HOST`, `DEPLOY_PORT`, `DEPLOY_USER`, `DEPLOY_KEY_PATH`, `DEPLOY_REPO`). A complete worked example for adapter addition is provided in @appendix-adding-adapter; deploy server setup is documented in @appendix-deploy-setup.
 
-=== Adding a Platform Adapter
+== Adapter Parity vs. Idiomatic Usage
 
-Tool-based adapters extend `ToolAgentAdapter` (`adapters/_shared/base.py`), which provides the four SDLC stage methods and the shared `_execute_stage` template. The adapter author implements a single method --- `_run_agent` --- containing the platform-specific agent execution logic:
-
-#figure(
-  ```python
-  class ToolAgentAdapter(BasePlatformAdapter):
-      TOOL_FORMAT: ToolFormat  # set by subclass
-
-      async def _run_agent(
-          self, stage_name, prompt, system_msg,
-          tools, trace, context,
-      ) -> tuple[int, bool]: ...  # implement this
-
-      # Provided for free:
-      async def _execute_stage(...): ...
-      async def generate_requirements(...): ...
-      async def generate_code(...): ...
-      async def generate_tests(...): ...
-      async def build_and_deploy(...): ...
-  ```,
-  caption: [`ToolAgentAdapter` --- one method to implement],
-)
-
-To add a new platform:
-
-+ *Create the adapter* --- implement a new Python module in `src/desmet/adapters/` extending `ToolAgentAdapter`. Set `TOOL_FORMAT` and implement `_run_agent` with the platform's SDK invocation logic. Prompt construction, tool creation, trace lifecycle, and result building are handled by the base class.
-
-+ *Register the adapter* --- add an entry in `src/desmet/adapters/registry.py` mapping the platform identifier to the adapter class.
-
-+ *Define platform metadata* --- add the platform's metadata (name, category, version, description) to `config/platforms.yaml`.
-
-No changes to the runner, metrics, or web UI are required. A complete worked example is provided in @appendix-adding-adapter.
-
-=== Adding User Stories
-
-User stories are defined as YAML files in `data/stories/`, organised by difficulty level (basic, intermediate, advanced). Each story specifies a title, description, acceptance criteria, time budget, and expected tool usage. The story loader validates the YAML against the `UserStory` schema and prepares the `StageContext` automatically. Adding a new story requires only a new YAML file conforming to this schema.
-
-=== Configuring a Deploy Target
-
-The deploy stage requires a target server with Docker and git. The framework connects via SSH using environment variables (`DEPLOY_HOST`, `DEPLOY_PORT`, `DEPLOY_USER`, `DEPLOY_KEY_PATH`, `DEPLOY_REPO`). A reverse proxy routes platform-specific subdomains to container ports. The complete server setup procedure, including SSH hardening, restricted shell configuration, and the security model for shared servers, is documented in @appendix-deploy-setup.
-
-== Technical Challenges
-
-Several significant implementation challenges were encountered during adapter development. These are documented both as technical contributions and as evidence of the depth of platform-specific adaptation required.
-
-*CrewAI token tracking breakage.* CrewAI version 1.6 removed its `litellm` dependency, breaking the token usage callback mechanism that earlier versions relied on. The fix required switching to CrewAI's native `OpenAICompletion` callback combined with a `BaseInterceptor` registered through the event bus, which intercepts LLM responses before they reach the agent and records usage data into the `ObservationCollector`. This highlights the fragility of depending on internal framework APIs that change without deprecation warnings.
-
-*CrewAI early termination.* Without explicit termination control, CrewAI agents would exhaust their 50-iteration budget even after producing valid output, consuming tokens on increasingly circular reasoning. The solution was a `check_completion` tool with `result_as_answer=True`---when the agent calls this tool, CrewAI treats the tool's return value as the agent's final answer and terminates the iteration loop. This reduced token consumption per stage by approximately 60\% for the CrewAI adapter.
-
-*CrewAI native function calling.* CrewAI's native function calling mode (where tool definitions are passed to the LLM's function calling API) is broken for non-OpenAI providers at the time of writing. When using Anthropic or Google models via CrewAI, the framework falls back to ReAct-style text parsing, where tool invocations are extracted from the LLM's textual output using regex patterns. This forced the adapter to support both code paths and introduces a confound: CrewAI's orchestration overhead differs depending on whether the underlying provider supports native function calling.
-
-*Adapter parity vs.\ idiomatic usage.* Achieving a controlled comparison requires shared structure (same prompts, same tools, same scoring) while preserving each platform's native patterns. The solution was a layered architecture: the `ToolAgentAdapter` base class provides the shared template (prompt construction, tool creation, retry policy, result building), while each adapter's `_run_agent` method uses the platform's idiomatic orchestration. For example, LangGraph uses compiled subgraphs with checkpointing, CrewAI uses sequential crews with role-based agents, and the Agent Framework uses MagenticOne manager-driven teams. This design ensures that measured differences reflect genuine platform capabilities rather than adapter implementation choices.
-
-*Deploy stage security model.* The deploy stage requires agents to execute commands on a remote server via SSH---a significant security surface. The mitigation is a defence-in-depth approach: the target server runs a restricted user (`desmet`) with a whitelisted shell permitting only `git pull`, `docker compose up`, `docker ps`, and `curl`; SSH access is restricted to a Tailscale VPN mesh; and each platform--story combination pushes to a dedicated git branch, providing isolation within a single deploy repository. This model prevents any agent-initiated action from affecting other services while still providing a realistic deployment environment for evaluation.
+Achieving a controlled comparison required shared structure (same prompts, same tools, same scoring) while preserving each platform's native patterns. The solution was a layered architecture: the `ToolAgentAdapter` base class provides the shared template (prompt construction, tool creation, retry policy, result building), while each adapter's `_run_agent` method uses the platform's idiomatic orchestration---LangGraph's compiled subgraphs with checkpointing, CrewAI's sequential crews with role-based agents, the Agent Framework's MagenticOne manager-driven teams. This design ensures that measured differences reflect genuine platform capabilities rather than adapter implementation choices. Several specific adapter-development challenges (CrewAI's v1.6 `litellm` removal breaking token tracking; the 50-iteration runaway loop without explicit termination; broken native function calling for non-OpenAI providers forcing a ReAct-text-parsing fallback) are documented in @appendix-adding-adapter alongside their fixes and the structured adapter audit that identified and addressed further measurement-fidelity issues.
