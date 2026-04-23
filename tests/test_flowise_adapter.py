@@ -32,47 +32,15 @@ class TestFlowiseClientInit:
         assert "Authorization" not in client._headers
 
 
-class TestChatflowTemplates:
-    def test_all_four_stages_have_templates(self):
-        from desmet.adapters.visual.flowise_templates import STAGE_TEMPLATES
-
-        assert set(STAGE_TEMPLATES.keys()) == {
-            "requirements", "codegen", "testing", "deploy",
-        }
-
-    def test_template_has_agent_node(self):
-        from desmet.adapters.visual.flowise_templates import STAGE_TEMPLATES
-
-        for stage, template in STAGE_TEMPLATES.items():
-            nodes = template["nodes"]
-            agent_nodes = [
-                n for n in nodes
-                if "agent" in n.get("data", {}).get("category", "").lower()
-                or "agent" in n.get("data", {}).get("name", "").lower()
-            ]
-            assert len(agent_nodes) >= 1, f"Stage {stage} missing agent node"
-
-    def test_template_has_tool_nodes(self):
-        from desmet.adapters.visual.flowise_templates import STAGE_TEMPLATES
-
-        for stage, template in STAGE_TEMPLATES.items():
-            nodes = template["nodes"]
-            assert len(nodes) >= 3, f"Stage {stage} has too few nodes"
-
-    def test_build_chatflow_injects_parameters(self):
-        from desmet.adapters.visual.flowise_templates import build_chatflow
-
-        cf = build_chatflow(
-            stage_name="requirements",
-            prompt="Analyse this story",
-            system_msg="You are a requirements analyst",
-            workspace="/desmet-results/flowise/story_01/workspace",
-            model_name="gpt-5.4-2026-03-05",
-        )
-        cf_str = str(cf)
-        assert "You are a requirements analyst" in cf_str
-        assert "/desmet-results/flowise/story_01/workspace" in cf_str
-        assert "gpt-5.4" in cf_str
+# NOTE: the old ``TestChatflowTemplates`` class tested a removed
+# ``STAGE_TEMPLATES`` module-level dict and an earlier
+# ``build_chatflow`` signature that took a ``prompt`` kwarg.  Flowise
+# templates are now assembled per-call by
+# ``flowise_templates.build_chatflow`` from live node specs fetched
+# from ``GET /api/v1/nodes/{name}``, so there is no static dict to
+# introspect.  End-to-end assembly is covered by the live Flowise
+# integration run; the unit-test surface no longer has anything
+# meaningful to assert about the template shape.
 
 
 class TestFlowiseAdapterStructure:
@@ -114,10 +82,27 @@ class TestFlowiseStageExecution:
         a._initialized = True
         a._model_name = "gpt-5.4-2026-03-05"
         a._client = MagicMock()
+        # ``_run_workflow`` expects the adapter's post-``initialize()``
+        # state: a credential id (created from the LLM config), the
+        # chat-model node alias that the template builder should use,
+        # and the pre-fetched node specs dict.  The specs themselves
+        # are irrelevant here because we patch ``build_chatflow`` to
+        # return a canned chatflow definition — the point of the test
+        # is the create→predict→delete sequencing around that call.
+        a._credential_id = "cred-1"
+        a._chat_model_node = "chatOpenRouter"
+        a._node_specs = {
+            "chatOpenRouter": {},
+            "customTool": {},
+            "bufferMemory": {},
+            "toolAgent": {},
+        }
         return a
 
     @pytest.mark.asyncio
     async def test_run_workflow_creates_and_deletes_chatflow(self, adapter):
+        adapter._client.create_tool = AsyncMock(side_effect=["t1", "t2", "t3"])
+        adapter._client.delete_tool = AsyncMock()
         adapter._client.create_chatflow = AsyncMock(return_value="cf-1")
         adapter._client.predict = AsyncMock(return_value={
             "text": "Done",
@@ -125,23 +110,35 @@ class TestFlowiseStageExecution:
         })
         adapter._client.delete_chatflow = AsyncMock()
 
-        result = await adapter._run_workflow(
-            "requirements",
-            "Analyse this story",
-            "You are a requirements analyst",
-            "/desmet-results/flowise/story_01/workspace",
-        )
+        with patch(
+            "desmet.adapters.visual.flowise_templates.build_chatflow",
+            return_value={"nodes": [], "edges": []},
+        ):
+            result = await adapter._run_workflow(
+                "requirements",
+                "Analyse this story",
+                "You are a requirements analyst",
+                "/desmet-results/flowise/story_01/workspace",
+            )
 
         assert isinstance(result, dict)
+        # Three workspace tools: execute_shell, read_file, write_file.
+        assert adapter._client.create_tool.await_count == 3
         adapter._client.create_chatflow.assert_awaited_once()
-        adapter._client.predict.assert_awaited_once()
-        adapter._client.delete_chatflow.assert_awaited_once()
+        adapter._client.predict.assert_awaited_once_with(
+            "cf-1", "Analyse this story"
+        )
+        adapter._client.delete_chatflow.assert_awaited_once_with("cf-1")
+        # Tools are cleaned up even after a successful run.
+        assert adapter._client.delete_tool.await_count == 3
 
     @pytest.mark.asyncio
     async def test_execute_visual_stage_end_to_end(self, adapter):
         from desmet.harness.story import UserStory, DifficultyLevel
         from desmet.harness.results import RequirementsResult
 
+        adapter._client.create_tool = AsyncMock(side_effect=["t1", "t2", "t3"])
+        adapter._client.delete_tool = AsyncMock()
         adapter._client.create_chatflow = AsyncMock(return_value="cf-1")
         adapter._client.predict = AsyncMock(return_value={
             "text": "Requirements complete",
@@ -160,7 +157,16 @@ class TestFlowiseStageExecution:
         context.max_iterations = 25
         context.metadata = {}
 
-        with patch("desmet.adapters._shared.visual_base.audit_workspace", return_value=[]):
+        with (
+            patch(
+                "desmet.adapters._shared.visual_base.audit_workspace",
+                return_value=[],
+            ),
+            patch(
+                "desmet.adapters.visual.flowise_templates.build_chatflow",
+                return_value={"nodes": [], "edges": []},
+            ),
+        ):
             result = await adapter._execute_visual_stage(
                 "requirements",
                 lambda s, **kw: "Analyse: " + s.prompt,

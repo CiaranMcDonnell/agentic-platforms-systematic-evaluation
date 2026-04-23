@@ -216,6 +216,14 @@ class TestGetAdapter:
 
     def test_agent_framework_initialize_raises_without_package(self):
         import asyncio
+        from importlib.util import find_spec
+
+        if find_spec("agent_framework") is not None:
+            # Test exists to cover the package-missing path; when the
+            # package is installed, ``initialize`` advances to other
+            # checks (OpenAI key presence, network reachability) that
+            # are environment-dependent and out of scope here.
+            pytest.skip("agent_framework is installed — missing-package path not exercised")
 
         adapter = get_adapter("microsoft_agent_framework")
         with pytest.raises(RuntimeError, match="Failed to import"):

@@ -448,9 +448,9 @@ class TestBuildStageResult:
         assert result.error_message == "Orchestration error: tool_use_id mismatch"
 
     def test_orchestration_error_with_tool_calls_does_not_force_failure(self) -> None:
-        """If the agent made tool calls before an error was logged, the
-        existing validator decision stands — the agent did real work and
-        may genuinely have reached a passing state.
+        """If the agent made productive tool calls before an error was
+        logged, the existing validator decision stands — the agent did
+        real work and may genuinely have reached a passing state.
         """
         trace = start_trace()
         record_tool_call(trace, "write_file", {}, "ok")
@@ -467,6 +467,41 @@ class TestBuildStageResult:
         )
 
         assert result.success is True
+
+    def test_orchestration_error_with_only_readonly_tool_calls_forces_failure(
+        self,
+    ) -> None:
+        """Read-only tool calls (``read_file``, ``list_directory``,
+        ``check_completion``) do not prove the agent wrote the stage
+        artefacts — the validator may pass on baseline-workspace files.
+        The guard must still demote such a stage to FAIL when errors
+        were recorded.
+
+        Regression guard: observed on Google ADK's testing stage where
+        a JSON-parse crash aborted the pipeline after a single
+        ``read_file`` on the existing ``utils/validation.py``. The
+        baseline workspace already contained ``tests/test_health.py``,
+        so ``validate_workspace('testing', ...)`` returned True and the
+        run was recorded as PASSED despite no new tests being written.
+        """
+        trace = start_trace()
+        record_tool_call(trace, "read_file", {"path": "utils/validation.py"}, "…")
+        trace.errors.append("Unterminated string starting at: line 1 column 46 (char 45)")
+        finish_trace(trace)
+
+        result = build_stage_result(
+            StageResult,
+            platform_id="google_adk",
+            stage_name="testing",
+            trace=trace,
+            success=True,  # validator found baseline test_health.py
+            iterations=3,
+        )
+
+        assert result.success is False
+        assert result.completed is False
+        assert result.error_message is not None
+        assert "Unterminated string" in result.error_message
 
     def test_zero_tool_calls_without_errors_stays_successful(self) -> None:
         """Some stages (e.g. a no-op deploy replay) legitimately pass

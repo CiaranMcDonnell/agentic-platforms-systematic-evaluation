@@ -25,11 +25,15 @@ class TestN8nClientHeaders:
         client = N8nClient("http://localhost:5678", api_key="my-key")
         assert client._headers["X-N8N-API-KEY"] == "my-key"
 
-    def test_no_api_key_raises(self):
+    def test_client_accepts_none_api_key_for_auto_provision(self):
+        # The client no longer raises when ``api_key`` is ``None`` —
+        # ``auto_provision()`` obtains one at initialize time via the
+        # ``/rest/owner/setup`` + ``/rest/api-keys`` endpoints.  The
+        # header is simply absent until provisioning completes.
         from desmet.adapters.visual.n8n import N8nClient
 
-        with pytest.raises(ValueError, match="api_key"):
-            N8nClient("http://localhost:5678", api_key=None)
+        client = N8nClient("http://localhost:5678", api_key=None)
+        assert "X-N8N-API-KEY" not in client._headers
 
 
 class TestWorkflowTemplates:
@@ -88,16 +92,23 @@ class TestCredentialMapping:
         assert cred_type == "anthropicApi"
         assert data["apiKey"] == "sk-ant-test"
 
-    def test_openrouter_uses_openai_with_base_url(self):
+    def test_openrouter_maps_to_openrouter_api(self):
+        # The generic ``openAiApi`` credential type has stricter
+        # ``allOf`` schema validation in the public n8n REST API than
+        # the UI accepts, so the adapter deliberately prefers the
+        # provider-specific ``openRouterApi`` type — which has a
+        # hidden ``url`` field defaulting to the OpenRouter endpoint
+        # and only accepts ``apiKey`` in the data dict.
         from desmet.adapters.visual.n8n import _map_credential
 
         cred_type, data = _map_credential(
             "openrouter", "meta-llama/llama-3", "sk-or-test",
             "https://openrouter.ai/api/v1",
         )
-        assert cred_type == "openAiApi"
+        assert cred_type == "openRouterApi"
         assert data["apiKey"] == "sk-or-test"
-        assert data["baseUrl"] == "https://openrouter.ai/api/v1"
+        assert "baseUrl" not in data  # hidden default on the n8n side
+        assert "url" not in data
 
     def test_missing_api_key_raises(self):
         from desmet.adapters.visual.n8n import _map_credential

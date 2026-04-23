@@ -98,7 +98,12 @@ class TestAgentFrameworkAdapterStructure:
 
     def test_max_stall_count_constant(self):
         from desmet.adapters.multiagent.agent_framework import MAX_STALL_COUNT
-        assert MAX_STALL_COUNT == 3
+        # Lowered from 3 to 2 alongside the max_round_count drop (12→4)
+        # to bound MagenticOne manager-spin cost on the deploy stage,
+        # where a stalled reviewer could otherwise burn ~500k tokens
+        # before the round cap fired. See tracing comment in
+        # ``_run_agent`` for the full rationale.
+        assert MAX_STALL_COUNT == 2
 
     def test_has_create_client(self, adapter):
         """_create_client builds the chat client."""

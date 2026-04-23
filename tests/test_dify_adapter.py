@@ -62,8 +62,17 @@ class TestDifyAdapterStructure:
         adapter = DifyAdapter()
         info = adapter.get_observability_info()
         assert isinstance(info, dict)
-        assert info["has_tracing"] is True
-        assert info["has_memory_inspection"] is True
+        # Dify 1.13's plugin-only LLM/tool ecosystem blocks external
+        # instrumentation of traces and memory state — the adapter
+        # correctly reports these capabilities as absent.  Keep the
+        # assertion on the keys' presence so the dict shape is still
+        # covered.
+        assert set(
+            ["has_tracing", "has_step_through", "has_replay",
+             "has_state_inspection", "has_memory_inspection"]
+        ).issubset(info)
+        assert info["has_tracing"] is False
+        assert info["has_memory_inspection"] is False
 
 
 class TestDifyStageExecution:
