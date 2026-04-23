@@ -60,9 +60,15 @@
 
 #outline(title: "Table of Contents", depth: 3, indent: auto)
 
+#pagebreak()
+
 #heading(level: 1, numbering: none)[Abstract]
 
-Agentic platforms are emerging as transformative tools in software engineering, integrating autonomous or semi-autonomous agents into the development lifecycle to enhance productivity and workflow automation. However, existing literature provides limited comparative evaluation across heterogeneous agentic frameworks, multi-agent systems, and workflow-based LLM platforms, leaving practitioners without clear guidance for tool selection. This study applies a systematic DESMET-based evaluation framework to compare agentic platforms using a three-layer approach: industry readiness assessment, platform characteristic mapping (extending Broccia et al.'s system-level and interaction-level feature analysis), and pipeline-based benchmarking across a four-stage software engineering workflow (requirements and design, code generation, test generation, and build and deployment). The evaluation covers nine platforms representing three architectural categories: multi-agent frameworks (LangGraph, CrewAI), agent SDK runtimes (OpenAI Agents SDK, Google ADK, Microsoft Agent Framework), and visual workflow platforms (Flowise, LangFlow, Dify, N8n). Each platform is assessed by executing user stories of increasing complexity through the pipeline, with metrics focusing on framework capability: pipeline completeness, orchestration quality (tool integration, error recovery, trace fidelity), efficiency (token and time overhead), and degree of autonomy. The results aim to provide practical guidance for practitioners, highlight capability gaps across different tool categories, and offer a structured methodology for evaluating emerging agentic technologies.
+Agentic platforms are emerging as transformative tools in software engineering, integrating autonomous or semi-autonomous agents into the development lifecycle to enhance productivity and workflow automation. However, existing literature provides limited comparative evaluation across heterogeneous agentic frameworks, multi-agent systems, and workflow-based LLM platforms, leaving practitioners without clear guidance for tool selection. This study applies a systematic DESMET-based evaluation framework to compare agentic platforms using a three-layer approach: industry readiness assessment, platform characteristic mapping (extending Broccia et al.'s system-level and interaction-level feature analysis), and pipeline-based benchmarking across a four-stage software engineering workflow (requirements and design, code generation, test generation, and build and deployment). The evaluation covers nine platforms representing three architectural categories: multi-agent frameworks (LangGraph, CrewAI), agent SDK runtimes (OpenAI Agents SDK, Google ADK, Microsoft Agent Framework), and visual workflow platforms (Flowise, LangFlow, Dify, N8n). Each platform is assessed by executing scenarios of increasing complexity through the pipeline, with metrics focusing on framework capability: pipeline completeness, orchestration quality (tool integration, error recovery, trace fidelity), efficiency (token and time overhead), and degree of autonomy. The results aim to provide practical guidance for practitioners, highlight capability gaps across different tool categories, and offer a structured methodology for evaluating emerging agentic technologies.
+
+#outline(title: "List of Figures", target: figure.where(kind: image))
+
+#outline(title: "List of Tables", target: figure.where(kind: table))
 
 // ---------------------------------------------------------------------------
 // Body matter (arabic page numbering, reset to 1)
@@ -85,6 +91,8 @@ Agentic platforms are emerging as transformative tools in software engineering, 
 // ---------------------------------------------------------------------------
 
 #heading(level: 1, numbering: none)[Acknowledgements]
+
+I would like to thank my supervisor, Dr.~Alessio Ferrari, for his guidance and support throughout this project. His feedback shaped the direction of the work and pushed it to be more rigorous at every stage, from the initial framing of the research questions to the design of the evaluation framework and the interpretation of results. I am also grateful for his encouragement to pursue the project beyond the scope of the degree, and for making the time to meet regularly despite a busy schedule.
 
 // ---------------------------------------------------------------------------
 // Bibliography
