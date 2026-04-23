@@ -77,15 +77,17 @@ def _try_init_langfuse() -> None:
 
       * LangGraph: ``get_langchain_callback()`` returns a real
         ``CallbackHandler`` instead of ``None``
-      * CrewAI: the adapter's native event-bus handlers emit LLM, tool,
-        and task spans directly to Langfuse via its TracerProvider
+      * CrewAI: the adapter installs
+        ``openinference.instrumentation.crewai.CrewAIInstrumentor`` in
+        ``initialize()`` so CrewAI's own Crew / Agent / Task / LLM /
+        tool spans flow through the Langfuse TracerProvider
       * OpenAI Agents: ``get_openai_agents_tracing_processor()`` returns
         a real bridge
       * Agent Framework: ``record_generation(get_langfuse(), ...)`` is
         no longer a no-op
 
-    Failure here must not abort the stage — the host-side
-    ``replay_trace_to_langfuse`` will still produce a synthetic trace.
+    Failure here must not abort the stage — the adapter can still run
+    without Langfuse; the trace is just missing.
     """
     try:
         from desmet.observability import init_langfuse

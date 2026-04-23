@@ -30,7 +30,6 @@ from desmet.observability import (
     langfuse_span,
     langfuse_trace,
     record_generation,
-    replay_trace_to_langfuse,
 )
 from desmet.harness.story_loader import prepare_stage_context
 
@@ -697,17 +696,6 @@ class EvaluationRunner:
                         errors.append(f"{stage_key}: {sr.error_message}")
                 if errors:
                     result.error_message = "; ".join(errors)
-
-                # Replay per-stage trace data to Langfuse so messages
-                # and tool calls appear as nested observations.
-                from desmet.llm_config import get_config as _get_llm_config
-                _llm_cfg = _get_llm_config()
-                for stage_key, sr in stage_results.items():
-                    if sr.trace:
-                        replay_trace_to_langfuse(
-                            span, stage_key, sr.trace,
-                            model=_llm_cfg.model,
-                        )
 
                 # Save per-stage traces if configured
                 if self.config.save_traces:

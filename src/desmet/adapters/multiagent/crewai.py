@@ -52,6 +52,9 @@ class CrewAIAdapter(ToolAgentAdapter):
     """
 
     TOOL_FORMAT = ToolFormat.CREWAI
+    # Process-wide flag — CrewAIInstrumentor patches CrewAI classes once,
+    # and any second instrumentation call would warn or stack wrappers.
+    _otel_instrumented: bool = False
 
     def __init__(self, config: dict[str, Any] | None = None):
         super().__init__(config)
@@ -64,6 +67,12 @@ class CrewAIAdapter(ToolAgentAdapter):
         self._last_llm_start: float = 0.0
         self._last_usage_snapshot: dict[str, int] = {}
         self._llm_call_count: int = 0
+        # Handle to the in-flight Langfuse generation observation, opened on
+        # LLMCallStartedEvent and closed on LLMCallCompletedEvent.  The
+        # openinference instrumentor only emits AGENT / TOOL / CHAIN spans,
+        # so without this the trace has zero GENERATION observations and
+        # Langfuse reports usage=0 for the whole run.
+        self._current_llm_obs: Any | None = None
         # Per-instance guard — each adapter registers its own handlers that
         # close over ``self``.  A class-level flag would cause every instance
         # after the first to skip registration and share the first instance's
@@ -94,10 +103,28 @@ class CrewAIAdapter(ToolAgentAdapter):
         try:
             from crewai import Agent, Crew, Process, Task  # noqa: F401 — verify core components
 
-            # All tracing (LLM calls, tool usage, task completion, iteration
-            # counting) via CrewAI's native event bus — fires on every
-            # execution path including native function calling.
+            # Local event-bus handlers feed our internal AgentTrace (for the
+            # on-disk JSON trace, iteration counting, and token deltas).
             self._register_event_handlers()
+
+            # CrewAI's own spans → Langfuse.  OpenInference auto-instrumentor
+            # wraps Crew/Agent/Task/LLM/tool invocations with OTel spans that
+            # flow through the TracerProvider Langfuse registered in
+            # entrypoint._try_init_langfuse().  Gated so a second adapter
+            # instance in the same process doesn't stack wrappers.
+            if not CrewAIAdapter._otel_instrumented:
+                try:
+                    from openinference.instrumentation.crewai import (
+                        CrewAIInstrumentor,
+                    )
+
+                    CrewAIInstrumentor().instrument()
+                    CrewAIAdapter._otel_instrumented = True
+                except ImportError:
+                    _log.debug(
+                        "openinference-instrumentation-crewai not installed; "
+                        "CrewAI spans won't reach Langfuse"
+                    )
 
             self._initialized = True
         except ImportError as e:
@@ -150,6 +177,24 @@ class CrewAIAdapter(ToolAgentAdapter):
                 usage = getattr(source, "_token_usage", None)
                 self._last_usage_snapshot = dict(usage) if usage else {}
 
+                # Open a Langfuse generation observation so the trace has a
+                # real LLM span with tokens.  It nests under whatever agent /
+                # task / crew span openinference currently has active.
+                from desmet.observability import get_langfuse
+
+                lf = get_langfuse()
+                if lf is not None:
+                    try:
+                        cm = lf.start_as_current_observation(
+                            name="llm-call",
+                            as_type="generation",
+                            model=getattr(event, "model", None),
+                        )
+                        self._current_llm_obs = (cm, cm.__enter__())
+                    except Exception as exc:  # pragma: no cover — defensive
+                        _log.debug("langfuse llm-call span open failed: %s", exc)
+                        self._current_llm_obs = None
+
             @crewai_event_bus.on(LLMCallCompletedEvent)
             def _on_llm_completed(source, event: LLMCallCompletedEvent) -> None:
                 col = self._current_collector
@@ -178,6 +223,34 @@ class CrewAIAdapter(ToolAgentAdapter):
                     duration_ms=duration_ms,
                     model=event.model,
                 )
+
+                # Close the Langfuse generation span with output + usage so
+                # the trace shows real token counts and LLM-call totals.
+                if self._current_llm_obs is not None:
+                    cm, obs = self._current_llm_obs
+                    try:
+                        prompt_tokens = (
+                            raw_usage.get("prompt_tokens", 0) if raw_usage else 0
+                        )
+                        completion_tokens = (
+                            raw_usage.get("completion_tokens", 0) if raw_usage else 0
+                        )
+                        obs.update(
+                            output=str(event.response)[:2000] if event.response else None,
+                            usage_details={
+                                "input": prompt_tokens,
+                                "output": completion_tokens,
+                                "total": prompt_tokens + completion_tokens,
+                            },
+                        )
+                    except Exception as exc:  # pragma: no cover — defensive
+                        _log.debug("langfuse llm-call update failed: %s", exc)
+                    finally:
+                        try:
+                            cm.__exit__(None, None, None)
+                        except Exception:
+                            pass
+                        self._current_llm_obs = None
 
                 # Iteration counting — each LLM call is one reasoning step
                 self._llm_call_count += 1
@@ -571,6 +644,16 @@ class CrewAIAdapter(ToolAgentAdapter):
                 # events into a stale collector.
                 self._current_collector = None
                 self._current_progress = None
+                # Close any LLM generation span left open by a mid-call
+                # exception — otherwise the OTel span would leak and skew
+                # its parent's duration.
+                if self._current_llm_obs is not None:
+                    cm, _ = self._current_llm_obs
+                    try:
+                        cm.__exit__(None, None, None)
+                    except Exception:
+                        pass
+                    self._current_llm_obs = None
             collector.record_message("assistant", str(result))
 
             # ── Fallback: use result.token_usage if event bus recorded nothing ─

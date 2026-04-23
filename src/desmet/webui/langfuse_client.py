@@ -74,7 +74,7 @@ async def fetch_traces(
                     "id": t.get("id"),
                     "name": t.get("name"),
                     "timestamp": t.get("timestamp"),
-                    "latency_ms": t.get("latency", 0),
+                    "latency_ms": (t.get("latency") or 0) * 1000,
                     "total_tokens": (t.get("usage") or {}).get("totalTokens", 0),
                     "tags": t.get("tags", []),
                     "session_id": t.get("sessionId"),
@@ -159,7 +159,7 @@ async def fetch_trace(trace_id: str) -> dict[str, Any] | None:
                 "name": trace_data.get("name"),
                 "timestamp": trace_data.get("timestamp"),
                 "total_tokens": trace_usage.get("totalTokens", 0),
-                "latency_ms": trace_data.get("latency", 0),
+                "latency_ms": (trace_data.get("latency") or 0) * 1000,
                 "cost": trace_data.get("calculatedTotalCost") or trace_data.get("totalCost") or 0,
                 "tags": trace_data.get("tags", []),
                 "metadata": trace_data.get("metadata"),
@@ -176,12 +176,13 @@ def _latency_ms(obs: dict[str, Any]) -> float:
     """Return latency in milliseconds for an observation.
 
     Langfuse's `latency` field is populated for SDK spans but is often None
-    for OTEL-instrumented spans (e.g. LangGraph). Fall back to computing from
-    startTime / endTime in that case.
+    for OTEL-instrumented spans (e.g. LangGraph). The public API returns it
+    in seconds, so convert to ms. Fall back to computing from
+    startTime / endTime when unavailable.
     """
     raw = obs.get("latency")
     if raw is not None and raw > 0:
-        return float(raw)
+        return float(raw) * 1000
     start = obs.get("startTime")
     end = obs.get("endTime")
     if start and end:

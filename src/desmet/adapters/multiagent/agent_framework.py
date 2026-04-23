@@ -39,7 +39,7 @@ from desmet.observability import get_langfuse, record_generation
 
 _log = logging.getLogger(__name__)
 
-MAX_STALL_COUNT = 3
+MAX_STALL_COUNT = 2
 MAX_RESET_COUNT = 2
 
 
@@ -236,9 +236,13 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                 client=self._client,
                 middleware=[middleware],
             )
+            # agent-framework 1.0 moved ``response_format`` off ``Agent.run``
+            # and onto the ``ChatOptions`` TypedDict passed via ``options=``.
+            # Passing it as a bare kwarg raises ``TypeError`` and silently
+            # triggers the free-text fallback below.
             planner_result = await planner.run(
                 prompt,
-                response_format=ImplementationPlan,
+                options={"response_format": ImplementationPlan},
             )
             text = getattr(planner_result, "text", "") or ""
             if text:
@@ -363,14 +367,16 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
             middleware=[middleware],
         )
 
-        # Cap at 12 rounds: the deploy stage's real tool-call work finishes
-        # by round ~10 in practice, and anything beyond that is MagenticOne
-        # manager-spin (executor/reviewer return "nothing to do" text but
-        # the manager keeps re-dispatching, cumulatively resubmitting
-        # history). A hard cap bounds the token cost at ~250k instead of
-        # letting it grow to >1M. Not a fix for the root cause — which
-        # lives in MagenticOne's completion detection — just a bound.
-        max_rounds = min(context.max_iterations - 1, 12)
+        # Cap at 4 manager rounds. Successful stages observed in the
+        # gpt-4.1-mini baseline converge in a single manager round
+        # (~5 ``executor_completed`` events). 4 rounds permits one full
+        # executor→reviewer→re-executor→final-review rework cycle while
+        # bounding worst-case token cost to ~100k per stage — a prior
+        # cap of 12 let a single deploy stage resubmit accumulated history
+        # 11 times and burn 510k tokens before ``max_round_count`` fired.
+        # Not a fix for MagenticOne's completion-detection behaviour,
+        # just a tighter bound on the damage.
+        max_rounds = min(context.max_iterations - 1, 4)
 
         workflow = MagenticBuilder(
             participants=[executor_agent, reviewer_agent],

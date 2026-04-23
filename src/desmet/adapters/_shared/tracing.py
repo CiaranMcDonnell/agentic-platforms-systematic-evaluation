@@ -17,6 +17,14 @@ from typing import Any
 from desmet.harness.results import StageResult
 from desmet.harness.trace import AgentMessage, AgentTrace, ToolCall
 
+# Tool names that mutate workspace state. Used by ``build_stage_result``
+# to decide whether a stage did real agent work when an orchestration
+# error was recorded — read-only calls (``read_file``, ``list_directory``,
+# ``check_completion``) are not sufficient evidence of progress because
+# the validator may pass purely on baseline-workspace files.
+_PRODUCTIVE_TOOLS = frozenset({"write_file", "execute_shell", "deploy_remote"})
+
+
 # ── Trace lifecycle ─────────────────────────────────────────────────────
 
 
@@ -346,14 +354,19 @@ def build_stage_result(
         error_message = trace.errors[0]
 
     # Guard against orchestration-failure false positives.  A stage that
-    # raised mid-run AND never executed a single tool has done no agent
-    # work; any "success" reported by the validator was purely
-    # satisfied by baseline-workspace files produced in earlier stages.
-    # Observed on MAF via Bedrock where a tool_use/tool_result mismatch
-    # aborted every stage at iteration 2 but codegen/testing still
-    # reported PASS because the baseline already contained the
-    # validator's target files.
-    if success and trace.errors and not trace.tool_calls:
+    # raised mid-run AND made no *productive* tool call has done no real
+    # agent work; any "success" from the validator is purely satisfied
+    # by baseline-workspace files produced in earlier stages or shipped
+    # with the baseline workspace itself (e.g. ``tests/test_health.py``).
+    #
+    # Originally keyed on ``not trace.tool_calls`` (zero tools) after the
+    # MAF/Bedrock incident, but that missed the ADK testing failure mode
+    # where a JSON-parse crash in the pipeline aborted after a single
+    # ``read_file`` call — the read passes the empty-list check but the
+    # stage produced no test artifacts. Demote instead when no tool call
+    # in this stage *mutated* workspace state.
+    made_progress = any(tc.tool_name in _PRODUCTIVE_TOOLS for tc in trace.tool_calls)
+    if success and trace.errors and not made_progress:
         success = False
         completed = False
 

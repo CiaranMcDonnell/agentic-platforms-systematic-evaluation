@@ -115,6 +115,13 @@ def _ordered_platforms(platform_ids: list[str]) -> list[str]:
     return sorted(platform_ids, key=lambda p: _platform_display(p).lower())
 
 
+def _fmt_memory_mb(val: Any) -> str:
+    """Format bytes as whole-number MB, ``—`` when missing or zero."""
+    if val is None or pd.isna(val) or float(val) <= 0:
+        return "—"
+    return f"{int(float(val)) / (1024 * 1024):.0f} MB"
+
+
 def _write_story_figure(sub: pd.DataFrame, story_id: str, out_path: Path) -> None:
     """Write a single figure for one story × all platforms."""
     platforms = _ordered_platforms([str(p) for p in sub["platform_id"].unique()])
@@ -123,13 +130,13 @@ def _write_story_figure(sub: pd.DataFrame, story_id: str, out_path: Path) -> Non
         "",
         "#figure(",
         "  table(",
-        "    columns: 6,",
+        "    columns: 7,",
         "    stroke: 0.5pt,",
         "    inset: 6pt,",
         "    align: left,",
         "    table.header(",
         "      [*Platform*], [*Status*], [*Wall-clock*], "
-        "[*Tokens*], [*Cost*], [*Overall*],",
+        "[*Tokens*], [*Cost*], [*Peak Memory*], [*Overall*],",
         "    ),",
     ]
     for pid in platforms:
@@ -147,6 +154,7 @@ def _write_story_figure(sub: pd.DataFrame, story_id: str, out_path: Path) -> Non
             _escape(_fmt_time(row["wall_clock_seconds"])),
             _escape(_fmt_int(tokens)),
             _escape(_fmt_cost(row["cost_usd"])),
+            _escape(_fmt_memory_mb(row.get("resource_peak_memory_bytes"))),
             _fmt_score(row.get("overall_score")),
         ]
         lines.append("    " + ", ".join(f"[{c}]" for c in cells) + ",")

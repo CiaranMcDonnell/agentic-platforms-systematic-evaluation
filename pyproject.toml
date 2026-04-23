@@ -45,6 +45,9 @@ langgraph = [
 ]
 crewai = [
     "crewai[tools]>=1.12.2",
+    # Auto-instruments CrewAI classes (Crew, Agent, Task, LLM, tools) as
+    # OpenTelemetry spans that flow through Langfuse's TracerProvider.
+    "openinference-instrumentation-crewai>=1.1.3",
 ]
 openai-agents = [
     "openai-agents>=0.1.0",

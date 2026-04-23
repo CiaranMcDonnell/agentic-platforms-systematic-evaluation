@@ -417,8 +417,13 @@ class EvaluationMetrics:
         total_cost = sum(m.api_cost_usd for m in self.story_metrics)
         avg_cost_per_story = total_cost / n if total_cost > 0 else 0.0
 
-        time_component = max(1.0, 5.0 - (avg_time_ratio - 1.0) * 2.0)
-        token_component = max(1.0, 5.0 - (avg_tokens_per_story / token_budget - 1.0) * 2.0)
+        # Each component is independently clamped to [1, 5] so a very cheap /
+        # fast / small run cannot push the average above 5; the final clamp
+        # only catches arithmetic edge cases.
+        time_component = min(5.0, max(1.0, 5.0 - (avg_time_ratio - 1.0) * 2.0))
+        token_component = min(
+            5.0, max(1.0, 5.0 - (avg_tokens_per_story / token_budget - 1.0) * 2.0)
+        )
 
         # Resource component (from container monitoring)
         memory_budget_mb = 512.0
@@ -430,13 +435,17 @@ class EvaluationMetrics:
         resource_values = [v for v in resource_values if v is not None and v > 0]
         if resource_values:
             avg_peak_mb = (sum(resource_values) / len(resource_values)) / (1024 * 1024)
-            resource_component = max(1.0, 5.0 - (avg_peak_mb / memory_budget_mb - 1.0) * 2.0)
+            resource_component = min(
+                5.0, max(1.0, 5.0 - (avg_peak_mb / memory_budget_mb - 1.0) * 2.0)
+            )
         else:
             resource_component = None
 
         components = [time_component, token_component]
         if avg_cost_per_story > 0:
-            cost_component = max(1.0, 5.0 - (avg_cost_per_story / cost_budget - 1.0) * 2.0)
+            cost_component = min(
+                5.0, max(1.0, 5.0 - (avg_cost_per_story / cost_budget - 1.0) * 2.0)
+            )
             components.append(cost_component)
         else:
             cost_component = None
@@ -506,12 +515,15 @@ class EvaluationMetrics:
 
         # ------------------------------------------------------------------
         # Autonomy
-        # Primary source: rubric_autonomy (manual 0-3) — the evaluator's
-        # judgement after reviewing the trace.
-        # Optional augment: avg_interventions_per_stage (automatic) — only
-        # blended in when adapters actually logged interventions > 0.
-        # Formula: rubric alone, scaled 0-3 → 1-5; or 50/50 blend with the
-        # intervention counter when it has signal.
+        # Auto signal: avg_interventions_per_stage → higher is worse;
+        #   0 interventions maps to 1.0 (best), 4+ maps to 0.0 (worst).
+        # Manual signal: rubric_autonomy (0-3) — evaluator's judgement
+        #   after reviewing the trace.
+        # When the rubric has been scored (>0), blend 50/50 with the auto
+        # signal.  When the rubric is still at its 0.0 default (unscored),
+        # fall back to the auto signal alone — a clean run with zero
+        # interventions should not score bottom just because the manual
+        # rubric hasn't been filled in yet.
         # ------------------------------------------------------------------
         avg_autonomy_rubric = sum(m.autonomy_score for m in self.story_metrics) / n
         rubric_normalized = avg_autonomy_rubric / 3.0  # 0-1
@@ -526,12 +538,14 @@ class EvaluationMetrics:
             avg_interventions_per_stage = avg_story_interventions / 4.0
             intervention_source = "story_metrics_fallback"
 
-        if avg_interventions_per_stage > 0:
-            auto_normalized = (4.0 - min(4.0, avg_interventions_per_stage)) / 4.0
+        auto_normalized = (4.0 - min(4.0, avg_interventions_per_stage)) / 4.0
+
+        if avg_autonomy_rubric > 0:
             autonomy_raw = rubric_normalized * 0.5 + auto_normalized * 0.5
             blended = True
         else:
-            autonomy_raw = rubric_normalized
+            # Rubric unscored — use intervention signal alone.
+            autonomy_raw = auto_normalized
             blended = False
 
         autonomy_score = 1.0 + autonomy_raw * 4.0
@@ -806,14 +820,13 @@ class MetricsCollector:
                     / (1024 * 1024),
                     1,
                 )
-                row["resource_avg_cpu_pct"] = round(
-                    sum(
-                        sm._result.resource_metrics.get("avg_cpu_percent", 0)
-                        for sm in resource_stories
-                    )
-                    / len(resource_stories),
-                    1,
-                )
+                # CPU columns deliberately omitted: ``peak_cpu_percent`` is
+                # uniformly ~180% across platforms (Python briefly hitting
+                # 2 cores during imports — not a platform property), and
+                # ``avg_cpu_percent`` is dominated by run duration (longer
+                # runs include more idle waiting, pulling the mean down).
+                # Neither discriminates between platforms meaningfully;
+                # keeping them in the CSV invites misreading.
             rows.append(row)
 
         if rows:
@@ -865,12 +878,22 @@ class MetricsCollector:
                 peak_mem = max(
                     sm._result.resource_metrics["peak_memory_bytes"] for sm in resource_stories
                 )
-                avg_cpu = sum(
-                    sm._result.resource_metrics.get("avg_cpu_percent", 0) for sm in resource_stories
-                ) / len(resource_stories)
+                # Startup-to-ready is a genuine per-platform signal
+                # (LangGraph/CrewAI/ADK ~1.0 s, MAF ~1.2 s, OpenAI SDK
+                # ~1.8 s on gpt-4.1-mini).  CPU columns are omitted —
+                # peak is always ~180% (Python import two-core burst)
+                # and avg is dominated by run duration, so neither
+                # discriminates between platforms.
+                startup_vals = [
+                    sm._result.resource_metrics.get("startup_to_ready_ms")
+                    for sm in resource_stories
+                    if sm._result.resource_metrics.get("startup_to_ready_ms") is not None
+                ]
                 lines.append(f"\nResource Consumption:")
                 lines.append(f"  Peak Memory: {peak_mem / (1024 * 1024):.0f} MB")
-                lines.append(f"  Avg CPU:     {avg_cpu:.1f}%")
+                if startup_vals:
+                    avg_startup_ms = sum(startup_vals) / len(startup_vals)
+                    lines.append(f"  Cold Start:  {avg_startup_ms / 1000:.2f} s")
 
             if metrics.variance_metrics:
                 lines.append(
