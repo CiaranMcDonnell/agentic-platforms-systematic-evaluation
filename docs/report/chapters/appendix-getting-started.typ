@@ -2,8 +2,6 @@
 
 = Getting Started <appendix-getting-started>
 
-This appendix covers installing the DESMET evaluation framework and launching the management console.
-
 == Prerequisites
 
 - *Python 3.11+* --- managed via `uv`
@@ -47,7 +45,7 @@ At minimum, set `OPENAI_API_KEY` (or the key for your chosen provider). The pre-
   caption: [Starting the management console],
 )
 
-This starts the web-based management console on `http://127.0.0.1:8042`. All evaluation operations --- starting benchmark runs, viewing results, scoring platforms, and inspecting traces --- are performed through this interface.
+The management console runs at `http://127.0.0.1:8042`. All evaluation operations --- starting benchmark runs, viewing results, scoring platforms, and inspecting traces --- are performed through this interface.
 
 == Platform Isolation
 

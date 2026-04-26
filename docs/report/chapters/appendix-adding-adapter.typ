@@ -2,7 +2,7 @@
 
 = Adding a Platform Adapter <appendix-adding-adapter>
 
-This appendix provides a step-by-step guide for integrating a new agentic platform into the DESMET evaluation framework. The process involves implementing a single Python class and adding two small config entries. The runner, metrics engine, scoring engine, and dashboard auto-discover new adapters; a small number of known hardcoded references (listed at the end of this appendix) may require a one-line edit depending on the platform's characteristics.
+Integrating a new agentic platform involves implementing a single Python class and adding two small config entries. The runner, metrics engine, scoring engine, and dashboard auto-discover new adapters; a small number of known hardcoded references (listed at the end of this appendix) may require a one-line edit depending on the platform's characteristics.
 
 == Overview
 
@@ -53,9 +53,7 @@ Adapter source files are organised into three subpackages under `src/desmet/adap
 - `sdk/` — agent SDK runtimes (OpenAI Agents, Google ADK)
 - `visual/` — visual/workflow platforms (Flowise, LangFlow, Dify, n8n)
 
-Cross-cutting infrastructure (`base.py`, `visual_base.py`, `prompts.py`, `tools.py`, `tracing.py`, `retry.py`, `observation.py`, `planning.py`, `stub.py`, `validation.py`) lives under `adapters/_shared/`.
-
-Adapter authors only write the platform-specific method (`_run_agent` or `_run_workflow`) — everything else is inherited.
+Cross-cutting infrastructure (`base.py`, `visual_base.py`, `prompts.py`, `tools.py`, `tracing.py`, `retry.py`, `observation.py`, `planning.py`, `stub.py`, `validation.py`) lives under `adapters/_shared/`. Adapter authors only write the platform-specific method (`_run_agent` or `_run_workflow`) — everything else is inherited.
 
 #figure(
   table(
@@ -110,7 +108,7 @@ For coded platforms, also add the SDK as an optional extra in `pyproject.toml`:
 
 == Step 2a: Implementing a Tool-Based Adapter (Coded Platform)
 
-Extend `ToolAgentAdapter` and implement `_run_agent`. The shared pipeline handles everything else.
+Extend `ToolAgentAdapter` and implement `_run_agent`.
 
 === The `_run_agent` Signature
 
@@ -158,8 +156,6 @@ Parameter purposes:
 
 === Minimal Coded-Adapter Example
 
-The adapter class declares imports, tool format, and lifecycle methods:
-
 #figure(
   ```python
   from desmet.adapters._shared.base import ToolAgentAdapter
@@ -204,7 +200,7 @@ The adapter class declares imports, tool format, and lifecycle methods:
   caption: [Coded adapter — imports, class declaration, and lifecycle],
 )
 
-The `_run_agent` method contains the platform-specific execution loop --- the only platform-specific logic the adapter author needs to write:
+The `_run_agent` method contains the platform-specific execution loop:
 
 #figure(
   ```python
@@ -259,11 +255,11 @@ The `_run_agent` method contains the platform-specific execution loop --- the on
   caption: [Coded adapter --- `_run_agent` execution loop],
 )
 
-The four SDLC stage methods are inherited from `ToolAgentAdapter` --- no need to implement them.
+The four SDLC stage methods are inherited from `ToolAgentAdapter`.
 
 === Tool Formats
 
-Set the class attribute `TOOL_FORMAT` so `create_tools()` produces tools in the format your SDK expects:
+Set `TOOL_FORMAT` so `create_tools()` produces tools in the format your SDK expects:
 
 #figure(
   table(
@@ -283,7 +279,7 @@ Set the class attribute `TOOL_FORMAT` so `create_tools()` produces tools in the 
 
 == Step 2b: Implementing a Visual Adapter (Platform with REST API)
 
-Extend `VisualAgentAdapter` and implement `_run_workflow()` and `_collect_execution_metrics()`. The retry loop, trace management, and SDLC methods are all inherited.
+Extend `VisualAgentAdapter` and implement `_run_workflow()` and `_collect_execution_metrics()`.
 
 === The `_run_workflow` Signature
 
@@ -308,8 +304,6 @@ Extend `VisualAgentAdapter` and implement `_run_workflow()` and `_collect_execut
 The `workspace` path is already translated to the container-side path (`/desmet-results/...`) by `_translate_workspace()` — your workflow templates should use it directly for shell commands and file operations.
 
 === Minimal Visual-Adapter Example
-
-The adapter class declares imports, constructor, and `platform_info`:
 
 #figure(
   ```python
@@ -337,7 +331,7 @@ The adapter class declares imports, constructor, and `platform_info`:
   caption: [Visual adapter --- imports, constructor, and metadata],
 )
 
-Lifecycle methods (`initialize`, `shutdown`, `health_check`) manage the HTTP client and verify platform reachability:
+Lifecycle methods manage the HTTP client and verify platform reachability:
 
 #figure(
   ```python
@@ -372,7 +366,7 @@ Lifecycle methods (`initialize`, `shutdown`, `health_check`) manage the HTTP cli
   caption: [Visual adapter --- lifecycle methods],
 )
 
-The platform contract methods wrap the workflow CRUD REST endpoints:
+Contract methods wrap the workflow CRUD REST endpoints:
 
 #figure(
   ```python
@@ -400,7 +394,7 @@ The platform contract methods wrap the workflow CRUD REST endpoints:
   caption: [Visual adapter --- workflow CRUD contract],
 )
 
-`_run_workflow` and `_collect_execution_metrics` are the two abstract methods the author must implement; the retry loop, trace management, and SDLC methods are all inherited:
+The two abstract methods to implement:
 
 #figure(
   ```python
@@ -461,23 +455,21 @@ That's the only bookkeeping. The `list_available_platforms()` function auto-deri
 
 == Step 4: Verify
 
-Run the smoke-test scenario on the new adapter:
+Run the smoke-test scenario on the new adapter (the management console starts on `http://127.0.0.1:8042`; see @appendix-getting-started for environment setup):
 
 #figure(
   ```bash
   uv run desmet
-  # In the web UI: New Run → select my_platform → stories: US-000 → Start
+  # In the web UI: New Run → select my_platform → scenarios: US-000 → Start
   ```,
   caption: [Running the smoke test],
 )
 
-`US000_adapter_smoke_test` is a trivial hello-world task with a 120 s time budget and 8-iteration max. It validates the full requirements → codegen → testing → deploy pipeline without burning significant tokens.  If US-000 passes, the adapter is wired up correctly.
-
-Results appear in the dashboard automatically. The new platform shows up in all web UI pages (platform list, new run form, dashboard, scoring panel) with no frontend changes needed.
+`US000_adapter_smoke_test` is a hello-world task with a 120 s time budget and 8-iteration max. It validates the full requirements → codegen → testing → deploy pipeline. If US-000 passes, the adapter is wired up correctly.
 
 == Web UI Integration
 
-The management console discovers platforms dynamically through the `/api/platforms` endpoint, which reads from the adapter registry and `platforms.yaml` at runtime. Once registered, the new platform automatically appears in:
+The management console discovers platforms dynamically through the `/api/platforms` endpoint, which reads from the adapter registry and `platforms.yaml` at runtime. Once registered, the new platform appears in:
 
 - *Platform list* --- shown with its category, runtime, and readiness status
 - *New Run form* --- available as a selectable platform for benchmark runs
@@ -488,23 +480,23 @@ The web UI distinguishes between _registered_ platforms (in `ADAPTER_REGISTRY`) 
 
 == Adding a New Tool Format
 
-If the platform's SDK requires tools in a format not covered by the existing `ToolFormat` enum, a new format builder can be added to `src/desmet/adapters/_shared/tools.py`:
+If the platform's SDK requires a format not covered by the existing `ToolFormat` enum, add a builder in `src/desmet/adapters/_shared/tools.py`:
 
 + Add a new entry to the `ToolFormat` enum
 + Implement a `_build_<format>_tools()` function following the pattern of existing builders
 + Add a branch to the `create_tools()` dispatcher
 
-Each builder receives the same set of format-agnostic tool implementations (file I/O, shell execution, code search, deploy) and wraps them in the platform's expected interface. This ensures tool behaviour is consistent across all platforms regardless of format.
+Each builder receives the same format-agnostic tool implementations (file I/O, shell execution, code search, deploy) and wraps them in the platform's expected interface.
 
 == Platform-Specific Docker Setup
 
-Coded platforms build Docker images from `infrastructure/Dockerfile.platform`, which takes a `PLATFORM_EXTRA` build-arg and installs only that platform's `uv` optional extra. This gives each platform its own isolated Python environment without requiring a per-platform Dockerfile.
+Coded platforms build Docker images from `infrastructure/Dockerfile.platform`, which takes a `PLATFORM_EXTRA` build-arg and installs only that platform's `uv` optional extra, giving each platform its own isolated Python environment without a per-platform Dockerfile.
 
-If your platform needs custom system packages, a different base image, or compile steps, create `infrastructure/Dockerfile.<platform-id>` and `container_runner.dockerfile_path()` will prefer it over the shared template. See `infrastructure/Dockerfile.framework.example` for a complete reference with examples.
+If your platform needs custom system packages, a different base image, or compile steps, create `infrastructure/Dockerfile.<platform-id>` and `container_runner.dockerfile_path()` will prefer it over the shared template. See `infrastructure/Dockerfile.framework.example` for a reference.
 
 == Known Hardcoded References
 
-A small number of call sites still enumerate platforms by name rather than deriving them from the registry or `platforms.yaml`. Each is scoped to a single concern and only needs attention when the new platform has the relevant characteristic.
+A small number of call sites enumerate platforms by name rather than deriving them from the registry or `platforms.yaml`. Each is scoped to a single concern and only needs attention when the new platform has the relevant characteristic.
 
 #figure(
   table(
@@ -521,11 +513,11 @@ A small number of call sites still enumerate platforms by name rather than deriv
   caption: [Known hardcoded references outside the auto-discovery path],
 )
 
-None of these block the adapter from running — the smoke test in Step 4 will still pass with only the four mandatory steps completed. They are listed here so adapter authors can decide whether to touch them based on their platform's characteristics.
+None of these block the adapter from running — the smoke test in Step 4 will still pass with only the four mandatory steps completed.
 
 == Adapter Measurement Fidelity Audit
 
-A structured review of all five implemented SDK and multi-agent adapters identified and addressed several classes of bug that could bias cross-platform comparisons. Fixes are accompanied by regression tests and landed in branch `fix/adapter-scoring-accuracy`.
+A structured review of all five implemented SDK and multi-agent adapters identified and addressed several classes of bug that could bias cross-platform comparisons. Fixes are accompanied by regression tests and have been merged into `main`.
 
 *Identified and fixed:*
 
@@ -542,7 +534,7 @@ A structured review of all five implemented SDK and multi-agent adapters identif
 
 *Deferred as methodology decisions* (documented in @limitations as known cross-platform comparability gaps affecting Efficiency, Autonomy, and Orchestration):
 
-- *Iteration-count semantics differ across adapters* — LangGraph counts graph-node steps, CrewAI counts LLM calls (including tool sub-calls), Microsoft Agent Framework counts executor turns (manager turns excluded), OpenAI SDK counts `new_items`, and Google ADK counts events with author (inflating 3--5× relative to peers). Units have not been normalised.
+- *Iteration-count semantics differ across adapters* — LangGraph counts graph-node steps, CrewAI counts LLM calls (including tool sub-calls), Microsoft Agent Framework counts executor turns (manager turns excluded), OpenAI SDK counts `new_items`, and Google ADK counts events with author (which inflates ADK's iteration count roughly 3--5× relative to peers). Units have not been normalised.
 - *CrewAI outer-retry multiplier* — the outer-retry loop multiplies effective iteration budget by up to 3× versus peers.
 - *LangGraph reviewer tool dropping* — the reviewer subgraph is given tools via `bind_tools` but has no tool-execution node, so those calls are silently dropped.
 

@@ -2,15 +2,13 @@
 
 = Design
 
-This chapter presents the evaluation framework design: the methodology, platform selection, benchmark design, evaluation dimensions, and scoring rubrics for the systematic evaluation of agentic platforms.
-
 == Evaluation Methodology Selection
 
-As established in the Related Work chapter, this study adopts a hybrid DESMET approach combining *benchmarking* (standardised pipeline execution across platforms) with *qualitative screening* (feature-based assessment of platform characteristics). This hybrid is necessary because the architectural heterogeneity of multi-agent frameworks, SDK runtimes, and visual workflow builders makes purely quantitative comparison insufficient---qualitative factors like developer experience, extensibility, and onboarding complexity significantly influence platform adoption but resist measurement through benchmarks alone. A 0--3 Likert scale is used for qualitative rubrics rather than the conventional 0--5, following the DESMET principle that coarser scales improve reliability when assessments cannot be cross-validated in a single-evaluator study @kitchenham1997desmet @taherdoost2019likert. Methodological limitations---single-evaluator bias, LLM non-determinism, and the point-in-time snapshot nature of the evaluation---are discussed in @limitations.
+This study adopts a hybrid DESMET approach combining *benchmarking* (standardised pipeline execution across platforms) with *qualitative screening* (feature-based assessment of platform characteristics). The architectural heterogeneity of multi-agent frameworks, SDK runtimes, and visual workflow builders makes purely quantitative comparison insufficient: developer experience, extensibility, and onboarding complexity influence adoption but resist benchmark measurement. A 0--3 ordinal rubric is used for the framework-centric dimensions rather than the conventional 1--5 Likert scale, following the DESMET principle that coarser scales improve reliability when assessments cannot be cross-validated in a single-evaluator study @kitchenham1997desmet @taherdoost2019likert. The six rubric scores are aggregated into four cross-cutting dimensions on a 1--5 Likert scale. Methodological limitations---single-evaluator bias, LLM non-determinism, and the point-in-time snapshot nature of the evaluation---are discussed in @limitations.
 
 == Platform Selection and Categorisation
 
-Nine platforms are evaluated, spanning three architectural categories that reflect distinct approaches to agentic systems: *multi-agent frameworks* (LangGraph, CrewAI) provide programmatic control over agent coordination through explicit orchestration logic; *agent SDK runtimes* (OpenAI Agents SDK, Google ADK, Microsoft Agent Framework) offer vendor-supported development kits optimised for their respective LLM providers; and *visual/workflow platforms* (Flowise, LangFlow, Dify, N8n) prioritise accessibility through no-code or low-code interfaces.
+Nine platforms are evaluated, spanning three architectural categories that reflect distinct approaches to agentic systems: *multi-agent frameworks* (LangGraph, CrewAI, Microsoft Agent Framework) provide programmatic control over agent coordination through explicit orchestration logic; *agent SDK runtimes* (OpenAI Agents SDK, Google ADK) offer vendor-supported development kits optimised for their respective LLM providers; and *visual/workflow platforms* (Flowise, LangFlow, Dify, n8n) prioritise accessibility through no-code or low-code interfaces.
 
 #figure(
   table(
@@ -21,20 +19,20 @@ Nine platforms are evaluated, spanning three architectural categories that refle
     table.header(
       [*Category*], [*Platform*], [*Description*],
     ),
-    table.cell(rowspan: 2)[Multi-Agent Frameworks],
+    table.cell(rowspan: 3)[Multi-Agent Frameworks],
     [LangGraph], [Graph-based agent orchestration built on LangChain @langchain2024langgraph],
     [CrewAI], [Role-based multi-agent collaboration framework @crewai2024],
+    [Microsoft Agent Framework], [Unified multi-agent framework merging AutoGen and Semantic Kernel @microsoft2025agent_framework],
 
-    table.cell(rowspan: 3)[Agent SDK Runtimes],
+    table.cell(rowspan: 2)[Agent SDK Runtimes],
     [OpenAI Agents SDK], [OpenAI's native agent development kit @openai2025agents_sdk],
     [Google ADK], [Google's Agent Development Kit @google2025adk],
-    [Microsoft Agent Framework], [Unified agent SDK merging AutoGen and Semantic Kernel @microsoft2025agent_framework],
 
     table.cell(rowspan: 4)[Visual / Workflow Platforms],
     [Flowise], [Drag-and-drop LLM flow builder],
     [LangFlow], [Visual IDE for LangChain applications],
     [Dify], [LLM application development platform @dify2024],
-    [N8n], [Workflow automation with AI capabilities],
+    [n8n], [Workflow automation with AI capabilities],
   ),
   caption: [Selected Agentic Platforms by Category],
 )
@@ -43,7 +41,7 @@ Platforms were selected for maturity (stable releases, active maintenance), indu
 
 == Evaluation Pipeline and Benchmark Design
 
-Rather than evaluating platforms on isolated tasks, each platform is given a scenario and must execute a sequence of pipeline stages---mirroring how practitioners actually use agentic platforms. @fig-pipeline-activity shows the complete pipeline as a UML activity diagram, including the per-platform parallel execution region, output artefacts per stage, and the four cross-cutting evaluation dimensions measured throughout.
+Rather than evaluating platforms on isolated tasks, each platform receives a scenario and executes a sequence of pipeline stages, mirroring how practitioners actually use agentic platforms. @fig-pipeline-activity shows the complete pipeline as a UML activity diagram, including the per-platform parallel execution region, output artefacts per stage, and the four cross-cutting evaluation dimensions measured throughout.
 
 #include "../diagrams/implementation/pipeline-activity.typ"
 
@@ -107,7 +105,7 @@ Four scenarios of increasing complexity are run through the pipeline, providing 
   caption: [Scenarios for Pipeline Evaluation],
 ) <tab-user-scenarios>
 
-The framework is designed for 9 platforms × 4 scenarios × 4 stages = 144 stage-level evaluations. Layer~3 pipeline benchmarking is conducted for the eight platforms with implemented adapters (LangGraph, CrewAI, OpenAI Agents SDK, Google ADK, Microsoft Agent Framework, Flowise, LangFlow, N8n), yielding 8 × 4 × 4 = 128 stage-level evaluations; Dify is assessed at Layers~1--2 only, because its marketplace-only plugin ecosystem (introduced in Dify~v1.0 in February~2025 and retained through v1.13.3) blocks fully automated execution (see @limitations).
+The framework is designed for 9 platforms × 4 scenarios × 4 stages = 144 stage-level evaluations. Adapters are implemented for eight platforms (LangGraph, CrewAI, Microsoft Agent Framework, OpenAI Agents SDK, Google ADK, Flowise, LangFlow, n8n), yielding a 8 × 4 × 4 = 128 design envelope for Layer~3; Dify is assessed at Layers~1--2 only, because its marketplace-only plugin ecosystem (introduced in Dify~v1.0 in February~2025 and retained through v1.13.3) blocks fully automated execution (see @limitations). Within that design envelope, the Layer~3 results reported in this study cover the basic scenario (US001) on the five programmatic platforms; the remaining scenario-platform combinations are scaffolded but outstanding, and the scope of the empirical pass is discussed in @limitations.
 
 == Three-Layer Evaluation Framework
 
@@ -138,7 +136,7 @@ The framework comprises three layers, each answering a distinct practitioner que
   caption: [Layer 1: Industry Readiness Criteria],
 )
 
-Layer 1 produces a factual maturity profile per platform rather than a numeric score. This contextualises all subsequent findings: a high-performing but abandoned platform is not useful guidance for practitioners.
+Layer 1 produces a factual maturity profile per platform rather than a numeric score, contextualising subsequent findings: a high-performing but abandoned platform is not useful guidance for practitioners.
 
 === Layer 2: Platform Characteristics
 
@@ -152,15 +150,15 @@ System-level criteria assess MCP support, A2A support, SDK independence, local L
 
 *Purpose:* Measure how well each platform orchestrates a real software engineering pipeline. Answers: _"Given a scenario, how completely and autonomously can this platform execute the four-stage SE pipeline?"_
 
-Layer~3 is the novel empirical contribution of this study. Each platform is evaluated by running the four-stage pipeline across four scenarios of increasing complexity. Since the same LLM is used across all platforms, variations in stage output quality reflect the underlying model rather than the framework; the metrics therefore focus on framework capability (pipeline completion, tool reliability, error recovery, tracing) rather than output quality. Stage outputs (generated requirements, code, tests, build logs) are retained as artefacts for contextual inspection but are *not* scored, since output quality reflects the underlying LLM rather than the framework under evaluation. Per-stage framework-centric metrics (stage completion, parseable UML, tool calls, error recovery, test runner invocation, coverage tool integration, build success, deploy success) are enumerated in @appendix-scoring-rubric.
+Layer~3 is the novel empirical contribution of this study. Each platform is evaluated by running the four-stage pipeline across four scenarios of increasing complexity. Because the same LLM is used across all platforms, variations in stage output quality reflect the underlying model rather than the framework; the metrics therefore focus on framework capability (pipeline completion, tool reliability, error recovery, tracing) rather than output quality. Stage outputs (generated requirements, code, tests, build logs) are retained as artefacts for contextual inspection but are *not* scored. Per-stage framework-centric metrics (stage completion, parseable UML, tool calls, error recovery, test runner invocation, coverage tool integration, build success, deploy success) are enumerated in @appendix-scoring-rubric.
 
 === Framework Scoring Rubric
 
-Six framework-centric dimensions are scored on a 0--3 rubric: *Pipeline Completeness* (stages completed end-to-end), *Tool Integration* (tool-call reliability), *Error Recovery* (detection, diagnosis, retry), *Time Efficiency* (wall-clock relative to budget), *Autonomy* (human interventions), and *Trace Quality* (trace completeness: messages, tool calls, tokens, timing, state). These dimensions measure _platform capability_ for building SE pipelines, not the quality of LLM-generated output (which is held constant by using the same model across all platforms). The complete rubric with detailed criteria at each score level and evaluation guidance is provided in @appendix-scoring-rubric.
+Six framework-centric dimensions are scored on a 0--3 rubric: *Pipeline Completeness* (stages completed end-to-end), *Tool Integration* (tool-call reliability), *Error Recovery* (detection, diagnosis, retry), *Time Efficiency* (wall-clock relative to budget), *Autonomy* (human interventions), and *Trace Quality* (trace completeness: messages, tool calls, tokens, timing, state). The complete rubric with detailed criteria at each score level and evaluation guidance is provided in @appendix-scoring-rubric.
 
 === Cross-cutting Aggregations
 
-Per-stage rubric scores are aggregated into four cross-cutting dimension scores per platform, each normalised to a 1--5 Likert scale. All dimensions measure *framework capability*---how well the platform orchestrates the SE pipeline---not LLM output quality. This multi-dimensional approach is validated by Yin et al. @yin2025comprehensive, whose three-perspective evaluation (effectiveness, efficiency, overhead) demonstrated that no single metric suffices for comparing agent frameworks, and by Mehta @mehta2025clear, whose CLEAR framework shows that multi-dimensional evaluation correlates significantly more strongly with production success than accuracy-only assessment. Ferrari et al. @ferrari2021systematic further support this prioritisation, finding that process integration---not usability or maturity---is the primary barrier to tool adoption in practice.
+Per-stage rubric scores are aggregated into four cross-cutting dimension scores per platform, each normalised to a 1--5 Likert scale. This multi-dimensional approach is validated by Yin et al. @yin2025comprehensive, whose three-perspective evaluation (effectiveness, efficiency, overhead) demonstrated that no single metric suffices for comparing agent frameworks, and by Mehta @mehta2025clear, whose CLEAR framework shows that multi-dimensional evaluation correlates significantly more strongly with production success than accuracy-only assessment. Ferrari et al. @ferrari2021systematic further support this prioritisation, finding that process integration---not usability or maturity---is the primary barrier to tool adoption in practice.
 
 #figure(
   table(

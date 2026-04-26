@@ -244,15 +244,15 @@
       gutter: 0.5cm,
       [
         #text(size: 7pt, weight: "bold")[Multi-Agent Frameworks] \
-        #text(size: 7.5pt)[LangGraph · CrewAI]
+        #text(size: 7.5pt)[LangGraph · CrewAI · Microsoft Agent Framework]
       ],
       [
         #text(size: 7pt, weight: "bold")[Agent SDK Runtimes] \
-        #text(size: 7.5pt)[OpenAI Agents SDK · Google ADK · Microsoft Agent Framework]
+        #text(size: 7.5pt)[OpenAI Agents SDK · Google ADK]
       ],
       [
         #text(size: 7pt, weight: "bold")[Visual / Workflow Platforms] \
-        #text(size: 7.5pt)[Flowise · LangFlow · Dify · N8n]
+        #text(size: 7.5pt)[Flowise · LangFlow · Dify · n8n]
       ],
     )
   ],

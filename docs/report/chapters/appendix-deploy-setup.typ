@@ -2,7 +2,7 @@
 
 = Deploy Target Setup <appendix-deploy-setup>
 
-This appendix documents the complete procedure for configuring a deployment target server for the DESMET evaluation framework's Build & Deploy stage. The setup prioritises security --- the target server may host other production services, so the deploy user must be strictly isolated.
+Procedure for configuring a deployment target server for the Build & Deploy stage. The setup prioritises security --- the target server may host other production services, so the deploy user must be strictly isolated.
 
 == Architecture
 
@@ -12,11 +12,11 @@ The deployment architecture separates concerns across three layers:
 - *GitHub* (artifact transport): hosts the deploy repository with per-platform branches
 - *Target server* (runtime): pulls branches via SSH, runs containers via Docker Compose, serves via reverse proxy
 
-SSH access to the target server is restricted to a private network (Tailscale VPN), while HTTP traffic from end users routes through Cloudflare to the server's public IP. This separation ensures deploy operations are never exposed to the public internet.
+SSH access to the target server is restricted to a private network (Tailscale VPN), while HTTP traffic from end users routes through Cloudflare to the server's public IP, so deploy operations are never exposed to the public internet.
 
 == Step 1: Create a Restricted Deploy User
 
-A dedicated user with no sudo access is created to isolate all deploy operations from the rest of the system.
+A dedicated user with no sudo access is created to isolate all deploy operations.
 
 #figure(
   ```bash
@@ -56,7 +56,7 @@ The public key is installed on the server:
 
 == Step 3: SSH Daemon Hardening
 
-The SSH daemon is configured to prevent the deploy user from establishing tunnels, forwarding ports, or using agent forwarding. This eliminates lateral movement vectors if the deploy key is compromised.
+The SSH daemon is configured to prevent the deploy user from establishing tunnels, forwarding ports, or using agent forwarding, eliminating lateral movement vectors if the deploy key is compromised.
 
 #figure(
   ```
@@ -69,13 +69,13 @@ The SSH daemon is configured to prevent the deploy user from establishing tunnel
   caption: [SSH hardening rules added to `sshd_config`],
 )
 
-If the server uses an `AllowUsers` directive, `desmet` must be added to the list. The SSH daemon is then restarted to apply the changes.
+If the server uses an `AllowUsers` directive, `desmet` must be added to the list. The SSH daemon is then restarted.
 
-The deploy tool also passes `-o IdentitiesOnly=yes` in all SSH commands to prevent the SSH agent from offering unrelated keys, which avoids "too many authentication failures" errors on servers with strict retry limits.
+The deploy tool passes `-o IdentitiesOnly=yes` in all SSH commands to prevent the SSH agent from offering unrelated keys, avoiding "too many authentication failures" errors on servers with strict retry limits.
 
 == Step 4: Restricted Shell
 
-The default shell for the deploy user is replaced with a whitelist-based script that permits only the commands required by the deploy pipeline. This is the primary security control that makes Docker group membership safe.
+The default shell for the deploy user is replaced with a whitelist-based script that permits only the commands required by the deploy pipeline --- the primary security control that makes Docker group membership safe.
 
 #figure(
   table(
@@ -174,7 +174,7 @@ The management console's configuration panel displays the deploy target status (
 
 == Verification
 
-Once all steps are complete, the setup can be verified from the local machine:
+From the local machine:
 
 #figure(
   ```bash

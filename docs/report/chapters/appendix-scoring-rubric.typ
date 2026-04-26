@@ -2,9 +2,28 @@
 
 = Scoring Rubric Reference <appendix-scoring-rubric>
 
-This appendix provides the complete scoring rubric used for manual evaluation of agentic platforms in the DESMET framework. Six dimensions are scored on a 0--3 scale per platform--scenario pair. These rubric scores feed into the four cross-cutting dimension scores (Pipeline Completeness, Efficiency, Orchestration, Autonomy) described in the Project Approach and Design chapter.
+Six dimensions are scored on a 0--3 scale per platform--scenario pair and feed into the four cross-cutting dimension scores (Pipeline Completeness, Efficiency, Orchestration, Autonomy) described in the Project Approach and Design chapter.
 
-All dimensions measure _framework capability_ for building software engineering pipelines. They do not assess the quality of LLM-generated output, which is held constant by using the same model and temperature across all platforms.
+All dimensions measure _framework capability_. They do not assess the quality of LLM-generated output, which is held constant by using the same model and temperature across all platforms.
+
+Scoring is hybrid: three dimensions are auto-derived end-to-end from trace signals, three are auto-initialised from trace signals and optionally adjusted by the evaluator in the management console, and one is assigned manually. @tab-rubric-source summarises the split.
+
+#figure(
+  table(
+    columns: (auto, auto, 1fr),
+    stroke: 0.5pt,
+    inset: 8pt,
+    align: left,
+    table.header([*Dimension*], [*Source*], [*Signal*]),
+    [Pipeline Completeness], [Auto], [`StageResult.success` flag per stage + scenario completion ratio],
+    [Tool Integration], [Auto-init], [Seeded from tool-call success ratio; evaluator confirms or adjusts],
+    [Error Recovery], [Auto-init], [Seeded from retry-after-error evidence in the trace; evaluator confirms or adjusts],
+    [Time Efficiency], [Auto], [`wall_clock_seconds / time_budget_seconds` and token-budget ratio],
+    [Autonomy], [Manual], [Evaluator judgement; optionally blended 50/50 with logged `human_interventions`],
+    [Trace Quality], [Auto-init], [Seeded from Langfuse span completeness; evaluator confirms or adjusts],
+  ),
+  caption: [Auto vs. manual provenance of each rubric dimension. _Auto_ dimensions are computed directly from harness signals; _Auto-init_ dimensions are pre-scored by the harness and the evaluator confirms or adjusts; _Manual_ dimensions are assigned directly.],
+) <tab-rubric-source>
 
 == Rubric Dimensions
 
@@ -27,8 +46,6 @@ Measures whether the framework can execute all four SDLC stages end-to-end witho
   caption: [Pipeline Completeness rubric (0--3)],
 )
 
-*Evaluation guidance:* Score based on whether each stage's `StageResult.success` is `true`. A stage that produces partial output but fails validation scores as incomplete. The evaluator should distinguish between failures caused by the _framework_ (score-relevant) versus failures caused by the _LLM_ generating incorrect content (not score-relevant).
-
 === Tool Integration
 
 Measures how reliably the framework's tool-calling mechanism works --- whether the platform can correctly invoke, parse, and handle responses from the sandboxed tools provided by the harness.
@@ -47,8 +64,6 @@ Measures how reliably the framework's tool-calling mechanism works --- whether t
   ),
   caption: [Tool Integration rubric (0--3)],
 )
-
-*Evaluation guidance:* Examine the execution trace's `tool_calls` entries. Count the ratio of successful to failed tool calls. Check whether the platform uses the correct argument format for its tool type (e.g. JSON schema for OpenAI Agents, Pydantic models for CrewAI). A score of 3 requires not just that tools work, but that the platform selects the _right_ tool for each step.
 
 === Error Recovery
 
@@ -69,8 +84,6 @@ Measures the framework's ability to detect, handle, and recover from errors duri
   caption: [Error Recovery rubric (0--3)],
 )
 
-*Evaluation guidance:* Intentionally introduce failure scenarios (e.g. a test that fails on first run, a build that requires a missing dependency). Observe whether the platform detects the failure from tool output, reasons about the cause, and takes corrective action. A score of 3 requires evidence of a _feedback loop_ --- the platform must read the error, change its approach, and succeed on retry.
-
 === Time Efficiency
 
 Measures the framework's orchestration overhead relative to the scenario's time budget. This captures how much time the framework spends on coordination, parsing, and retries beyond what the LLM calls themselves require.
@@ -89,8 +102,6 @@ Measures the framework's orchestration overhead relative to the scenario's time 
   ),
   caption: [Time Efficiency rubric (0--3)],
 )
-
-*Evaluation guidance:* This dimension is computed automatically from `wall_clock_seconds / time_budget_seconds` recorded in the scenario metrics. Manual scoring is only required when the automatic ratio does not capture relevant context (e.g. network latency inflating the time for a specific run).
 
 === Autonomy
 
@@ -111,8 +122,6 @@ Measures the degree of human intervention required for the platform to complete 
   caption: [Autonomy rubric (0--3)],
 )
 
-*Evaluation guidance:* Count the number of `human_interventions` recorded in the stage metrics. An intervention is defined as any action by the evaluator that provides information or corrects behaviour the platform should have handled independently. Interventions caused by infrastructure issues (e.g. API key misconfiguration) should not count against the platform.
-
 === Trace Quality
 
 Measures the completeness and usefulness of the execution trace produced by the framework --- how much visibility the platform provides into its reasoning and decision-making process.
@@ -131,8 +140,6 @@ Measures the completeness and usefulness of the execution trace produced by the 
   ),
   caption: [Trace Quality rubric (0--3)],
 )
-
-*Evaluation guidance:* Examine the `AgentTrace` object returned in the stage result. Check for: (1) message completeness --- are all LLM calls and responses recorded? (2) tool call detail --- are arguments, results, and durations captured? (3) token usage --- are per-call input/output tokens available? (4) observability integration --- does the trace appear correctly in Langfuse with nested spans? A score of 3 requires all four.
 
 == Layer 2 Feature Criteria
 
@@ -204,7 +211,7 @@ Every stage records the common resource-consumption metrics (tokens, time, cost,
 
     table.cell(colspan: 3)[_Stage 3: Test Generation_],
     [Stage Completion], [Binary], [Did the platform produce a test suite?],
-    [Test Runner Invocation], [Binary], [Did the platform invoke pytest / jest autonomously?],
+    [Test Runner Invocation], [Binary], [Did the platform invoke pytest autonomously?],
     [Coverage Tool Integration], [Binary], [Did the platform produce a coverage report?],
     [Error Recovery], [Observed], [Did the platform fix failing tests and re-run?],
 
@@ -218,7 +225,7 @@ Every stage records the common resource-consumption metrics (tokens, time, cost,
 
 == Aggregation into Cross-cutting Dimensions
 
-The six rubric dimensions are aggregated into four cross-cutting scores on a 1--5 Likert scale. Automatic metrics (completion ratio, token counts, timing, intervention counts) are captured by the harness during execution; rubric scores are assigned manually by the evaluator via the management console's scoring panel after reviewing execution traces and Langfuse observations.
+The six rubric dimensions are aggregated into four cross-cutting scores on a 1--5 Likert scale. Automatic metrics (completion ratio, token counts, timing, intervention counts) are captured by the harness during execution; _Auto_ and _Auto-init_ rubric scores are seeded by the trace audit (see @tab-rubric-source), and the evaluator confirms or adjusts _Auto-init_ and _Manual_ scores via the management console's scoring panel after reviewing execution traces and Langfuse observations.
 
 #figure(
   table(
@@ -235,7 +242,7 @@ The six rubric dimensions are aggregated into four cross-cutting scores on a 1--
   caption: [Mapping from rubric dimensions to cross-cutting scores],
 )
 
-Let $R_c$ denote the scenario completion ratio, $overline(P)$ the mean pipeline completeness rubric score (0--3), $overline(T_r)$ the mean time ratio (wall-clock / budget), $overline(K)$ the mean tokens per scenario, $K_B$ the token budget (100,000), $overline(O)$ the mean orchestration rubric score (average of tool integration, error recovery, and trace quality; 0--3 scale), and $overline(I)$ the mean human interventions per stage. The four cross-cutting scores are computed as:
+Let $R_c$ denote the scenario completion ratio, $overline(P)$ the mean pipeline completeness rubric score (0--3), $overline(T_r)$ the mean time ratio (wall-clock / budget), $overline(K)$ the mean tokens per scenario, $K_B$ the token budget (set to 100,000 based on the longest-running baseline scenario observed during harness calibration), $overline(O)$ the mean orchestration rubric score (average of tool integration, error recovery, and trace quality; 0--3 scale), and $overline(I)$ the mean human interventions per stage. The four cross-cutting scores are computed as:
 
 $ P_"comp" = R_c times 0.5 + overline(P) / 3 times 0.5 quad "(scaled to 1–5)" $
 

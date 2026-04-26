@@ -74,12 +74,20 @@
   set text(costs: (hyphenation: 100%, runt: 100%, widow: 250%, orphan: 250%))
   set par(
     leading: 0.65em,
-    spacing: 0.65em,
-    first-line-indent: (amount: 1.5em, all: false),
+    spacing: 0.8em,
+    first-line-indent: (amount: 1.5em, all: true),
     justify: true,
   )
 
   set figure(placement: auto)
+
+  // Disable hyphenation and justification in all headings to avoid breaks like
+  // "Plat-\nforms" and to avoid huge inter-word gaps when a heading wraps.
+  show heading: set text(hyphenate: false)
+  show heading: set par(justify: false, first-line-indent: 0em)
+  // Figure and table captions should also be left-ragged (not justified) so the
+  // trailing short line doesn't stretch.
+  show figure.caption: set par(first-line-indent: 0em)
 
   set heading(numbering: "1.1.1")
   show heading.where(level: 1): it => {
