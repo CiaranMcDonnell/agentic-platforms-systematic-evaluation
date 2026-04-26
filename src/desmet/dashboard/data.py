@@ -198,6 +198,17 @@ def load_results_raw(run_id: str | None = None) -> dict[str, Any]:
                 sm["framework_metrics"] = json.loads(fm_raw)
             story_metrics.append(sm)
 
+        # DESMET dimension scores — mean of each score_<dim> column across
+        # the platform's executions.  Read straight from the store so the
+        # radar chart has data without a separate computation pass.
+        dimension_scores: list[dict[str, Any]] = []
+        for dim in ("pipeline_completeness", "efficiency", "orchestration", "autonomy"):
+            col = f"score_{dim}"
+            if col in group.columns and group[col].notna().any():
+                dimension_scores.append(
+                    {"dimension": dim, "score": float(group[col].mean())}
+                )
+
         platforms[str(pid)] = {
             "platform_id": str(pid),
             "platform_name": str(pid),
@@ -206,7 +217,7 @@ def load_results_raw(run_id: str | None = None) -> dict[str, Any]:
             "stories_failed": int((group["status"] != "completed").sum()),
             "overall_score": float(group["overall_score"].mean()) if group["overall_score"].notna().any() else 0.0,
             "story_metrics": story_metrics,
-            "dimension_scores": [],  # computed on-the-fly by dashboard
+            "dimension_scores": dimension_scores,
         }
 
     run_df = store.get_run(target_id)
