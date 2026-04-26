@@ -57,6 +57,9 @@ tests/                   Test suite
 ## Quick Start
 
 ```bash
+# Install frontend
+cd src/desmet/webui/frontend && bun install && bun run build
+
 # Install core dependencies (harness, webui — no platform SDKs)
 uv sync
 
