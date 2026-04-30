@@ -50,22 +50,61 @@ tests/                   Test suite
 - **[uv](https://docs.astral.sh/uv/getting-started/installation/)** — Python package manager.
   - macOS/Linux: `curl -LsSf https://astral.sh/uv/install.sh | sh`
   - Windows (PowerShell): `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"`
+- **[bun](https://bun.sh/docs/installation)** — used to build the Svelte frontend bundled with the management console.
+  - macOS/Linux: `curl -fsSL https://bun.sh/install | bash`
+  - Windows (PowerShell): `powershell -c "irm bun.sh/install.ps1 | iex"`
 - **Docker Engine** — used to isolate each platform adapter. Must be running before starting a benchmark run.
   - macOS/Windows: install [Docker Desktop](https://docs.docker.com/desktop/) and launch it before using the console.
   - Linux: install [Docker Engine](https://docs.docker.com/engine/install/) and ensure the `docker` service is active.
 
+## Installation
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/CiaranMcDonnell/agentic-platforms-systematic-evaluation.git
+cd agentic-platforms-systematic-evaluation
+```
+
+### 2. Configure environment
+
+Copy the example file and fill in at least your LLM provider key (`OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY`):
+
+```bash
+cp .env.example .env
+```
+
+Most defaults work out of the box. The visual platforms, Langfuse self-hosting, and the SSH deploy target only need editing if you intend to use them.
+
+### 3. Install Python dependencies
+
+```bash
+# Core dependencies only (harness, webui — no platform SDKs)
+uv sync
+```
+
+Platform SDKs (LangGraph, CrewAI, Agent Framework, OpenAI Agents, Google ADK) are intentionally **not** installed at the host level — they are built into per-platform Docker images on first run to avoid dependency conflicts (see [Platform Isolation](#platform-isolation)).
+
+### 4. Build the frontend
+
+```bash
+cd src/desmet/webui/frontend
+bun install
+bun run build
+cd -
+```
+
 ## Quick Start
 
 ```bash
-# Install core dependencies (harness, webui — no platform SDKs)
-uv sync
-
-# Launch the Management Console
+# Launch the Management Console — drives evaluations, viewing results, and platform image builds
 uv run desmet
 
 # Run tests
 uv run pytest
 ```
+
+Open the console in a browser, pick a platform and story, and start a run. Per-platform Docker images are built on first use.
 
 ## Platform Isolation
 
