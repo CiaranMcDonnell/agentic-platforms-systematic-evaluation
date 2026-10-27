@@ -1,0 +1,56 @@
+{
+  "baseline": {
+    "openai_agents_sdk": {
+      "run_id": "0273188d0ca349bb9eb4b104871b5b01",
+      "model": "gpt-4.1-mini",
+      "started_at": "2026-04-23 19:57:54.145859",
+      "tokens": 100383
+    },
+    "langgraph": {
+      "run_id": "0273188d0ca349bb9eb4b104871b5b01",
+      "model": "gpt-4.1-mini",
+      "started_at": "2026-04-23 19:57:54.145859",
+      "tokens": 190309
+    },
+    "crewai": {
+      "run_id": "0273188d0ca349bb9eb4b104871b5b01",
+      "model": "gpt-4.1-mini",
+      "started_at": "2026-04-23 19:57:54.145859",
+      "tokens": 103776
+    },
+    "microsoft_agent_framework": {
+      "run_id": "0273188d0ca349bb9eb4b104871b5b01",
+      "model": "gpt-4.1-mini",
+      "started_at": "2026-04-23 19:57:54.145859",
+      "tokens": 239801
+    },
+    "google_adk": {
+      "run_id": "51ea5ac95175450e88b9cc865a3872c6",
+      "model": "gpt-4.1-mini",
+      "started_at": "2026-04-21 17:15:50.216328",
+      "tokens": 56764
+    }
+  },
+  "sonnet": {
+    "langgraph": {
+      "run_id": "2b6c473034f6436aa69c9bdd40668e3b",
+      "tokens": 209130
+    },
+    "openai_agents_sdk": {
+      "run_id": "2b6c473034f6436aa69c9bdd40668e3b",
+      "tokens": 111442
+    },
+    "crewai": {
+      "run_id": "2b6c473034f6436aa69c9bdd40668e3b",
+      "tokens": 538715
+    },
+    "microsoft_agent_framework": {
+      "run_id": "2b6c473034f6436aa69c9bdd40668e3b",
+      "tokens": 87283
+    },
+    "google_adk": {
+      "run_id": "2b6c473034f6436aa69c9bdd40668e3b",
+      "tokens": 749201
+    }
+  }
+}
