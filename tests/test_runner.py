@@ -6,6 +6,7 @@ tolerates individual stage failures, and respects dry_run.
 """
 import asyncio
 import os
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -502,3 +503,25 @@ class TestDeployMode:
         assert seen == [("local", "local")]
         assert "DESMET_DEPLOY_MODE" not in os.environ
 
+
+
+class TestTestCounts:
+    async def test_reported_tests_do_not_overwrite_verified(self, runner_setup, monkeypatch):
+        runner, adapter = runner_setup
+        adapter.generate_tests.return_value = TestResult(
+            platform_id="test_platform", stage_name="testing",
+            success=True, tests_run=10, tests_passed=10,
+        )
+        runner.config.verify_workspace = True
+        # runner.py imports it lazily, so patch the source module
+        monkeypatch.setattr(
+            "desmet.harness.verification.verify_execution",
+            lambda *a, **k: SimpleNamespace(
+                artifact_path="a.tar", tests_run=4, tests_passed=1,
+                tests_failed=3, pytest_exit_code=1, criteria_results={},
+            ),
+        )
+        await runner.run_full_evaluation()
+        r = runner.results["test_platform"]["US-001"]
+        assert (r.tests_run, r.tests_passed, r.tests_failed) == (4, 1, 3)
+        assert (r.reported_tests_run, r.reported_tests_passed) == (10, 10)

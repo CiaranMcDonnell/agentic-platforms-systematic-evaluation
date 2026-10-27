@@ -832,9 +832,9 @@ class EvaluationRunner:
 
                 test_result = stage_results.get("testing")
                 if isinstance(test_result, TestResult):
-                    result.tests_run = test_result.tests_run
-                    result.tests_passed = test_result.tests_passed
-                    result.tests_failed = test_result.tests_failed
+                    result.reported_tests_run = test_result.tests_run
+                    result.reported_tests_passed = test_result.tests_passed
+                    result.reported_tests_failed = test_result.tests_failed
 
                 # Store the full stage_results dict as raw_result for
                 # downstream consumers
