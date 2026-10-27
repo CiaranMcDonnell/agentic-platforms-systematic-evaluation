@@ -504,7 +504,6 @@ class TestDeployMode:
         assert "DESMET_DEPLOY_MODE" not in os.environ
 
 
-
 class TestTestCounts:
     async def test_reported_tests_do_not_overwrite_verified(self, runner_setup, monkeypatch):
         runner, adapter = runner_setup
