@@ -229,3 +229,68 @@ def test_planner_fallback_records_plan_source():
     assert 'trace.metadata' in src or 'metadata["plan_source"]' in src or "metadata['plan_source']" in src
     # Must not silently swallow — either logs, records error, or narrows except.
     assert 'errors.append' in src or '_log.warning' in src
+
+
+async def test_planner_spent_budget_skips_the_loop(monkeypatch, tmp_path):
+    """When the planner used the whole LLM-call budget, the executor/reviewer
+    loop must not run at all (max(1, remaining) allowed one call over)."""
+    pytest.importorskip("google.adk")
+    import google.adk.runners
+
+    from desmet.adapters._shared.budget import budget_exhausted
+    from desmet.adapters._shared.observation import (
+        ObservationCollector,
+        ObservationRequirements,
+    )
+    from desmet.adapters._shared.retry import ProgressReporter, RetryPolicy
+    from desmet.adapters._shared.tracing import record_usage
+    from desmet.adapters.sdk.google_adk import GoogleADKAdapter
+    from desmet.harness.context import StageContext
+    from desmet.adapters._shared.planning import ImplementationPlan
+    from desmet.harness.story import DifficultyLevel, UserStory
+    from desmet.harness.trace import AgentTrace
+
+    runs: list = []
+
+    class FakeRunner:
+        def __init__(self, **kw):
+            pass
+
+        async def run_async(self, **kw):
+            runs.append(kw["run_config"].max_llm_calls)
+            return
+            yield
+
+    monkeypatch.setattr(google.adk.runners, "Runner", FakeRunner)
+    adapter = GoogleADKAdapter(config={"model": "gemini-2.5-flash"})
+    adapter._model_id = "gemini-2.5-flash"
+
+    async def spend_budget(stage_name, prompt, collector, progress, temperature=0.0):
+        for _ in range(context.max_iterations):
+            record_usage(collector.trace, input_tokens=10)
+        return ImplementationPlan(steps=["s"], files_to_create=[], files_to_modify=[])
+
+    monkeypatch.setattr(adapter, "_run_planner", spend_budget)
+    policy = RetryPolicy(max_retries=0, stage_name="requirements", workspace=tmp_path)
+    monkeypatch.setattr(policy, "validate", lambda: (False, "missing"))
+    story = UserStory(
+        id="US-001", title="t", description="d",
+        difficulty=DifficultyLevel.BASIC, category="smoke", prompt="p",
+    )
+    context = StageContext(
+        story=story, workspace=tmp_path, platform_id="google_adk", max_iterations=4,
+    )
+    collector = ObservationCollector(
+        AgentTrace(),
+        requirements=ObservationRequirements(
+            usage=False, tool_calls=False, llm_duration=False,
+            messages=False, iterations=False,
+        ),
+    )
+    _, success = await adapter._run_agent(
+        "requirements", "p", None, [], collector, context, policy,
+        ProgressReporter(callback=None, collector=collector),
+    )
+    assert runs == []
+    assert budget_exhausted(collector.trace)
+    assert success is False

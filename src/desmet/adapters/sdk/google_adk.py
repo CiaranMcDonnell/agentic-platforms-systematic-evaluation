@@ -565,73 +565,79 @@ class GoogleADKAdapter(ToolAgentAdapter):
         # RunConfig.max_llm_calls gets whatever the planner left.  It raises
         # LlmCallsLimitExceededError on the call after the limit.
         remaining = remaining_llm_calls(collector.trace, context.max_iterations)
-        run_config = RunConfig(max_llm_calls=max(1, remaining))
 
         run_t0 = time.monotonic()
-        try:
-            async for event in runner.run_async(
-                user_id="eval",
-                session_id=session.id,
-                new_message=types.Content(
-                    role="user",
-                    parts=[types.Part(text=prompt)],
-                ),
-                run_config=run_config,
-            ):
-                author = getattr(event, "author", "") or ""
+        if remaining <= 0:
+            # The planner spent the whole budget: the loop may make no call
+            # (max_llm_calls=max(1, remaining) allowed one over budget).
+            mark_budget_exhausted(collector.trace)
+            _log.info("ADK stage stopped: LLM-call budget exhausted")
+        else:
+            run_config = RunConfig(max_llm_calls=remaining)
+            try:
+                async for event in runner.run_async(
+                    user_id="eval",
+                    session_id=session.id,
+                    new_message=types.Content(
+                        role="user",
+                        parts=[types.Part(text=prompt)],
+                    ),
+                    run_config=run_config,
+                ):
+                    author = getattr(event, "author", "") or ""
 
-                # Record text content (skip final response — recorded separately)
-                is_final = event.is_final_response()
-                if not is_final and event.content and event.content.parts:
-                    text = "".join(
-                        p.text for p in event.content.parts if hasattr(p, "text") and p.text
-                    )
-                    if text:
-                        collector.record_message(
-                            "assistant",
-                            text,
-                            metadata={"agent": author},
+                    # Record text content (skip final response — recorded separately)
+                    is_final = event.is_final_response()
+                    if not is_final and event.content and event.content.parts:
+                        text = "".join(
+                            p.text for p in event.content.parts if hasattr(p, "text") and p.text
                         )
-                    else:
-                        # Tool-only turns carry no text; keep the author
-                        # visible so the trace can be split into agent turns.
-                        fc_text = _event_function_call_text(event)
-                        if fc_text:
+                        if text:
                             collector.record_message(
                                 "assistant",
-                                fc_text,
-                                metadata={"agent": author, "event": "function_call"},
+                                text,
+                                metadata={"agent": author},
                             )
+                        else:
+                            # Tool-only turns carry no text; keep the author
+                            # visible so the trace can be split into agent turns.
+                            fc_text = _event_function_call_text(event)
+                            if fc_text:
+                                collector.record_message(
+                                    "assistant",
+                                    fc_text,
+                                    metadata={"agent": author, "event": "function_call"},
+                                )
 
-                # Count agent turns (not user messages)
-                if author and author != "user":
-                    total_iterations += 1
+                    # Count agent turns (not user messages)
+                    if author and author != "user":
+                        total_iterations += 1
 
-                # Record final response once
-                if is_final:
-                    collector.record_message(
-                        "assistant",
-                        "".join(
-                            p.text
-                            for p in (event.content.parts if event.content else [])
-                            if hasattr(p, "text") and p.text
+                    # Record final response once
+                    if is_final:
+                        collector.record_message(
+                            "assistant",
+                            "".join(
+                                p.text
+                                for p in (event.content.parts if event.content else [])
+                                if hasattr(p, "text") and p.text
+                            )
+                            or "(final)",
+                            metadata={"event": "final_output"},
                         )
-                        or "(final)",
-                        metadata={"event": "final_output"},
-                    )
 
-                # No event-count break here: it counted every event
-                # (function calls and their responses too) against
-                # max_iterations, stopping ADK at roughly half the LLM calls
-                # other adapters get.  RunConfig enforces the shared budget.
+                    # No event-count break here: it counted every event
+                    # (function calls and their responses too) against
+                    # max_iterations, stopping ADK at roughly half the LLM calls
+                    # other adapters get.  RunConfig enforces the shared budget.
 
-        except Exception as e:
-            if type(e).__name__ == "LlmCallsLimitExceededError" or remaining <= 0:
-                mark_budget_exhausted(collector.trace)
-                _log.info("ADK stage stopped: LLM-call budget exhausted")
-            else:
-                _log.warning("ADK pipeline error: %s", e)
-                collector.trace.errors.append(str(e))
+            except Exception as e:
+                if type(e).__name__ == "LlmCallsLimitExceededError":
+                    mark_budget_exhausted(collector.trace)
+                    _log.info("ADK stage stopped: LLM-call budget exhausted")
+                else:
+                    _log.warning("ADK pipeline error: %s", e)
+                    collector.trace.errors.append(str(e))
 
         run_duration_ms = (time.monotonic() - run_t0) * 1000
 
