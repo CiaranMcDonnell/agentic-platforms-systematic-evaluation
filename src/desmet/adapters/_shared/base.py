@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
+from desmet.adapters._shared.budget import llm_calls_used
 from desmet.adapters._shared.observation import ObservationCollector, ObservationRequirements
 from desmet.adapters._shared.prompts import (
     build_codegen_prompt,
@@ -132,7 +133,7 @@ class ToolAgentAdapter(BasePlatformAdapter):
                 callback=context.progress_callback,
                 collector=collector,
             )
-            iterations, success = await self._run_agent(
+            native_iterations, success = await self._run_agent(
                 stage_name,
                 prompt,
                 system_msg,
@@ -142,6 +143,12 @@ class ToolAgentAdapter(BasePlatformAdapter):
                 policy,
                 progress,
             )
+            # One unit for every code adapter: LLM calls (the same counter
+            # that drives the per-stage budget).  Adapters mark their own
+            # loop count on the collector; replace it so iteration_ratio
+            # shares the unit.  The native count is kept as a metric.
+            iterations = llm_calls_used(trace)
+            collector.mark_iterations(iterations - trace.total_iterations)
             warnings = collector.seal()
             if warnings:
                 log = logging.getLogger(f"desmet.adapters.{self.platform_info.id}")
@@ -153,6 +160,7 @@ class ToolAgentAdapter(BasePlatformAdapter):
                         w,
                     )
             fm = compute_framework_metrics(trace, context.max_iterations)
+            fm["native_iterations"] = native_iterations
 
             # Post-stage scope audit
             baseline_files = set(context.metadata.get("baseline_files", []))
@@ -185,9 +193,10 @@ class ToolAgentAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             finish_trace(trace, error=str(e))
-            # Use real trace data for iterations — don't discard it on error.
-            # Fall back to tool_calls count if mark_iterations was never called.
-            iterations = trace.total_iterations or len(trace.tool_calls)
+            # Same unit as the success path: LLM calls recorded before the
+            # failure.  Don't discard real trace data on error.
+            iterations = llm_calls_used(trace)
+            trace.total_iterations = iterations
             return build_stage_result(
                 result_cls,
                 self.platform_info.id,
