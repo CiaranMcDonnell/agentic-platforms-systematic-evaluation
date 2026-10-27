@@ -725,7 +725,8 @@ class TestNormalizeUsage:
 
 
 def _make_tool_adapter(
-    responses: int, native: int, fail: bool = False, exhaust: bool = False
+    responses: int, native: int, fail: bool = False, exhaust: bool = False,
+    fallback: bool = False,
 ):
     from desmet.adapters._shared.base import ToolAgentAdapter
     from desmet.adapters._shared.tools import ToolFormat
@@ -768,6 +769,10 @@ def _make_tool_adapter(
                 from desmet.adapters._shared.budget import mark_budget_exhausted
 
                 mark_budget_exhausted(collector.trace)
+            if fallback:
+                from desmet.adapters._shared.budget import mark_usage_fallback
+
+                mark_usage_fallback(collector.trace)
             if fail:
                 raise RuntimeError("boom")
             return native, True
@@ -843,3 +848,17 @@ class TestIterationsAreLlmCalls:
         assert res.framework_metrics["llm_calls"] == 2.0
         assert res.framework_metrics["budget_exhausted"] == 1.0
         assert res.framework_metrics["native_iterations"] is None
+
+    @pytest.mark.parametrize("fail", [False, True])
+    async def test_usage_fallback_leaves_iterations_unknown(self, tmp_path, fail) -> None:
+        from desmet.adapters._shared.prompts import build_testing_prompt
+        from desmet.harness.results import TestResult
+
+        adapter = _make_tool_adapter(responses=1, native=7, fail=fail, fallback=True)
+        res = await adapter._execute_stage(
+            "testing", build_testing_prompt, TestResult, _make_stage_context(tmp_path)
+        )
+        assert res.iterations is None
+        assert res.tokens_input == 10
+        assert res.framework_metrics["llm_calls"] is None
+        assert res.framework_metrics["usage_fallback"] == 1.0

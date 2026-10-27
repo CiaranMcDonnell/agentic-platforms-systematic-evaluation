@@ -272,8 +272,16 @@ def compute_framework_metrics(
     # Tokens per stage
     tokens_per_stage = float(total_tokens)
 
+    # Usage known only as an aggregate (budget.mark_usage_fallback): the
+    # call count, and so the iteration ratio, are unknown.
+    calls_unknown = bool(trace.metadata.get("usage_fallback"))
+
     # Iteration ratio
-    iteration_ratio = trace.total_iterations / max_iterations if max_iterations > 0 else 0.0
+    iteration_ratio: float | None = (
+        trace.total_iterations / max_iterations if max_iterations > 0 else 0.0
+    )
+    if calls_unknown:
+        iteration_ratio = None
 
     # First-action latency
     first_action_latency_ms: float | None = None
@@ -311,9 +319,9 @@ def compute_framework_metrics(
     else:
         framework_overhead_ms = None
 
-    return {
+    metrics: dict[str, float | None] = {
         "tokens_per_stage": tokens_per_stage,
-        "iteration_ratio": round(iteration_ratio, 4),
+        "iteration_ratio": round(iteration_ratio, 4) if iteration_ratio is not None else None,
         "first_action_latency_ms": (
             round(first_action_latency_ms, 1) if first_action_latency_ms is not None else None
         ),
@@ -324,9 +332,12 @@ def compute_framework_metrics(
         ),
         # Per-stage LLM-call budget (budget.py): calls used, and 1.0 when
         # the stage stopped because the budget ran out.
-        "llm_calls": float(trace.metadata.get("llm_calls", 0)),
+        "llm_calls": None if calls_unknown else float(trace.metadata.get("llm_calls", 0)),
         "budget_exhausted": 1.0 if trace.metadata.get("budget_exhausted") else 0.0,
     }
+    if calls_unknown:
+        metrics["usage_fallback"] = 1.0
+    return metrics
 
 
 # ── Result construction ─────────────────────────────────────────────────

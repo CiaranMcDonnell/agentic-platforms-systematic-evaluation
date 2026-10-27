@@ -22,6 +22,7 @@ from desmet.harness.trace import AgentTrace
 
 LLM_CALLS_KEY = "llm_calls"
 BUDGET_EXHAUSTED_KEY = "budget_exhausted"
+USAGE_FALLBACK_KEY = "usage_fallback"
 
 
 def llm_calls_used(trace: AgentTrace) -> int:
@@ -41,3 +42,17 @@ def mark_budget_exhausted(trace: AgentTrace) -> None:
 
 def budget_exhausted(trace: AgentTrace) -> bool:
     return bool(trace.metadata.get(BUDGET_EXHAUSTED_KEY, False))
+
+
+def mark_usage_fallback(trace: AgentTrace) -> None:
+    """Record that usage came only as an aggregate, not per LLM call.
+
+    The tokens are real, but the stage's LLM-call count is unknown: the
+    aggregate was recorded as a single call and the budget never saw the
+    individual calls.
+    """
+    trace.metadata[USAGE_FALLBACK_KEY] = True
+
+
+def usage_fallback(trace: AgentTrace) -> bool:
+    return bool(trace.metadata.get(USAGE_FALLBACK_KEY, False))

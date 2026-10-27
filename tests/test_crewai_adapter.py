@@ -448,6 +448,64 @@ class TestSuccessAfterBudget:
         )
 
 
+async def test_aggregate_usage_fallback_is_not_one_call(monkeypatch, tmp_path, caplog):
+    """When the event bus recorded no per-call usage, the crew's aggregate
+    token_usage keeps its tokens but marks the call count unknown instead
+    of passing as a single LLM call."""
+    import logging
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from desmet.adapters._shared.budget import usage_fallback
+    from desmet.adapters._shared.retry import RetryPolicy
+    from desmet.adapters._shared.tracing import compute_framework_metrics
+    from desmet.harness.context import StageContext
+    from desmet.harness.story import DifficultyLevel, UserStory
+
+    adapter = CrewAIAdapter(config={"model": "test-model"})
+    monkeypatch.setattr(adapter, "_create_llm", lambda ctx: MagicMock())
+
+    def fake_kickoff():
+        adapter._llm_call_count += 6
+        return SimpleNamespace(
+            tasks_output=[],
+            token_usage=SimpleNamespace(prompt_tokens=4000, completion_tokens=700),
+        )
+
+    monkeypatch.setattr(
+        adapter, "_build_crew", lambda *a, **kw: SimpleNamespace(kickoff=fake_kickoff),
+    )
+    policy = RetryPolicy(max_retries=0, stage_name="requirements", workspace=tmp_path)
+    monkeypatch.setattr(policy, "validate", lambda: (True, "ok"))
+    story = UserStory(
+        id="US-001", title="t", description="d",
+        difficulty=DifficultyLevel.BASIC, category="smoke", prompt="p",
+    )
+    context = StageContext(
+        story=story, workspace=tmp_path, platform_id="crewai", model="test-model",
+    )
+    trace = AgentTrace()
+    collector = ObservationCollector(
+        trace,
+        requirements=ObservationRequirements(
+            usage=False, tool_calls=False, llm_duration=False,
+            messages=False, iterations=False,
+        ),
+    )
+    progress = ProgressReporter(callback=None, collector=collector)
+
+    with caplog.at_level(logging.WARNING):
+        await adapter._run_agent(
+            "requirements", "p", None, [], collector, context, policy, progress,
+        )
+
+    assert (trace.total_tokens_input, trace.total_tokens_output) == (4000, 700)
+    assert usage_fallback(trace)
+    assert any("aggregate" in r.getMessage() for r in caplog.records)
+    fm = compute_framework_metrics(trace, max_iterations=50)
+    assert fm["llm_calls"] is None and fm["usage_fallback"] == 1.0
+
+
 def test_event_handlers_register_per_instance():
     """Regression: each adapter instance must register its own handler
     closures, and each closure must capture its own ``self``.

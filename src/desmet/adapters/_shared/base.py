@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
-from desmet.adapters._shared.budget import llm_calls_used
+from desmet.adapters._shared.budget import llm_calls_used, usage_fallback
 from desmet.adapters._shared.observation import ObservationCollector, ObservationRequirements
 from desmet.adapters._shared.prompts import (
     build_codegen_prompt,
@@ -147,8 +147,10 @@ class ToolAgentAdapter(BasePlatformAdapter):
             # that drives the per-stage budget).  Adapters mark their own
             # loop count on the collector; replace it so iteration_ratio
             # shares the unit.  The native count is kept as a metric.
-            iterations = llm_calls_used(trace)
-            collector.mark_iterations(iterations - trace.total_iterations)
+            # Unknown (None) when usage arrived only as an aggregate.
+            iterations = None if usage_fallback(trace) else llm_calls_used(trace)
+            if iterations is not None:
+                collector.mark_iterations(iterations - trace.total_iterations)
             warnings = collector.seal()
             if warnings:
                 log = logging.getLogger(f"desmet.adapters.{self.platform_info.id}")
@@ -195,8 +197,9 @@ class ToolAgentAdapter(BasePlatformAdapter):
             finish_trace(trace, error=str(e))
             # Same unit as the success path: LLM calls recorded before the
             # failure.  Don't discard real trace data on error.
-            iterations = llm_calls_used(trace)
-            trace.total_iterations = iterations
+            iterations = None if usage_fallback(trace) else llm_calls_used(trace)
+            if iterations is not None:
+                trace.total_iterations = iterations
             # Keep llm_calls / budget flags in the execution aggregate;
             # the adapter raised, so it never reported a native count.
             fm = compute_framework_metrics(trace, context.max_iterations)

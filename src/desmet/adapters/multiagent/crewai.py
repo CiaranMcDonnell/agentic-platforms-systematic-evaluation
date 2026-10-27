@@ -13,6 +13,7 @@ from typing import Any
 from desmet.adapters._shared.budget import (
     budget_exhausted,
     mark_budget_exhausted,
+    mark_usage_fallback,
     remaining_llm_calls,
 )
 from desmet.adapters._shared.base import ToolAgentAdapter
@@ -713,10 +714,18 @@ class CrewAIAdapter(ToolAgentAdapter):
             collector.record_message("assistant", str(result))
 
             # ── Fallback: use result.token_usage if event bus recorded nothing ─
+            # The tokens are real, but they are the whole crew's aggregate:
+            # the per-call budget hook never fired, so the stage's LLM-call
+            # count is unknown rather than one.
             if collector.usage_count == usage_before:
                 usage = getattr(result, "token_usage", None)
                 if usage is not None:
                     collector.record_llm_response(raw_usage=usage, model=model_name)
+                    mark_usage_fallback(collector.trace)
+                    _log.warning(
+                        "CrewAI event bus recorded no per-call usage; recorded the crew's "
+                        "aggregate token_usage instead (LLM-call count unknown)"
+                    )
 
             total_iterations += self._llm_call_count - llm_calls_before
 
