@@ -7,7 +7,9 @@ from pathlib import Path
 
 import pytest
 
+from desmet.adapters._shared.prompts import build_codegen_prompt
 from desmet.harness.context import StageContext
+from desmet.harness.results import RequirementsResult, UMLDiagram
 from desmet.harness.story import UserStory, DifficultyLevel
 
 
@@ -72,3 +74,29 @@ class TestStageContextSerialization:
         d = ctx.to_dict()
         restored = StageContext.from_dict(d)
         assert isinstance(restored.workspace, Path)
+
+
+@pytest.mark.parametrize(
+    "success,frs", [(True, [{"id": "FR-1", "text": "add items"}]), (False, [])]
+)
+def test_codegen_prompt_identical_after_container_roundtrip(tmp_path, success, frs):
+    story = _make_story()
+    ctx = StageContext(story=story, workspace=tmp_path)
+    ctx.add_artifacts(
+        "requirements",
+        RequirementsResult(
+            platform_id="p",
+            stage_name="requirements",
+            success=success,
+            functional_requirements=frs,
+            uml_diagrams=[UMLDiagram(diagram_type="class", title="t", content="classDiagram")],
+        ),
+    )
+    wire = json.loads(json.dumps(ctx.to_dict()))
+    back = StageContext.from_dict(wire)
+    prior = back.get_prior_result("requirements")
+    assert isinstance(prior, RequirementsResult)
+    assert isinstance(prior.uml_diagrams[0], UMLDiagram)
+    assert build_codegen_prompt(story, prior_requirements=prior) == build_codegen_prompt(
+        story, prior_requirements=ctx.get_prior_result("requirements")
+    )

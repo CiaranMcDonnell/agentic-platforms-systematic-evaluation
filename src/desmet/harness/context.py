@@ -76,8 +76,9 @@ class StageContext:
         """Serialize to a JSON-compatible dict for container IPC.
 
         Excludes ``progress_callback`` (not serializable).
-        Converts ``workspace`` to string, ``story`` and ``artifacts``
-        to dicts via ``dataclasses.asdict`` with datetime handling.
+        Converts ``workspace`` to string and ``story`` to a dict via
+        ``dataclasses.asdict`` with datetime handling. ``artifacts`` use
+        ``StageResult.to_dict`` so their ``_type`` survives the round trip.
         """
         import dataclasses
 
@@ -109,7 +110,7 @@ class StageContext:
             "allowed_tools": list(self.allowed_tools),
             "model": self.model,
             "temperature": self.temperature,
-            "artifacts": {k: _asdict(v) for k, v in self.artifacts.items()},
+            "artifacts": {k: v.to_dict() for k, v in self.artifacts.items()},
             "metadata": self.metadata,
         }
 
@@ -118,8 +119,8 @@ class StageContext:
         """Deserialize from a dict produced by ``to_dict()``.
 
         Reconstructs ``UserStory`` from dict, sets ``workspace`` as Path,
-        and leaves ``artifacts`` as plain dicts (sufficient for prompt
-        building inside the container).
+        and rebuilds ``artifacts`` as typed ``StageResult`` subclasses so
+        prompt building inside the container matches in-process runs.
         """
         from .story import AcceptanceCriterion, DifficultyLevel, UserStory
 
@@ -143,6 +144,8 @@ class StageContext:
             allowed_tools=data.get("allowed_tools", []),
             model=data.get("model", ""),
             temperature=data.get("temperature", 0.0),
-            artifacts=data.get("artifacts", {}),
+            artifacts={
+                k: StageResult.from_dict(v) for k, v in data.get("artifacts", {}).items()
+            },
             metadata=data.get("metadata", {}),
         )

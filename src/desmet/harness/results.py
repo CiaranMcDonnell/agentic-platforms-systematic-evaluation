@@ -141,6 +141,11 @@ class StageResult:
 
         valid_fields = {f.name for f in dataclasses.fields(target_cls)}
         filtered = {k: v for k, v in data.items() if k in valid_fields}
+        if target_cls is RequirementsResult:
+            filtered["uml_diagrams"] = [
+                UMLDiagram(**d) if isinstance(d, dict) else d
+                for d in filtered.get("uml_diagrams", [])
+            ]
 
         return target_cls(
             trace=trace,
