@@ -26,6 +26,7 @@ from typing import Any
 
 import structlog
 
+from desmet import llm_config
 from desmet.observability import (
     get_logger,
     langfuse_span,
@@ -38,6 +39,7 @@ from desmet.adapters._shared.validation import BASELINE_FILES_NAME
 from .adapter import BasePlatformAdapter
 from .auto_rubric import compute_auto_rubric_scores
 from .context import StageContext
+from .manifest import collect_manifest
 from .metrics import MetricsCollector, SetupMetrics, StageMetrics, StoryMetrics
 from .results import CodeResult, StageResult, TestResult, failed_stage_result
 from .store import ResultStore
@@ -189,11 +191,12 @@ class EvaluationRunner:
 
         # Create a persistent run record
         self._current_run_id = self.store.create_run(
-            model=os.environ.get("DESMET_MODEL"),
+            model=llm_config.get_config().model,
             temperature=float(os.environ.get("DESMET_TEMPERATURE", "0")),
             platforms_filter=self.config.platforms,
             stories_filter=self.config.stories,
         )
+        self._write_manifest(self._filter_platforms())
 
         # Filter platforms and stories if configured
         platforms_to_run = self._filter_platforms()
@@ -302,11 +305,13 @@ class EvaluationRunner:
 
         adapter = self.platforms[platform_id]
         self._current_run_id = run_id or self.store.create_run(
-            model=os.environ.get("DESMET_MODEL"),
+            model=llm_config.get_config().model,
             temperature=float(os.environ.get("DESMET_TEMPERATURE", "0")),
             platforms_filter=[platform_id],
             stories_filter=[story_id],
         )
+        if run_id is None:
+            self._write_manifest([platform_id])
         # Track whether we own the run lifecycle so a shared run isn't
         # finished prematurely by the first platform to complete.
         self._owns_current_run = run_id is None
@@ -417,6 +422,23 @@ class EvaluationRunner:
         ("deploy", "build_and_deploy"),
     ]
 
+    def _write_manifest(self, platform_ids: Any) -> None:
+        repo_root = Path(__file__).resolve().parents[3]
+        self.store.update_run_manifest(
+            self._current_run_id,
+            collect_manifest(self.config, repo_root, platform_ids),
+        )
+
+    def _record_image_digest(self, platform_id: str, digest: str | None) -> None:
+        """Merge the platform's built image digest into the run manifest."""
+        if digest is None:
+            return
+        run = self.store.get_run(self._current_run_id)
+        existing = run.iloc[0]["image_digests"] if len(run) else None
+        digests = json.loads(existing) if isinstance(existing, str) and existing else {}
+        digests[platform_id] = digest
+        self.store.update_run_manifest(self._current_run_id, {"image_digests": digests})
+
     def _execution_mode_for(self, platform_id: str) -> str:
         return self.config.platform_execution_modes.get(
             platform_id, self.config.execution_mode
@@ -440,6 +462,9 @@ class EvaluationRunner:
         self._built_images[platform_id] = bool(ok)
         if not ok:
             logger.error("image_build_failed", platform=platform_id)
+        else:
+            digest = await _aio.to_thread(container_runner.image_digest, platform_id)
+            self._record_image_digest(platform_id, digest)
         return bool(ok)
 
     async def _run_stage(

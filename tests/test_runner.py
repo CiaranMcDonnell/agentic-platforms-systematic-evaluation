@@ -5,10 +5,12 @@ codegen, testing, deploy), accumulates artifacts on the StageContext,
 tolerates individual stage failures, and respects dry_run.
 """
 import asyncio
+import json
 import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pandas as pd
 import pytest
 
 from desmet.harness.adapter import ContainerOnlyAdapter
@@ -77,9 +79,11 @@ def sample_story():
 
 
 @pytest.fixture
-def runner_setup(mock_adapter, sample_story, tmp_path):
+def runner_setup(mock_adapter, sample_story, tmp_path, monkeypatch):
     """Create an EvaluationRunner wired with a mock adapter, a disposable
     baseline directory, and a temp results/logs directory."""
+    # The run manifest snapshots pricing; never hit OpenRouter from tests.
+    monkeypatch.setattr("desmet.cost_calculator.get_pricing", lambda: {})
     baseline = tmp_path / "baseline"
     baseline.mkdir()
     (baseline / "README.md").write_text("baseline")
@@ -102,6 +106,24 @@ def runner_setup(mock_adapter, sample_story, tmp_path):
 # ---------------------------------------------------------------------------
 # Test class
 # ---------------------------------------------------------------------------
+
+class TestRunManifest:
+    async def test_run_row_has_manifest(self, runner_setup, fake_containers):
+        runner, _ = runner_setup
+        runner.config.execution_mode = "container"
+        await runner.run_full_evaluation()
+        run = runner.store.get_run(runner._current_run_id).iloc[0]
+        assert run["execution_mode"] == "container"
+        assert json.loads(run["image_digests"]) == {"test_platform": fake_containers.digest}
+
+    async def test_in_process_run_has_no_image_digests(self, runner_setup):
+        runner, _ = runner_setup
+        await runner.run_full_evaluation()
+        run = runner.store.get_run(runner._current_run_id).iloc[0]
+        assert run["execution_mode"] == "in_process"
+        assert pd.isna(run["image_digests"])
+        assert len(run["prompts_sha256"]) == 64
+
 
 class TestRunnerStageExecution:
     """Test that _run_story drives four stages sequentially."""
