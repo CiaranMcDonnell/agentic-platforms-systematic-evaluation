@@ -10,8 +10,8 @@ Produces four ``.typ`` include files consumed by
 
 Reads from ``ResultStore`` for a specific ``run_id`` (defaults to the latest).
 Stage-level completion for the capability-tiers table comes from the
-``{execution_id}_stages.json`` sidecar files the runner writes to
-``results/logs/<platform>/<story>/``.
+persisted ``stage_executions`` rows; legacy runs fall back to the stages
+JSON that each execution's ``trace_path`` points at.
 """
 
 from __future__ import annotations
@@ -82,20 +82,31 @@ def _platform_display(pid: str) -> str:
     return PLATFORM_NAMES.get(pid, pid)
 
 
-def _stage_success_from_traces(
-    platform_id: str,
-    story_id: str,
+def _stage_success(
+    row: pd.Series,
+    stage_df: pd.DataFrame,
     logs_dir: Path,
 ) -> dict[str, bool] | None:
-    """Return ``{stage_name: success}`` from the most recent stages JSON."""
-    trace_dir = logs_dir / platform_id / story_id
-    if not trace_dir.exists():
+    """Return ``{stage_name: success}`` for one execution row.
+
+    Prefers the persisted stage rows; falls back to the stages JSON the row's
+    ``trace_path`` points at (legacy runs).  Never guesses from the directory.
+    """
+    if not stage_df.empty:
+        own = stage_df[stage_df["execution_id"] == row["execution_id"]]
+        if not own.empty:
+            return {
+                str(r["stage_name"]): bool(r["success"]) if pd.notna(r["success"]) else False
+                for _, r in own.iterrows()
+            }
+    trace_path = row.get("trace_path")
+    if trace_path is None or pd.isna(trace_path) or not str(trace_path):
         return None
-    files = sorted(trace_dir.glob("*_stages.json"))
-    if not files:
-        return None
+    path = Path(str(trace_path))
+    if not path.is_absolute() and not path.exists():
+        path = logs_dir / path
     try:
-        data = json.loads(files[-1].read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
     stages = data.get("stages", {})
@@ -196,6 +207,7 @@ def export_per_story(exec_df: pd.DataFrame, out_dir: Path) -> dict[str, Path]:
 
 def export_capability_tiers(
     exec_df: pd.DataFrame,
+    stage_df: pd.DataFrame,
     logs_dir: Path,
     out_path: Path,
 ) -> None:
@@ -212,11 +224,7 @@ def export_capability_tiers(
         sub = exec_df[exec_df["platform_id"] == pid]
         counts: dict[str, tuple[int, int]] = {k: (0, 0) for k in STAGE_KEYS}
         for _, row in sub.iterrows():
-            stages = _stage_success_from_traces(
-                str(row["platform_id"]),
-                str(row["story_id"]),
-                logs_dir,
-            )
+            stages = _stage_success(row, stage_df, logs_dir)
             if not stages:
                 continue
             for key in STAGE_KEYS:
@@ -390,6 +398,7 @@ def export_all(
         raise ValueError("No run_id available (database empty)")
 
     exec_df = store.get_executions(target)
+    stage_df = store.get_stage_executions(target)
     if exec_df.empty:
         raise ValueError(f"No executions found for run {target}")
 
@@ -400,7 +409,7 @@ def export_all(
         outputs[f"per_story_{sid}"] = path
 
     for name, fn in (
-        ("capability_tiers", lambda p: export_capability_tiers(exec_df, logs_dir, p)),
+        ("capability_tiers", lambda p: export_capability_tiers(exec_df, stage_df, logs_dir, p)),
         ("cross_cutting", lambda p: export_cross_cutting(exec_df, p)),
         ("resource", lambda p: export_resource(exec_df, p)),
     ):

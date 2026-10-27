@@ -670,7 +670,8 @@ def recompute_platform_likert_from_store(
     ``score_*`` / ``overall_score`` stay stale until this runs.
 
     *story_budgets* maps ``story_id`` to ``time_budget_seconds``.
-    Stories not in the map use 600s (the harness default).
+    A story missing from the map raises ``KeyError(story_id)`` rather than
+    silently normalising against a guessed budget.
     """
     import pandas as _pd
 
@@ -680,6 +681,8 @@ def recompute_platform_likert_from_store(
     group = exec_df[exec_df["platform_id"] == platform_id]
     if group.empty:
         return {}
+
+    stage_df = store.get_stage_executions(run_id)
 
     em = EvaluationMetrics(platform_id=platform_id, platform_name=platform_id)
 
@@ -735,7 +738,26 @@ def recompute_platform_likert_from_store(
             resource["net_tx_total_bytes"] = int(row["resource_net_tx_bytes"])
         result.resource_metrics = resource
 
-        budget = float(story_budgets.get(story_id, 600))
+        budget = float(story_budgets[story_id])
+
+        # Per-stage rows feed the Autonomy intervention signal, as in the live run.
+        exec_stages = stage_df[stage_df["execution_id"] == result.execution_id]
+        for _, st in exec_stages.iterrows():
+            em.stage_metrics.append(
+                StageMetrics(
+                    story_id=story_id,
+                    platform_id=platform_id,
+                    stage_name=str(st["stage_name"]),
+                    success=bool(st["success"]) if _pd.notna(st["success"]) else False,
+                    wall_clock_seconds=float(st["wall_clock_seconds"] or 0),
+                    iterations=int(st["iterations"] or 0),
+                    tool_calls=int(st["tool_calls"] or 0),
+                    tokens_input=int(st["tokens_input"] or 0),
+                    tokens_output=int(st["tokens_output"] or 0),
+                    human_interventions=int(st["human_interventions"] or 0),
+                )
+            )
+
         em.add_story_metrics(
             StoryMetrics.from_story_result(result, time_budget_seconds=budget)
         )

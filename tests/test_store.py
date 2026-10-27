@@ -262,7 +262,7 @@ class TestRecomputeUsesStageOutcome:
         self._save(store, run_id, stage_success)
         assert bool(store.get_executions(run_id)["stages_passed"].iloc[0]) is stage_success
 
-        scores = recompute_platform_likert_from_store(store, run_id, "p", {})
+        scores = recompute_platform_likert_from_store(store, run_id, "p", {"US-001": 600})
         # Unscored pipeline rubric -> completion ratio alone: 1.0 -> 5, 0.0 -> 1
         assert scores["score_pipeline_completeness"] == (5.0 if stage_success else 1.0)
 

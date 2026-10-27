@@ -1308,12 +1308,17 @@ async def submit_score(submission: ScoreSubmission, run_id: str | None = None):
             submission.scores,
             repeat_index=submission.repeat_index,
         )
-        recomputed = recompute_platform_likert_from_store(
-            store,
-            target_run,
-            submission.platform_id,
-            _story_budgets(),
-        )
+        try:
+            recomputed = recompute_platform_likert_from_store(
+                store,
+                target_run,
+                submission.platform_id,
+                _story_budgets(),
+            )
+        except KeyError as e:
+            raise HTTPException(
+                status_code=409, detail=f"No time budget known for story {e.args[0]}"
+            ) from e
 
     return {"success": True, "likert": recomputed}
 
@@ -1336,9 +1341,14 @@ async def recompute_scores(run_id: str | None = None):
 
     updated: dict[str, dict[str, float]] = {}
     for pid in platforms:
-        updated[pid] = recompute_platform_likert_from_store(
-            store, target_run, pid, budgets
-        )
+        try:
+            updated[pid] = recompute_platform_likert_from_store(
+                store, target_run, pid, budgets
+            )
+        except KeyError as e:
+            raise HTTPException(
+                status_code=409, detail=f"No time budget known for story {e.args[0]}"
+            ) from e
     return {"run_id": target_run, "platforms": updated}
 
 
