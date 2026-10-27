@@ -174,20 +174,20 @@ class StoryResult:
     def success(self) -> bool:
         """Whether the story was successfully completed.
 
-        Requires COMPLETED status *and* all stages to have passed.
+        Requires COMPLETED status, a result for every expected stage, *and*
+        all stages to have passed (``expected_stages`` empty = legacy rows).
         A story whose runner finished without crashing but whose
         individual stages failed (e.g. CrewAI execution timeout)
         is not considered successful.
         """
         if self.status != StoryStatus.COMPLETED:
             return False
-        if self.raw_result and isinstance(self.raw_result, dict):
-            return all(
-                sr.success
-                for sr in self.raw_result.values()
-                if hasattr(sr, "success")
-            )
-        return True
+        stages = self.raw_result if isinstance(self.raw_result, dict) else {}
+        if any(name not in stages for name in self.expected_stages):
+            return False
+        return all(
+            sr.success for sr in stages.values() if hasattr(sr, "success")
+        )
 
     @property
     def criteria_pass_rate(self) -> float:

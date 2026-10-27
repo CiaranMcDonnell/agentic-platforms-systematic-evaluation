@@ -197,3 +197,26 @@ class DeployResult(StageResult):
     deployment_ready: bool = False
     build_log: str = ""
     dependency_issues: list[str] = field(default_factory=list)
+
+
+def failed_stage_result(
+    platform_id: str,
+    stage_name: str,
+    error: str,
+    wall_clock_seconds: float = 0.0,
+) -> StageResult:
+    """Failed result of the stage's own subclass, for a stage that raised or timed out."""
+    cls = {
+        "requirements": RequirementsResult,
+        "codegen": CodeResult,
+        "testing": TestResult,
+        "deploy": DeployResult,
+    }.get(stage_name, StageResult)
+    return cls(
+        platform_id=platform_id,
+        stage_name=stage_name,
+        success=False,
+        completed=False,
+        error_message=error,
+        wall_clock_seconds=wall_clock_seconds,
+    )

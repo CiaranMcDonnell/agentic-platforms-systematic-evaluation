@@ -11,7 +11,7 @@ from desmet.harness.results import (
     TestResult,
     UMLDiagram,
 )
-from desmet.harness.story import DifficultyLevel, UserStory
+from desmet.harness.story import DifficultyLevel, StoryResult, StoryStatus, UserStory
 
 
 @pytest.fixture
@@ -137,3 +137,10 @@ class TestDeployResult:
         )
         assert result.build_success is True
         assert result.deployment_ready is True
+
+
+def test_success_false_when_expected_stage_missing():
+    r = StoryResult(story_id="s", platform_id="p", execution_id="e",
+                    status=StoryStatus.COMPLETED, expected_stages=["requirements", "codegen"])
+    r.raw_result = {"requirements": StageResult(platform_id="p", stage_name="requirements", success=True)}
+    assert r.success is False

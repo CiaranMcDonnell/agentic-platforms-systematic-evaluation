@@ -4,6 +4,7 @@ Verifies that _run_story executes four sequential stages (requirements,
 codegen, testing, deploy), accumulates artifacts on the StageContext,
 tolerates individual stage failures, and respects dry_run.
 """
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -203,20 +204,36 @@ class TestRunnerStageExecution:
         result = runner.results["test_platform"]["US-001"]
         assert result.status == StoryStatus.COMPLETED
 
-    async def test_story_result_status_on_all_fail(self, runner_setup):
-        """When all stages fail, the story should still complete (stages are
-        non-blocking) but result should reflect partial failure."""
+    async def test_all_stages_raise_is_not_success(self, runner_setup):
         runner, adapter = runner_setup
-        adapter.generate_requirements.side_effect = Exception("fail")
-        adapter.generate_code.side_effect = Exception("fail")
-        adapter.generate_tests.side_effect = Exception("fail")
-        adapter.build_and_deploy.side_effect = Exception("fail")
-
+        for m in ("generate_requirements", "generate_code", "generate_tests", "build_and_deploy"):
+            getattr(adapter, m).side_effect = Exception("fail")
         await runner.run_full_evaluation()
+        r = runner.results["test_platform"]["US-001"]
+        assert r.status == StoryStatus.COMPLETED
+        assert r.success is False
+        assert set(r.raw_result) == {"requirements", "codegen", "testing", "deploy"}
+        assert r.raw_result["codegen"].error_message == "Exception: fail"
+        assert isinstance(r.raw_result["codegen"], CodeResult)
 
-        result = runner.results["test_platform"]["US-001"]
-        # Story still completes (stage failures are non-blocking)
-        assert result.status == StoryStatus.COMPLETED
+    async def test_single_stage_run_success_needs_only_that_stage(self, runner_setup):
+        runner, _ = runner_setup
+        runner.config.stage = "codegen"
+        await runner.run_full_evaluation()
+        r = runner.results["test_platform"]["US-001"]
+        assert r.expected_stages == ["codegen"] and r.success is True
+
+    async def test_in_process_stage_timeout(self, runner_setup):
+        runner, adapter = runner_setup
+        runner.config.stage_timeout_seconds = 1
+
+        async def slow(ctx):
+            await asyncio.sleep(5)
+
+        adapter.generate_code.side_effect = slow
+        await runner.run_full_evaluation()
+        cg = runner.results["test_platform"]["US-001"].raw_result["codegen"]
+        assert cg.success is False and cg.error_message == "Stage timed out after 1s"
 
     async def test_workspace_created(self, runner_setup, sample_story, tmp_path):
         """The runner should create a workspace directory from baseline."""

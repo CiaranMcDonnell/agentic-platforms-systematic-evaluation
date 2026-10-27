@@ -20,7 +20,7 @@ from typing import Any
 
 from desmet.harness.context import StageContext
 from desmet.harness.resource_monitor import ResourceMonitor
-from desmet.harness.results import StageResult
+from desmet.harness.results import StageResult, failed_stage_result
 from desmet.platforms_config import get_platform_field, get_platforms_config
 
 _log = logging.getLogger(__name__)
@@ -30,12 +30,6 @@ _IMAGE_TAG = "1.0"
 _BASE_IMAGE = f"desmet-eval-base:{_IMAGE_TAG}"
 
 _STAGE_NAMES = {"requirements", "codegen", "testing", "deploy"}
-
-# Hard wall-clock cap per stage.  Without it a model that loops (e.g. GLM
-# retrying an unreachable deploy for 18+ minutes) runs unbounded and its
-# time/token/cost figures stop meaning anything.  600s is the basic-story
-# time budget; no Sonnet/Terra stage on US-001 exceeded 152s.
-STAGE_TIMEOUT_SECONDS = int(os.environ.get("DESMET_STAGE_TIMEOUT", "600"))
 
 # Progress lines end with "(<elapsed>s, <cumulative> tokens)"; on timeout
 # the last value is the only token count we have for the killed stage.
@@ -553,8 +547,9 @@ def _timed_out_result(
     stage_name: str,
     tokens_seen: int,
     resource_summary: Any,
+    timeout_seconds: int,
 ) -> StageResult:
-    """Failed StageResult for a stage killed at ``STAGE_TIMEOUT_SECONDS``.
+    """Failed StageResult for a stage killed at ``timeout_seconds``.
 
     The container's own result JSON is lost with the process, so tokens
     come from the last progress line (input/output split unknown, recorded
@@ -563,18 +558,17 @@ def _timed_out_result(
     from desmet.cost_calculator import estimate_cost
 
     model = os.environ.get("DESMET_MODEL", "")
-    return StageResult(
-        platform_id=platform_id,
-        stage_name=stage_name,
-        success=False,
-        completed=False,
-        error_message=f"Stage timed out after {STAGE_TIMEOUT_SECONDS}s",
-        wall_clock_seconds=float(STAGE_TIMEOUT_SECONDS),
-        tokens_input=tokens_seen,
-        cost_usd=estimate_cost(model, input_tokens=tokens_seen) if model else 0.0,
-        framework_metrics={"timed_out": 1.0},
-        resource_metrics=resource_summary.to_dict(),
+    result = failed_stage_result(
+        platform_id,
+        stage_name,
+        f"Stage timed out after {timeout_seconds}s",
+        wall_clock_seconds=float(timeout_seconds),
     )
+    result.tokens_input = tokens_seen
+    result.cost_usd = estimate_cost(model, input_tokens=tokens_seen) if model else 0.0
+    result.framework_metrics = {"timed_out": 1.0}
+    result.resource_metrics = resource_summary.to_dict()
+    return result
 
 
 async def run_stage_in_container(
@@ -582,6 +576,8 @@ async def run_stage_in_container(
     stage_name: str,
     context: StageContext,
     progress_callback: Callable[[str], None] | None = None,
+    *,
+    timeout_seconds: int,
 ) -> StageResult:
     """Run an adapter stage inside a per-platform Docker container.
 
@@ -657,7 +653,7 @@ async def run_stage_in_container(
 
     stderr_task = asyncio.create_task(_stream_stderr())
     try:
-        stdout_data = await asyncio.wait_for(_collect(), timeout=STAGE_TIMEOUT_SECONDS)
+        stdout_data = await asyncio.wait_for(_collect(), timeout=timeout_seconds)
     except asyncio.TimeoutError:
         resource_summary = monitor.stop()
         proc.kill()
@@ -672,10 +668,12 @@ async def run_stage_in_container(
             pass
         if progress_callback:
             progress_callback(
-                f"  [{stage_name.upper()}] TIMEOUT after {STAGE_TIMEOUT_SECONDS}s "
+                f"  [{stage_name.upper()}] TIMEOUT after {timeout_seconds}s "
                 f"({last_tokens:,} tokens so far)"
             )
-        return _timed_out_result(platform_id, stage_name, last_tokens, resource_summary)
+        return _timed_out_result(
+            platform_id, stage_name, last_tokens, resource_summary, timeout_seconds,
+        )
     except asyncio.CancelledError:
         # Kill the docker exec process and stop the container
         monitor.stop()

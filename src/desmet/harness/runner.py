@@ -38,7 +38,7 @@ from .adapter import BasePlatformAdapter
 from .auto_rubric import compute_auto_rubric_scores
 from .context import StageContext
 from .metrics import MetricsCollector, SetupMetrics, StageMetrics, StoryMetrics
-from .results import CodeResult, StageResult, TestResult
+from .results import CodeResult, StageResult, TestResult, failed_stage_result
 from .store import ResultStore
 from .story import DifficultyLevel, StoryResult, StoryStatus, UserStory
 
@@ -82,6 +82,8 @@ class RunnerConfig:
     # Timeouts
     setup_timeout_seconds: int = 300
     story_timeout_multiplier: float = 1.5  # Multiply story budget by this
+    # Per-stage wall-clock cap; None = the story's stage_ctx.time_budget_seconds
+    stage_timeout_seconds: int | None = None
 
     # Filtering
     platforms: list[str] | None = None  # None = all platforms
@@ -432,14 +434,28 @@ class EvaluationRunner:
         stage_key: str,
         method_name: str,
         ctx: StageContext,
+        *,
+        timeout_seconds: int,
     ) -> StageResult:
-        """Run one stage via the configured execution mode (the only switch)."""
+        """Run one stage via the configured execution mode (the only switch).
+
+        Both paths share one wall-clock cap and the same timeout result.
+        """
         if self._execution_mode_for(platform_id) == "container":
             from desmet.harness import container_runner
             return await container_runner.run_stage_in_container(
                 platform_id, stage_key, ctx, self.progress_callback,
+                timeout_seconds=timeout_seconds,
             )
-        return await getattr(adapter, method_name)(ctx)
+        try:
+            return await asyncio.wait_for(
+                getattr(adapter, method_name)(ctx), timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            return failed_stage_result(
+                platform_id, stage_key, f"Stage timed out after {timeout_seconds}s",
+                wall_clock_seconds=float(timeout_seconds),
+            )
 
     async def _run_story(
         self,
@@ -548,6 +564,8 @@ class EvaluationRunner:
                 else:
                     stages_to_run = self._STAGES
 
+                result.expected_stages = [k for k, _ in stages_to_run]
+
                 # Initialise git remote in workspace for deploy stage
                 self._init_deploy_repo(workspace, platform_id, story.id)
 
@@ -575,6 +593,10 @@ class EvaluationRunner:
                         ):
                             stage_result = await self._run_stage(
                                 platform_id, adapter, stage_key, method_name, stage_ctx,
+                                timeout_seconds=(
+                                    self.config.stage_timeout_seconds
+                                    or stage_ctx.time_budget_seconds
+                                ),
                             )
                             stage_ctx.add_artifacts(stage_key, stage_result)
                             stage_results[stage_key] = stage_result
@@ -617,6 +639,10 @@ class EvaluationRunner:
                         logger.error(f"stage_{stage_key}_failed", error=str(e))
                         if self.progress_callback is not None:
                             self.progress_callback(f"  [{stage_key.upper()}] ERROR — {e}")
+                        # Record the failure so the story cannot read as a success
+                        stage_results[stage_key] = failed_stage_result(
+                            platform_id, stage_key, f"{type(e).__name__}: {e}",
+                        )
                         # Continue -- do NOT block later stages
 
                 # Clean up platform container after story completes

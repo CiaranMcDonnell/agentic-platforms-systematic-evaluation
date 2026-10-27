@@ -431,8 +431,7 @@ class TestStageTimeout:
         async def fake_exec(*args, **kwargs):
             return proc
 
-        with patch.object(cr, "STAGE_TIMEOUT_SECONDS", 0.2), \
-                patch.object(cr, "has_image", return_value=True), \
+        with patch.object(cr, "has_image", return_value=True), \
                 patch.object(cr, "_ensure_container", return_value="c"), \
                 patch.object(cr, "ResourceMonitor") as monitor, \
                 patch.object(cr, "stop_container") as stop, \
@@ -440,11 +439,11 @@ class TestStageTimeout:
                 patch("desmet.cost_calculator.estimate_cost", return_value=0.01):
             monitor.return_value.stop.return_value.to_dict.return_value = {}
             result = await cr.run_stage_in_container(
-                "langgraph", "deploy", context, progress.append
+                "langgraph", "deploy", context, progress.append, timeout_seconds=1,
             )
 
         assert result.success is False
-        assert "timed out" in result.error_message
+        assert result.error_message == "Stage timed out after 1s"
         assert result.tokens_input == 98_765
         assert result.framework_metrics == {"timed_out": 1.0}
         proc.kill.assert_called_once()
