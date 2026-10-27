@@ -12,7 +12,7 @@ from typing import Any
 import duckdb
 import pandas as pd
 
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 
 _CREATE_SQL = """\
 CREATE TABLE IF NOT EXISTS store_meta (
@@ -27,7 +27,16 @@ CREATE TABLE IF NOT EXISTS runs (
     temperature     FLOAT,
     platforms_filter VARCHAR[],
     stories_filter  VARCHAR[],
-    note            VARCHAR
+    note            VARCHAR,
+    git_sha         VARCHAR,
+    git_dirty       BOOLEAN,
+    provider        VARCHAR,
+    deploy_mode     VARCHAR,
+    execution_mode  VARCHAR,
+    stage_timeout_seconds INTEGER,
+    prompts_sha256  VARCHAR,
+    image_digests   VARCHAR,
+    pricing_snapshot VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS executions (
@@ -71,9 +80,41 @@ CREATE TABLE IF NOT EXISTS executions (
     pytest_exit_code    INTEGER,
     artifact_path       VARCHAR,
     criteria_results    VARCHAR,
-    deploy_healthy      BOOLEAN
+    deploy_healthy      BOOLEAN,
+    execution_mode      VARCHAR,
+    reported_tests_run    INTEGER,
+    reported_tests_passed INTEGER,
+    reported_tests_failed INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS stage_executions (
+    execution_id    VARCHAR NOT NULL,
+    run_id          VARCHAR NOT NULL,
+    stage_name      VARCHAR NOT NULL,
+    success         BOOLEAN,
+    error_message   VARCHAR,
+    wall_clock_seconds DOUBLE,
+    iterations      INTEGER,
+    tool_calls      INTEGER,
+    tokens_input    BIGINT,
+    tokens_output   BIGINT,
+    cost_usd        DOUBLE,
+    human_interventions INTEGER,
+    PRIMARY KEY (execution_id, stage_name)
 );
 """
+
+_MANIFEST_COLUMNS = (
+    "git_sha",
+    "git_dirty",
+    "provider",
+    "deploy_mode",
+    "execution_mode",
+    "stage_timeout_seconds",
+    "prompts_sha256",
+    "image_digests",
+    "pricing_snapshot",
+)
 
 
 class ResultStore:
@@ -132,6 +173,37 @@ class ResultStore:
                 self._conn.execute(
                     "ALTER TABLE executions ADD COLUMN IF NOT EXISTS deploy_healthy BOOLEAN"
                 )
+            if current < 6:
+                # NULL on legacy rows: run manifest, execution mode and
+                # per-stage rows weren't recorded.
+                for col in (
+                    "git_sha VARCHAR",
+                    "git_dirty BOOLEAN",
+                    "provider VARCHAR",
+                    "deploy_mode VARCHAR",
+                    "execution_mode VARCHAR",
+                    "stage_timeout_seconds INTEGER",
+                    "prompts_sha256 VARCHAR",
+                    "image_digests VARCHAR",
+                    "pricing_snapshot VARCHAR",
+                ):
+                    self._conn.execute(f"ALTER TABLE runs ADD COLUMN IF NOT EXISTS {col}")
+                for col in (
+                    "execution_mode VARCHAR",
+                    "reported_tests_run INTEGER",
+                    "reported_tests_passed INTEGER",
+                    "reported_tests_failed INTEGER",
+                ):
+                    self._conn.execute(f"ALTER TABLE executions ADD COLUMN IF NOT EXISTS {col}")
+                self._conn.execute(
+                    "CREATE TABLE IF NOT EXISTS stage_executions ("
+                    "execution_id VARCHAR NOT NULL, run_id VARCHAR NOT NULL,"
+                    " stage_name VARCHAR NOT NULL, success BOOLEAN, error_message VARCHAR,"
+                    " wall_clock_seconds DOUBLE, iterations INTEGER, tool_calls INTEGER,"
+                    " tokens_input BIGINT, tokens_output BIGINT, cost_usd DOUBLE,"
+                    " human_interventions INTEGER,"
+                    " PRIMARY KEY (execution_id, stage_name))"
+                )
             self._conn.execute("UPDATE store_meta SET version = ?", [_SCHEMA_VERSION])
 
     # ------------------------------------------------------------------
@@ -162,6 +234,17 @@ class ResultStore:
         now = datetime.now(timezone.utc)
         self._conn.execute("UPDATE runs SET finished_at = ? WHERE run_id = ?", [now, run_id])
 
+    def update_run_manifest(self, run_id: str, manifest: dict[str, Any]) -> None:
+        """Set run manifest columns; unknown keys are ignored, dict/list values stored as JSON."""
+        items = [(k, v) for k, v in manifest.items() if k in _MANIFEST_COLUMNS]
+        if not items:
+            return
+        values = [json.dumps(v) if isinstance(v, (dict, list)) else v for _, v in items]
+        assignments = ", ".join(f"{k} = ?" for k, _ in items)
+        self._conn.execute(
+            f"UPDATE runs SET {assignments} WHERE run_id = ?", [*values, run_id]
+        )
+
     def save_execution(
         self,
         run_id: str,
@@ -184,9 +267,10 @@ class ResultStore:
             "  repeat_index, resource_peak_memory_bytes,"
             "  resource_avg_cpu_percent, resource_net_tx_bytes, stages_passed,"
             "  tests_run, tests_passed, tests_failed, pytest_exit_code, artifact_path,"
-            "  criteria_results, deploy_healthy"
+            "  criteria_results, deploy_healthy, execution_mode,"
+            "  reported_tests_run, reported_tests_passed, reported_tests_failed"
             ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
-            " ?, ?, ?, ?, ?, ?, ?)",
+            " ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 result.execution_id,
                 run_id,
@@ -232,8 +316,32 @@ class ResultStore:
                 result.artifact_path,
                 json.dumps(result.criteria_results) if result.criteria_results else None,
                 result.deploy_healthy,
+                result.execution_mode,
+                result.reported_tests_run,
+                result.reported_tests_passed,
+                result.reported_tests_failed,
             ],
         )
+        if isinstance(result.raw_result, dict):
+            for stage_name, stage in result.raw_result.items():
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO stage_executions VALUES "
+                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        result.execution_id,
+                        run_id,
+                        stage_name,
+                        stage.success,
+                        stage.error_message,
+                        stage.wall_clock_seconds,
+                        stage.iterations,
+                        stage.tool_calls_count,
+                        stage.tokens_input,
+                        stage.tokens_output,
+                        stage.cost_usd,
+                        stage.human_interventions,
+                    ],
+                )
 
     # ------------------------------------------------------------------
     # Read path
@@ -250,6 +358,13 @@ class ResultStore:
         """All executions for a run as a DataFrame."""
         return self._conn.execute(
             "SELECT * FROM executions WHERE run_id = ? ORDER BY platform_id, story_id",
+            [run_id],
+        ).df()
+
+    def get_stage_executions(self, run_id: str) -> pd.DataFrame:
+        """Per-stage rows for every execution in a run."""
+        return self._conn.execute(
+            "SELECT * FROM stage_executions WHERE run_id = ? ORDER BY execution_id, stage_name",
             [run_id],
         ).df()
 

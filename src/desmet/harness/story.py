@@ -143,6 +143,15 @@ class StoryResult:
     # Harness-side health check after deploy; None in local mode / no deploy.
     deploy_healthy: bool | None = None
     coverage_delta: float = 0.0
+    # Tests as reported by the platform itself (distinct from harness verification).
+    reported_tests_run: int | None = None
+    reported_tests_passed: int | None = None
+    reported_tests_failed: int | None = None
+
+    # Run context
+    expected_stages: list[str] = field(default_factory=list)
+    execution_mode: str | None = None
+    repeat_index: int = 0
 
     # Artifacts
     output_files: list[str] = field(default_factory=list)
