@@ -724,7 +724,9 @@ class TestNormalizeUsage:
 # ── TestIterationsAreLlmCalls ───────────────────────────────────────────
 
 
-def _make_tool_adapter(responses: int, native: int, fail: bool = False):
+def _make_tool_adapter(
+    responses: int, native: int, fail: bool = False, exhaust: bool = False
+):
     from desmet.adapters._shared.base import ToolAgentAdapter
     from desmet.adapters._shared.tools import ToolFormat
     from desmet.harness.models import PlatformCategory, PlatformInfo, PlatformRuntime
@@ -762,6 +764,10 @@ def _make_tool_adapter(responses: int, native: int, fail: bool = False):
                 collector.record_llm_response({"prompt_tokens": 10, "completion_tokens": 5})
             # Adapters report their own count to the collector too.
             collector.mark_iterations(native)
+            if exhaust:
+                from desmet.adapters._shared.budget import mark_budget_exhausted
+
+                mark_budget_exhausted(collector.trace)
             if fail:
                 raise RuntimeError("boom")
             return native, True
@@ -822,3 +828,18 @@ class TestIterationsAreLlmCalls:
         )
         assert res.success is False
         assert res.iterations == 2
+
+    async def test_exception_path_keeps_framework_metrics(self, tmp_path) -> None:
+        # A stage that raises still spent calls (and maybe its budget);
+        # without framework_metrics they drop out of the execution aggregate.
+        from desmet.adapters._shared.prompts import build_testing_prompt
+        from desmet.harness.results import TestResult
+
+        adapter = _make_tool_adapter(responses=2, native=50, fail=True, exhaust=True)
+        res = await adapter._execute_stage(
+            "testing", build_testing_prompt, TestResult, _make_stage_context(tmp_path)
+        )
+        assert res.success is False
+        assert res.framework_metrics["llm_calls"] == 2.0
+        assert res.framework_metrics["budget_exhausted"] == 1.0
+        assert res.framework_metrics["native_iterations"] is None

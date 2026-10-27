@@ -197,6 +197,10 @@ class ToolAgentAdapter(BasePlatformAdapter):
             # failure.  Don't discard real trace data on error.
             iterations = llm_calls_used(trace)
             trace.total_iterations = iterations
+            # Keep llm_calls / budget flags in the execution aggregate;
+            # the adapter raised, so it never reported a native count.
+            fm = compute_framework_metrics(trace, context.max_iterations)
+            fm["native_iterations"] = None
             return build_stage_result(
                 result_cls,
                 self.platform_info.id,
@@ -205,6 +209,7 @@ class ToolAgentAdapter(BasePlatformAdapter):
                 success=False,
                 iterations=iterations,
                 error_message=str(e),
+                framework_metrics=fm,
             )
 
     # ── Concrete SDLC stage methods ──────────────────────────────────────
