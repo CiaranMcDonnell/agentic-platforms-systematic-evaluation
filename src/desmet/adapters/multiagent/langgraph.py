@@ -283,7 +283,14 @@ class LangGraphAdapter(ToolAgentAdapter):
                     collector.trace.metadata["plan_source"] = plan_source
                 return {"messages": [response]}
 
-            # Fallback: free-text plan
+            # Fallback: free-text plan.  A structured attempt that returned
+            # a response but no parsed plan was still a paid LLM call (the
+            # wrapper only sees the message returned below): record it.
+            if raw_msg is not None and collector is not None:
+                raw_meta = getattr(raw_msg, "response_metadata", None) or {}
+                collector.record_llm_response(
+                    raw_usage=raw_meta.get("token_usage") or raw_meta.get("usage")
+                )
             if plan_source == "structured":
                 plan_source = "freetext"
             response = await llm.ainvoke(messages)
@@ -578,16 +585,23 @@ class LangGraphAdapter(ToolAgentAdapter):
             sub_config = (
                 {**config, "recursion_limit": 2 * remaining} if remaining is not None else config
             )
+            # Stream updates (as the executor does) rather than ainvoke, so
+            # the messages produced before a GraphRecursionError survive it
+            # and their tokens / LLM calls are recorded below.
+            reviewer_msgs: list[BaseMessage] = []
             reviewer_t0 = time.monotonic()
             try:
-                result = await reviewer_sg.ainvoke({"messages": messages}, config=sub_config)
+                async for chunk in reviewer_sg.astream(
+                    {"messages": messages}, config=sub_config, stream_mode="updates",
+                ):
+                    for node_update in chunk.values():
+                        if isinstance(node_update, dict):
+                            reviewer_msgs.extend(node_update.get("messages", []))
             except GraphRecursionError:
-                # The reviewer's partial messages are lost with the
-                # exception; its calls were already counted by the shared
-                # budget only if recorded, so mark the stage spent.
+                # recursion_limit is the remaining budget: it is spent.
                 if collector is not None:
                     mark_budget_exhausted(collector.trace)
-                result = {"messages": []}
+            result = {"messages": reviewer_msgs}
             reviewer_duration = (time.monotonic() - reviewer_t0) * 1000
 
             # Fold the reviewer wall-clock duration into the FIRST per-message

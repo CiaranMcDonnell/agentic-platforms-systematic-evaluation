@@ -216,3 +216,121 @@ def test_run_reviewer_records_duration_on_empty_messages():
         "Missing fallback that records reviewer_duration when message loop "
         "does not execute — _llm_duration_total_ms would silently undercount."
     )
+
+
+def _usage_msg(content="x", tool_calls=None):
+    from langchain_core.messages import AIMessage
+
+    return AIMessage(
+        content=content,
+        tool_calls=tool_calls or [],
+        response_metadata={"token_usage": {"prompt_tokens": 10, "completion_tokens": 5}},
+    )
+
+
+def _collector():
+    from desmet.adapters._shared.observation import (
+        ObservationCollector,
+        ObservationRequirements,
+    )
+    from desmet.harness.trace import AgentTrace
+
+    return ObservationCollector(
+        AgentTrace(),
+        requirements=ObservationRequirements(
+            usage=False, tool_calls=False, llm_duration=False,
+            messages=False, iterations=False,
+        ),
+    )
+
+
+async def test_budget_exhausted_reviewer_still_records_its_calls():
+    """GraphRecursionError inside the reviewer must not discard the calls it
+    already made: their tokens and LLM-call count stay on the trace."""
+    from types import SimpleNamespace
+
+    from langgraph.errors import GraphRecursionError
+
+    from desmet.adapters._shared.budget import budget_exhausted, llm_calls_used
+    from desmet.adapters.multiagent.langgraph import LangGraphAdapter
+
+    class FakePlanner:
+        async def ainvoke(self, state, config=None):
+            return {"messages": [_usage_msg("1. do it")]}
+
+    class FakeExecutor:
+        async def astream(self, state, config=None, stream_mode=None):
+            yield {"executor_node": {"messages": [_usage_msg("done")]}}
+
+    class FakeReviewer:
+        """Two reviewer calls, then the recursion limit (the budget) hits."""
+
+        async def _updates(self):
+            tc = [{"name": "read_file", "args": {"path": "a"}, "id": "t1"}]
+            yield {"review": {"messages": [_usage_msg("", tc)]}}
+            yield {"review": {"messages": [_usage_msg("looks wrong")]}}
+            raise GraphRecursionError("limit")
+
+        def astream(self, state, config=None, stream_mode=None):
+            return self._updates()
+
+        async def ainvoke(self, state, config=None):
+            async for _ in self._updates():
+                pass
+
+    adapter = LangGraphAdapter()
+    adapter._build_planner_subgraph = lambda llm, collector=None: FakePlanner()
+    adapter._build_executor_subgraph = lambda llm, tools: FakeExecutor()
+    adapter._build_reviewer_subgraph = lambda llm, tools: FakeReviewer()
+    collector = _collector()
+    policy = SimpleNamespace(
+        max_retries=3, total_attempts=lambda: 4, validate=lambda: (False, "missing"),
+    )
+    graph = adapter._build_graph(
+        object(), [], collector=collector, policy=policy, budget=50,
+    )
+    await graph.ainvoke(
+        {
+            "prompt": "p", "system_msg": None, "plan": "", "plan_obj": None,
+            "stage": "codegen", "workspace": "/w", "retry_count": 0,
+            "validator_passed": False, "last_validator_feedback": "", "iterations": 0,
+        },
+        config={"configurable": {"thread_id": "t"}},
+    )
+
+    trace = collector.trace
+    assert budget_exhausted(trace)
+    # planner 1 + executor 1 + reviewer 2
+    assert llm_calls_used(trace) == 4
+    assert (trace.total_tokens_input, trace.total_tokens_output) == (40, 20)
+    assert [tc.tool_name for tc in trace.tool_calls] == ["read_file"]
+
+
+async def test_structured_planner_parse_failure_records_its_call():
+    """A structured attempt that returned a response but no parsed plan was
+    a paid LLM call; the free-text retry must not hide it."""
+    from langchain_core.messages import HumanMessage
+
+    from desmet.adapters._shared.budget import llm_calls_used
+    from desmet.adapters.multiagent.langgraph import LangGraphAdapter
+
+    class FakeStructured:
+        async def ainvoke(self, messages):
+            return {"raw": _usage_msg("not json"), "parsed": None, "parsing_error": "bad"}
+
+    class FakeLLM:
+        def with_structured_output(self, schema, include_raw=False):
+            return FakeStructured()
+
+        async def ainvoke(self, messages):
+            return _usage_msg("1. free text plan")
+
+    collector = _collector()
+    planner = LangGraphAdapter()._build_planner_subgraph(FakeLLM(), collector=collector)
+    result = await planner.ainvoke({"messages": [HumanMessage(content="p")]})
+
+    assert result["messages"][-1].content == "1. free text plan"
+    # The structured call is recorded in the node; the wrapper records
+    # the returned free-text message as before.
+    assert llm_calls_used(collector.trace) == 1
+    assert collector.trace.total_tokens_input == 10
