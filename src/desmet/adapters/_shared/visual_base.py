@@ -26,6 +26,7 @@ from desmet.adapters._shared.prompts import (
     build_system_message,
     build_testing_prompt,
 )
+from desmet.adapters._shared.retry import RetryPolicy
 from desmet.adapters._shared.tracing import (
     build_stage_result,
     compute_framework_metrics,
@@ -118,6 +119,11 @@ class VisualAgentAdapter(VisualPlatformAdapter):
 
             record_message(trace, "user", prompt)
 
+            retry_policy = RetryPolicy(
+                max_retries=self.max_retries,
+                stage_name=stage_name,
+                workspace=context.workspace,
+            )
             iterations = 0
             success = False
 
@@ -138,11 +144,16 @@ class VisualAgentAdapter(VisualPlatformAdapter):
                     set(context.metadata.get("baseline_files", [])),
                 )
 
-                if not scope_warnings:
+                # Same validator the code adapters use; scope warnings are
+                # an additional failure condition, not a substitute.
+                validated, validator_msg = retry_policy.validate()
+                if validated and not scope_warnings:
                     success = True
                     break
 
-                feedback = "; ".join(scope_warnings)
+                feedback = "; ".join(
+                    ([] if validated else [validator_msg]) + scope_warnings
+                )
                 logger.info(
                     "%s stage %s attempt %d/%d failed validation: %s",
                     platform_id,

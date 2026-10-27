@@ -201,7 +201,7 @@ class TestN8nStageExecution:
         context.progress_callback = None
         context.metadata = {}
 
-        with patch("desmet.adapters._shared.visual_base.audit_workspace", return_value=[]):
+        with patch("desmet.adapters._shared.visual_base.audit_workspace", return_value=[]),                 patch("desmet.adapters._shared.visual_base.RetryPolicy.validate", return_value=(True, "ok")):
             result = await adapter._execute_visual_stage(
                 "requirements",
                 lambda s, **kw: "Analyse this story: " + s.prompt,

@@ -99,7 +99,10 @@ class TestExecuteVisualStage:
         context.max_iterations = 25
         context.metadata = {}
 
-        with patch("desmet.adapters._shared.visual_base.audit_workspace", return_value=[]):
+        with patch("desmet.adapters._shared.visual_base.audit_workspace", return_value=[]),                 patch(
+                    "desmet.adapters._shared.visual_base.RetryPolicy.validate",
+                    return_value=(True, "ok"),
+                ):
             result = await adapter._execute_visual_stage(
                 "requirements",
                 lambda s, **kw: "Analyse: " + s.prompt,
@@ -139,9 +142,15 @@ class TestExecuteVisualStage:
                 return ["missing file: main.py"]
             return []
 
+        validate_calls = 0
+        def mock_validate(self):
+            nonlocal validate_calls
+            validate_calls += 1
+            return (validate_calls >= 2, "main.py missing")
+
         # The workflow "writes" main.py between the before/after snapshots,
         # otherwise the no-progress guard would demote the stage.
-        with patch("desmet.adapters._shared.visual_base.audit_workspace", side_effect=mock_audit), \
+        with patch("desmet.adapters._shared.visual_base.audit_workspace", side_effect=mock_audit),                 patch("desmet.adapters._shared.visual_base.RetryPolicy.validate", mock_validate), \
                 patch(
                     "desmet.adapters._shared.visual_base.snapshot_workspace",
                     side_effect=[{}, {"main.py": (1, 1)}],
@@ -155,6 +164,36 @@ class TestExecuteVisualStage:
 
         assert result.success is True
         assert adapter._run_workflow.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_empty_workspace_fails_codegen_after_all_retries(self, tmp_path):
+        from desmet.harness.story import UserStory, DifficultyLevel
+        from desmet.harness.results import CodeResult
+
+        adapter = _MockVisualAdapter.create()
+        adapter._run_workflow = AsyncMock(return_value={"status": "success"})
+
+        story = UserStory(
+            id="test_04", title="Test", description="Test",
+            difficulty=DifficultyLevel.BASIC, category="test",
+            prompt="Build it",
+        )
+        context = MagicMock()
+        context.story = story
+        context.workspace = tmp_path
+        context.platform_id = "mock_visual"
+        context.max_iterations = 25
+        context.metadata = {}
+
+        result = await adapter._execute_visual_stage(
+            "codegen",
+            lambda s, **kw: "Build: " + s.prompt,
+            CodeResult,
+            context,
+        )
+
+        assert result.success is False
+        assert adapter._run_workflow.await_count == adapter.max_retries + 1
 
     @pytest.mark.asyncio
     async def test_exception_returns_failure(self):
