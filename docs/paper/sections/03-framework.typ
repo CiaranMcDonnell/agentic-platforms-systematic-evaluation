@@ -1,6 +1,6 @@
 = Evaluation Framework <sec-framework>
 
-The evaluation follows DESMET's hybrid of _benchmarking_ (a standard task run on every platform) and _qualitative screening_ (feature assessment where benchmarks cannot reach) @kitchenham1997desmet. The thesis-length study that this paper condenses applies three layers---industry readiness, platform characteristics, and pipeline benchmarking---to nine platforms; this paper concerns only the third layer and the harness that implements it.
+The evaluation follows DESMET's hybrid of _benchmarking_ (a standard task run on every platform) and _qualitative screening_ (feature assessment where benchmarks cannot reach) @kitchenham1997desmet. The wider study from which this paper is drawn applies three layers---industry readiness, platform characteristics, and pipeline benchmarking---to nine platforms; this paper concerns only the third layer and the harness that implements it.
 
 == Framework-centric stance
 
@@ -12,10 +12,10 @@ Rather than isolated tasks, each platform receives a scenario and drives it thro
 
 #figure(
   table(
-    columns: (auto, 1fr, 1fr, 1fr),
+    columns: (0.9fr, 0.9fr, 1.3fr, 1.3fr),
     align: left,
     stroke: 0.4pt,
-    inset: 4pt,
+    inset: 3.5pt,
     table.header([*Stage*], [*Input*], [*Output*], [*Key metrics*]),
     [1 Requirements \& design], [Scenario (YAML)], [Structured requirements, acceptance criteria, Mermaid UML], [Completion, parseable UML, tool calls, tokens, time],
     [2 Code generation], [Requirements + UML], [Source files in an isolated workspace], [Completion, files produced, tool reliability, tokens, time],
@@ -31,10 +31,10 @@ Each (platform, scenario) run is scored on six framework-centric dimensions usin
 
 #figure(
   table(
-    columns: (auto, 1fr, auto, auto),
+    columns: (1fr, 2.1fr, 0.65fr, 1.05fr),
     align: left,
     stroke: 0.4pt,
-    inset: 4pt,
+    inset: 3.5pt,
     table.header([*Dimension (0--3)*], [*What it measures*], [*Source*], [*Aggregates into*]),
     [Pipeline completeness], [Stages completed end-to-end without manual bridging], [Auto], [Pipeline Completeness],
     [Tool integration], [Tool-call reliability and argument-schema correctness], [Auto-init], [Orchestration],
