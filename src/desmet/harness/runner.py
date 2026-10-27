@@ -699,7 +699,8 @@ class EvaluationRunner:
                 if self.config.verify_workspace and "deploy" in stage_results:
                     from desmet.adapters._shared.tools import harness_health_check
                     result.deploy_healthy = await _aio.to_thread(
-                        harness_health_check, workspace, platform_id, story.id
+                        harness_health_check, workspace, platform_id, story.id,
+                        self.config.deploy_mode,
                     )
                     if self.progress_callback is not None and result.deploy_healthy is not None:
                         self.progress_callback(

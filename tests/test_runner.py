@@ -88,6 +88,7 @@ def runner_setup(mock_adapter, sample_story, tmp_path):
         results_dir=tmp_path / "results",
         logs_dir=tmp_path / "logs",
         execution_mode="in_process",
+        verify_workspace=False,  # skip Docker verification and SSH health check
     )
     runner = EvaluationRunner(
         config=config,
@@ -512,6 +513,10 @@ class TestTestCounts:
             success=True, tests_run=10, tests_passed=10,
         )
         runner.config.verify_workspace = True
+        monkeypatch.setattr(
+            "desmet.adapters._shared.tools.harness_health_check",
+            lambda *a, **k: None,
+        )
         # runner.py imports it lazily, so patch the source module
         monkeypatch.setattr(
             "desmet.harness.verification.verify_execution",

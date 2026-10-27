@@ -954,6 +954,7 @@ def harness_health_check(
     workspace: Path,
     platform_id: str,
     story_id: str,
+    deploy_mode: str,
     attempts: int = 3,
     delay_seconds: float = 5.0,
 ) -> bool | None:
@@ -965,11 +966,11 @@ def harness_health_check(
     stage is then backed by a live endpoint rather than the agent's own
     report.  Returns ``None`` in local mode, where platform containers
     can't run Docker and nothing is deployed, or when deploy isn't
-    configured.
+    configured.  ``deploy_mode`` is the run's explicit mode, not an env var.
     """
     import time
 
-    if os.environ.get("DESMET_DEPLOY_MODE", "remote") == "local":
+    if deploy_mode == "local":
         return None
     host = os.environ.get("DEPLOY_HOST")
     user = os.environ.get("DEPLOY_USER")

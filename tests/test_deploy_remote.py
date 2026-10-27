@@ -161,3 +161,28 @@ class TestLocalDeployMode:
                 action="destroy",
             )
             assert "Error" in result
+
+
+class TestHarnessHealthCheckDeployMode:
+    def test_local_mode_skips_ssh(self, tmp_path, monkeypatch):
+        from desmet.adapters._shared.tools import harness_health_check
+
+        monkeypatch.setenv("DEPLOY_HOST", "h")
+        monkeypatch.setenv("DEPLOY_USER", "u")
+        monkeypatch.setenv("DEPLOY_KEY_PATH", "~/k")
+        monkeypatch.delenv("DESMET_DEPLOY_MODE", raising=False)
+        with patch("desmet.adapters._shared.tools.subprocess.run") as run:
+            assert harness_health_check(tmp_path, "p", "US-001", deploy_mode="local") is None
+        run.assert_not_called()
+
+    def test_remote_mode_curls_health_endpoint(self, tmp_path, monkeypatch):
+        from desmet.adapters._shared.tools import harness_health_check
+
+        monkeypatch.setenv("DEPLOY_HOST", "h")
+        monkeypatch.setenv("DEPLOY_USER", "u")
+        monkeypatch.setenv("DEPLOY_KEY_PATH", "~/k")
+        with patch("desmet.adapters._shared.tools.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0)
+            assert harness_health_check(tmp_path, "p", "US-001", deploy_mode="remote") is True
+        port = _deploy_port("p", "US-001")
+        assert run.call_args[0][0][-1] == f"curl -sf http://localhost:{port}/health"
