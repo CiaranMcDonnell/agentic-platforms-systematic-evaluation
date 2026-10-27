@@ -1,1 +1,1 @@
-= The desmet Harness
+= The `desmet` Harness <sec-harness>
