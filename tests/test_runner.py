@@ -431,3 +431,20 @@ class TestExecutionMode:
                 [sample_story],
                 tmp_path,
             )
+
+    async def test_mode_is_decided_per_platform(self, runner_setup, fake_containers, sample_story):
+        runner, adapter = runner_setup
+        runner.platforms["box"] = ContainerOnlyAdapter("langgraph")
+        runner.config.platform_execution_modes = {
+            "box": "container",
+            "test_platform": "in_process",
+        }
+        fake_containers.build_ok = False
+        await runner.run_full_evaluation()
+        ok = runner.results["test_platform"]["US-001"]
+        assert ok.status == StoryStatus.COMPLETED
+        assert ok.execution_mode == "in_process"
+        bad = runner.results["box"]["US-001"]
+        assert bad.status == StoryStatus.FAILED
+        assert bad.execution_mode == "container"
+        assert fake_containers.build_calls == ["box"]

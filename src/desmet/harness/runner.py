@@ -18,7 +18,7 @@ import json
 import os
 import shutil
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -100,6 +100,8 @@ class RunnerConfig:
     # "container": every stage runs in the platform's Docker image.
     # "in_process": stages call the adapter directly, never touching Docker.
     execution_mode: str = "container"
+    # Per-platform override of execution_mode, keyed by platform id
+    platform_execution_modes: dict[str, str] = field(default_factory=dict)
 
 
 class EvaluationRunner:
@@ -127,15 +129,20 @@ class EvaluationRunner:
         self.baseline_repo = baseline_repo
         self.progress_callback = progress_callback
 
-        if config.execution_mode not in ("container", "in_process"):
-            raise ValueError(f"Unknown execution_mode: {config.execution_mode!r}")
-        if config.execution_mode == "in_process":
-            from desmet.harness.adapter import ContainerOnlyAdapter
-            stubs = [pid for pid, a in platforms.items() if isinstance(a, ContainerOnlyAdapter)]
-            if stubs:
-                raise ValueError(
-                    f"execution_mode='in_process' cannot run container-only adapters: {stubs}"
-                )
+        for pid in {*platforms, *config.platform_execution_modes}:
+            mode = self._execution_mode_for(pid)
+            if mode not in ("container", "in_process"):
+                raise ValueError(f"Unknown execution_mode for {pid}: {mode!r}")
+        from desmet.harness.adapter import ContainerOnlyAdapter
+        stubs = [
+            pid for pid, a in platforms.items()
+            if isinstance(a, ContainerOnlyAdapter)
+            and self._execution_mode_for(pid) == "in_process"
+        ]
+        if stubs:
+            raise ValueError(
+                f"execution_mode='in_process' cannot run container-only adapters: {stubs}"
+            )
 
         # Platform image build outcome, filled once per platform per run
         self._built_images: dict[str, bool] = {}
@@ -205,7 +212,7 @@ class EvaluationRunner:
                     platform_name=adapter.platform_info.name,
                 )
 
-                if self.config.execution_mode == "container" and not self.config.dry_run:
+                if self._execution_mode_for(platform_id) == "container" and not self.config.dry_run:
                     await self._prepare_platform_image(platform_id)
 
                 # Run each story
@@ -300,7 +307,7 @@ class EvaluationRunner:
             tags=["single-story"],
         ) as trace:
             try:
-                if self.config.execution_mode == "container" and not self.config.dry_run:
+                if self._execution_mode_for(platform_id) == "container" and not self.config.dry_run:
                     await self._prepare_platform_image(platform_id)
                 repeat_results: list[StoryResult] = []
                 for repeat_idx in range(self.config.repeats):
@@ -393,6 +400,11 @@ class EvaluationRunner:
         ("deploy", "build_and_deploy"),
     ]
 
+    def _execution_mode_for(self, platform_id: str) -> str:
+        return self.config.platform_execution_modes.get(
+            platform_id, self.config.execution_mode
+        )
+
     async def _prepare_platform_image(self, platform_id: str) -> bool:
         """Build the platform image once; later stories reuse the outcome.
 
@@ -422,7 +434,7 @@ class EvaluationRunner:
         ctx: StageContext,
     ) -> StageResult:
         """Run one stage via the configured execution mode (the only switch)."""
-        if self.config.execution_mode == "container":
+        if self._execution_mode_for(platform_id) == "container":
             from desmet.harness import container_runner
             return await container_runner.run_stage_in_container(
                 platform_id, stage_key, ctx, self.progress_callback,
@@ -456,7 +468,7 @@ class EvaluationRunner:
             execution_id=f"{platform_id}_{story.id}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}{suffix}",
             status=StoryStatus.RUNNING,
             start_time=datetime.now(timezone.utc),
-            execution_mode=self.config.execution_mode,
+            execution_mode=self._execution_mode_for(platform_id),
         )
 
         structlog.contextvars.bind_contextvars(
@@ -471,7 +483,7 @@ class EvaluationRunner:
             return result
 
         if (
-            self.config.execution_mode == "container"
+            self._execution_mode_for(platform_id) == "container"
             and not self._built_images.get(platform_id, False)
         ):
             result.status = StoryStatus.FAILED
@@ -608,7 +620,7 @@ class EvaluationRunner:
                         # Continue -- do NOT block later stages
 
                 # Clean up platform container after story completes
-                if self.config.execution_mode == "container":
+                if self._execution_mode_for(platform_id) == "container":
                     await _aio.to_thread(container_runner.stop_container, platform_id, story.id)
 
                 # Archive the workspace and run its test suite so the
