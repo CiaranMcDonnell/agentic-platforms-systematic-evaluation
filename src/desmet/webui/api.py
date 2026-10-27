@@ -763,17 +763,25 @@ async def _execute_run(run: RunState, req: RunRequest):
         adapters = {}
         for pid in req.platforms:
             from desmet.harness.adapter import ContainerOnlyAdapter
-            from desmet.harness.container_runner import has_image, image_name
-            # Prefer container execution — avoids importing platform SDKs on the host
-            if has_image(pid):
+            from desmet.harness.container_runner import PLATFORM_EXTRA_MAP, has_image, image_name
+            if pid in PLATFORM_EXTRA_MAP:
+                # Code frameworks always run in their platform container:
+                # in-process they would execute LLM-generated shell
+                # commands on the host, and their results would not be
+                # comparable.  The runner (re)builds the image and fails
+                # this platform's stories if the build fails.
                 adapters[pid] = ContainerOnlyAdapter(pid)
-                await _broadcast_log(run.run_id, f"  {pid}: ready (image {image_name(pid)})")
+                state = "" if has_image(pid) else ", not built yet — building"
+                await _broadcast_log(
+                    run.run_id, f"  {pid}: container (image {image_name(pid)}{state})"
+                )
             else:
+                # Visual platforms drive their external service from the host.
                 try:
                     adapters[pid] = get_adapter(pid)
                     await _broadcast_log(run.run_id, f"  {pid}: ready")
                 except (KeyError, AdapterNotImplementedError, ImportError, ModuleNotFoundError):
-                    await _broadcast_log(run.run_id, f"  {pid}: FAILED — no Docker image found, run 'docker build' first")
+                    await _broadcast_log(run.run_id, f"  {pid}: FAILED — adapter not available")
 
         if not adapters:
             raise ValueError("No valid platform adapters found")

@@ -470,10 +470,14 @@ class TestExecutionMode:
         runner, adapter = runner_setup
         runner.config.execution_mode = "container"
         fake_containers.build_ok = False
+        progress: list[str] = []
+        runner.progress_callback = progress.append
         await runner.run_full_evaluation()
         r = runner.results["test_platform"]["US-001"]
         assert r.status == StoryStatus.FAILED
         assert "image build failed" in r.error_message.lower()
+        # Loud: the build failure reaches the run log, not just structlog.
+        assert any("[ERROR] Docker image build failed for test_platform" in m for m in progress)
         assert r.execution_mode == "container"
         assert fake_containers.run_stage_calls == []
         adapter.generate_requirements.assert_not_called()

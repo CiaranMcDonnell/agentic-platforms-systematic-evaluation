@@ -475,6 +475,11 @@ class EvaluationRunner:
         self._built_images[platform_id] = bool(ok)
         if not ok:
             logger.error("image_build_failed", platform=platform_id)
+            if self.progress_callback:
+                self.progress_callback(
+                    f"  [ERROR] Docker image build failed for {platform_id}; "
+                    f"its stories are recorded as failed"
+                )
         else:
             digest = await _aio.to_thread(container_runner.image_digest, platform_id)
             self._record_image_digest(platform_id, digest)
