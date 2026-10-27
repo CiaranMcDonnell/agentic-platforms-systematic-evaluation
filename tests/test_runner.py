@@ -261,6 +261,25 @@ class TestRunnerStageExecution:
         assert r.raw_result["codegen"].error_message == "Exception: fail"
         assert isinstance(r.raw_result["codegen"], CodeResult)
 
+    async def test_post_stage_error_keeps_real_stage_result(self, runner_setup):
+        """A crash in the progress/metrics code after a stage returned must
+        not replace the paid stage result with a fabricated failure."""
+        runner, adapter = runner_setup
+        adapter.generate_code.return_value = CodeResult(
+            platform_id="test_platform", stage_name="codegen",
+            success=True, tokens_input=200, tokens_output=100,
+        )
+
+        def callback(msg):
+            if "[CODEGEN] PASSED" in msg:
+                raise RuntimeError("progress sink broke")
+
+        runner.progress_callback = callback
+        await runner.run_full_evaluation()
+        cg = runner.results["test_platform"]["US-001"].raw_result["codegen"]
+        assert cg.success is True
+        assert (cg.tokens_input, cg.tokens_output) == (200, 100)
+
     async def test_single_stage_run_success_needs_only_that_stage(self, runner_setup):
         runner, _ = runner_setup
         runner.config.stage = "codegen"

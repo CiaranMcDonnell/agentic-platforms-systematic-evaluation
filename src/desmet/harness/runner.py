@@ -652,8 +652,10 @@ class EvaluationRunner:
                                     or stage_ctx.time_budget_seconds
                                 ),
                             )
-                            stage_ctx.add_artifacts(stage_key, stage_result)
+                            # Store first: a later error in the bookkeeping
+                            # below must not discard a paid stage result.
                             stage_results[stage_key] = stage_result
+                            stage_ctx.add_artifacts(stage_key, stage_result)
 
                             # Record per-stage metrics
                             self.metrics.record_stage_metrics(
@@ -693,10 +695,11 @@ class EvaluationRunner:
                         logger.error(f"stage_{stage_key}_failed", error=str(e))
                         if self.progress_callback is not None:
                             self.progress_callback(f"  [{stage_key.upper()}] ERROR — {e}")
-                        # Record the failure so the story cannot read as a success
-                        stage_results[stage_key] = failed_stage_result(
+                        # Record the failure so the story cannot read as a
+                        # success, unless the stage itself already returned.
+                        stage_results.setdefault(stage_key, failed_stage_result(
                             platform_id, stage_key, f"{type(e).__name__}: {e}",
-                        )
+                        ))
                         # Continue -- do NOT block later stages
 
                 # Clean up platform container after story completes
