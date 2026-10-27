@@ -32,6 +32,12 @@
 !docs/report/**
 !docs/presentation
 !docs/presentation/**
+!docs/paper/
+!docs/paper/**
+docs/paper/formalise2027.pdf
+docs/paper/.check-compile.log
+docs/paper/preview/
+docs/paper/artifact/*.zip
 
 # ── Infrastructure ─────────────────────────────────────────────────────────
 !infrastructure/
