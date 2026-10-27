@@ -298,6 +298,13 @@ class TestRunnerStageExecution:
         await runner.run_full_evaluation()
         cg = runner.results["test_platform"]["US-001"].raw_result["codegen"]
         assert cg.success is False and cg.error_message == "Stage timed out after 1s"
+        assert cg.iterations is None
+        assert cg.framework_metrics["timed_out"] == 1.0
+        assert cg.framework_metrics["llm_calls"] is None
+        # One unknown stage count makes the execution totals unknown.
+        r = runner.results["test_platform"]["US-001"]
+        assert r.iterations is None
+        assert r.framework_metrics["llm_calls"] is None
 
     async def test_workspace_created(self, runner_setup, sample_story, tmp_path):
         """The runner should create a workspace directory from baseline."""

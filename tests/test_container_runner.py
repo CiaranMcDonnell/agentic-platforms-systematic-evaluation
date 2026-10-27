@@ -437,8 +437,14 @@ class TestStageTimeout:
         return proc
 
     @pytest.mark.asyncio
-    async def test_timeout_returns_failed_result_with_token_lower_bound(self, tmp_path):
+    async def test_timeout_returns_failed_result_with_token_lower_bound(
+        self, tmp_path, monkeypatch
+    ):
         from desmet.harness import container_runner as cr
+
+        # Priced with the resolved run model, not the raw env var.
+        monkeypatch.delenv("DESMET_MODEL", raising=False)
+        monkeypatch.setenv("DEFAULT_MODEL", "cfg-model")
 
         context = MagicMock()
         context.story.id = "US-001"
@@ -455,7 +461,7 @@ class TestStageTimeout:
                 patch.object(cr, "ResourceMonitor") as monitor, \
                 patch.object(cr, "stop_container") as stop, \
                 patch("asyncio.create_subprocess_exec", side_effect=fake_exec), \
-                patch("desmet.cost_calculator.estimate_cost", return_value=0.01):
+                patch("desmet.cost_calculator.estimate_cost", return_value=0.01) as cost:
             monitor.return_value.stop.return_value.to_dict.return_value = {}
             result = await cr.run_stage_in_container(
                 "langgraph", "deploy", context, progress.append, timeout_seconds=1,
@@ -464,7 +470,13 @@ class TestStageTimeout:
         assert result.success is False
         assert result.error_message == "Stage timed out after 1s"
         assert result.tokens_input == 98_765
-        assert result.framework_metrics == {"timed_out": 1.0}
+        # Calls made before the kill are unknown, not zero.
+        assert result.iterations is None
+        assert result.framework_metrics == {
+            "timed_out": 1.0, "llm_calls": None, "budget_exhausted": 0.0,
+        }
+        cost.assert_called_once_with("cfg-model", input_tokens=98_765)
+        assert result.cost_usd == 0.01
         proc.kill.assert_called_once()
         stop.assert_called_once_with("langgraph", "US-001")
         assert any("TIMEOUT" in line for line in progress)

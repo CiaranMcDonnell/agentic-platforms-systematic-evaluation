@@ -121,8 +121,8 @@ class StoryResult:
     end_time: datetime | None = None
     wall_clock_seconds: float = 0.0
 
-    # Execution metrics
-    iterations: int = 0
+    # Execution metrics (iterations None: some stage's count is unknown)
+    iterations: int | None = 0
     tool_calls: int = 0
     tokens_input: int = 0
     tokens_output: int = 0

@@ -494,8 +494,8 @@ class EvaluationRunner:
 
         Both paths share one wall-clock cap and the same timeout result.
         """
+        from desmet.harness import container_runner
         if self._execution_mode_for(platform_id) == "container":
-            from desmet.harness import container_runner
             return await container_runner.run_stage_in_container(
                 platform_id, stage_key, ctx, self.progress_callback,
                 timeout_seconds=timeout_seconds,
@@ -506,9 +506,9 @@ class EvaluationRunner:
                     getattr(adapter, method_name)(ctx), timeout=timeout_seconds,
                 )
         except asyncio.TimeoutError:
-            return failed_stage_result(
-                platform_id, stage_key, f"Stage timed out after {timeout_seconds}s",
-                wall_clock_seconds=float(timeout_seconds),
+            # The cancelled adapter's usage is lost: no token lower bound.
+            return container_runner._timed_out_result(
+                platform_id, stage_key, 0, None, timeout_seconds,
             )
 
     async def _run_story(
@@ -682,12 +682,14 @@ class EvaluationRunner:
                             if self.progress_callback is not None:
                                 status = "PASSED" if stage_result.success else "FAILED"
                                 total_tokens = stage_result.tokens_input + stage_result.tokens_output
+                                iters = stage_result.iterations
+                                iters_part = "?" if iters is None else str(iters)
                                 cost_part = f", ${stage_result.cost_usd:.4f}" if stage_result.cost_usd > 0 else ""
                                 error_part = f" — {stage_result.error_message}" if stage_result.error_message else ""
                                 self.progress_callback(
                                     f"  [{stage_key.upper()}] {status} — "
                                     f"{stage_result.wall_clock_seconds:.1f}s, "
-                                    f"{stage_result.iterations} iterations, "
+                                    f"{iters_part} iterations, "
                                     f"{stage_result.tool_calls_count} tool calls, "
                                     f"{total_tokens:,} tokens{cost_part}{error_part}"
                                 )
@@ -755,9 +757,11 @@ class EvaluationRunner:
                 result.status = StoryStatus.COMPLETED
                 result.finalize_timing()
 
-                # Sum metrics across all completed stages
-                result.iterations = sum(
-                    sr.iterations for sr in stage_results.values()
+                # Sum metrics across all completed stages.  One unknown
+                # stage count (None) makes the total unknown, not smaller.
+                stage_iters = [sr.iterations for sr in stage_results.values()]
+                result.iterations = (
+                    None if None in stage_iters else sum(stage_iters)
                 )
                 result.tool_calls = sum(
                     sr.tool_calls_count for sr in stage_results.values()
@@ -802,7 +806,12 @@ class EvaluationRunner:
                     agg["framework_overhead_ms"] = sum(overheads) if overheads else None
                     # Per-stage LLM-call budget: total calls, and which
                     # stages stopped because the budget ran out.
-                    agg["llm_calls"] = sum(fm.get("llm_calls") or 0 for fm in all_fm)
+                    # An explicit None (timed out / usage fallback) is an
+                    # unknown count, so the total is unknown too.
+                    calls = [fm.get("llm_calls", 0) for fm in all_fm]
+                    agg["llm_calls"] = (
+                        None if None in calls else sum(c or 0 for c in calls)
+                    )
                     agg["budget_exhausted_stages"] = sum(
                         fm.get("budget_exhausted") or 0 for fm in all_fm
                     )

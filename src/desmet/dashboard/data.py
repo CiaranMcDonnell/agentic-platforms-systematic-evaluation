@@ -176,7 +176,8 @@ def load_results_raw(run_id: str | None = None) -> dict[str, Any]:
                 "repeat_index": _repeat_index(row),
                 "success": row["status"] == "completed",
                 "wall_clock_seconds": row["wall_clock_seconds"],
-                "iterations": int(row["iterations"] or 0),
+                # NULL = unknown (timed-out stage), not 0.
+                "iterations": None if pd.isna(row["iterations"]) else int(row["iterations"]),
                 "tool_calls": int(row["tool_calls"] or 0),
                 "tokens_input": int(row["tokens_input"] or 0),
                 "tokens_output": int(row["tokens_output"] or 0),

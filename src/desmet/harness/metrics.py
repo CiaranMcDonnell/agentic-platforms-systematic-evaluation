@@ -86,7 +86,7 @@ class StageMetrics:
 
     success: bool = False
     wall_clock_seconds: float = 0.0
-    iterations: int = 0
+    iterations: int | None = 0  # None = unknown (see StageResult.iterations)
     tool_calls: int = 0
     tokens_input: int = 0
     tokens_output: int = 0
@@ -183,7 +183,7 @@ class StoryMetrics:
         return self._result.wall_clock_seconds
 
     @property
-    def iterations(self) -> int:
+    def iterations(self) -> int | None:
         return self._result.iterations
 
     @property
@@ -245,10 +245,11 @@ class VarianceMetrics:
     success_rate: float
     tool_calls_mean: float
     tool_calls_std: float
-    iterations_mean: float
-    iterations_std: float
+    # None when no repeat has a known iteration count.
+    iterations_mean: float | None
+    iterations_std: float | None
 
-    def to_dict(self) -> dict[str, float]:
+    def to_dict(self) -> dict[str, float | None]:
         return {
             "repeats": self.repeats,
             "wall_clock_mean": round(self.wall_clock_mean, 2),
@@ -260,8 +261,12 @@ class VarianceMetrics:
             "success_rate": round(self.success_rate, 4),
             "tool_calls_mean": round(self.tool_calls_mean, 1),
             "tool_calls_std": round(self.tool_calls_std, 1),
-            "iterations_mean": round(self.iterations_mean, 1),
-            "iterations_std": round(self.iterations_std, 1),
+            "iterations_mean": (
+                round(self.iterations_mean, 1) if self.iterations_mean is not None else None
+            ),
+            "iterations_std": (
+                round(self.iterations_std, 1) if self.iterations_std is not None else None
+            ),
         }
 
 
@@ -290,7 +295,8 @@ def compute_variance_metrics(results: list) -> VarianceMetrics:
     tk = [float(r.tokens_input + r.tokens_output) for r in results]
     co = [r.api_cost_usd for r in results]
     tc = [float(r.tool_calls) for r in results]
-    it = [float(r.iterations) for r in results]
+    # Unknown counts (timed-out stages) are left out, not read as 0.
+    it = [float(r.iterations) for r in results if r.iterations is not None]
     completed = sum(1 for r in results if r.status == StoryStatus.COMPLETED)
 
     return VarianceMetrics(
@@ -304,8 +310,8 @@ def compute_variance_metrics(results: list) -> VarianceMetrics:
         success_rate=completed / n,
         tool_calls_mean=mean(tc),
         tool_calls_std=pstdev(tc),
-        iterations_mean=mean(it),
-        iterations_std=pstdev(it),
+        iterations_mean=mean(it) if it else None,
+        iterations_std=pstdev(it) if it else None,
     )
 
 
@@ -709,7 +715,7 @@ def recompute_platform_likert_from_store(
             execution_id=str(row["execution_id"]),
             status=status,
             wall_clock_seconds=float(row["wall_clock_seconds"] or 0),
-            iterations=int(row["iterations"] or 0),
+            iterations=None if _pd.isna(row["iterations"]) else int(row["iterations"]),
             tool_calls=int(row["tool_calls"] or 0),
             tokens_input=int(row["tokens_input"] or 0),
             tokens_output=int(row["tokens_output"] or 0),
@@ -750,7 +756,7 @@ def recompute_platform_likert_from_store(
                     stage_name=str(st["stage_name"]),
                     success=bool(st["success"]) if _pd.notna(st["success"]) else False,
                     wall_clock_seconds=float(st["wall_clock_seconds"] or 0),
-                    iterations=int(st["iterations"] or 0),
+                    iterations=None if _pd.isna(st["iterations"]) else int(st["iterations"]),
                     tool_calls=int(st["tool_calls"] or 0),
                     tokens_input=int(st["tokens_input"] or 0),
                     tokens_output=int(st["tokens_output"] or 0),

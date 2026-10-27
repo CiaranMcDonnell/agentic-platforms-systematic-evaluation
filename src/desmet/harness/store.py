@@ -12,7 +12,7 @@ from typing import Any
 import duckdb
 import pandas as pd
 
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 
 _CREATE_SQL = """\
 CREATE TABLE IF NOT EXISTS store_meta (
@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS stage_executions (
     tokens_output   BIGINT,
     cost_usd        DOUBLE,
     human_interventions INTEGER,
+    timed_out       BOOLEAN,
     PRIMARY KEY (execution_id, stage_name)
 );
 """
@@ -203,6 +204,11 @@ class ResultStore:
                     " tokens_input BIGINT, tokens_output BIGINT, cost_usd DOUBLE,"
                     " human_interventions INTEGER,"
                     " PRIMARY KEY (execution_id, stage_name))"
+                )
+            if current < 7:
+                # NULL on legacy rows: stage timeouts weren't recorded.
+                self._conn.execute(
+                    "ALTER TABLE stage_executions ADD COLUMN IF NOT EXISTS timed_out BOOLEAN"
                 )
             self._conn.execute("UPDATE store_meta SET version = ?", [_SCHEMA_VERSION])
 
@@ -325,8 +331,11 @@ class ResultStore:
         if isinstance(result.raw_result, dict):
             for stage_name, stage in result.raw_result.items():
                 self._conn.execute(
-                    "INSERT OR REPLACE INTO stage_executions VALUES "
-                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT OR REPLACE INTO stage_executions ("
+                    "  execution_id, run_id, stage_name, success, error_message,"
+                    "  wall_clock_seconds, iterations, tool_calls, tokens_input,"
+                    "  tokens_output, cost_usd, human_interventions, timed_out"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     [
                         result.execution_id,
                         run_id,
@@ -340,6 +349,7 @@ class ResultStore:
                         stage.tokens_output,
                         stage.cost_usd,
                         stage.human_interventions,
+                        bool((stage.framework_metrics or {}).get("timed_out")),
                     ],
                 )
 
@@ -516,7 +526,9 @@ class ResultStore:
                     "story_id": row["story_id"],
                     "success": row["status"] == "completed",
                     "wall_clock_seconds": row["wall_clock_seconds"],
-                    "iterations": int(row["iterations"] or 0),
+                    "iterations": None
+                    if pd.isna(row["iterations"])
+                    else int(row["iterations"]),
                     "tool_calls": int(row["tool_calls"] or 0),
                     "tokens_input": int(row["tokens_input"] or 0),
                     "tokens_output": int(row["tokens_output"] or 0),

@@ -546,7 +546,7 @@ def _timed_out_result(
     platform_id: str,
     stage_name: str,
     tokens_seen: int,
-    resource_summary: Any,
+    resource_summary: Any | None,
     timeout_seconds: int,
 ) -> StageResult:
     """Failed StageResult for a stage killed at ``timeout_seconds``.
@@ -554,20 +554,27 @@ def _timed_out_result(
     The container's own result JSON is lost with the process, so tokens
     come from the last progress line (input/output split unknown, recorded
     as input) and cost is priced at the input rate — both lower bounds.
+    The progress line carries no call count, so iterations and llm_calls
+    are unknown (None, stored as NULL), not 0.
     """
+    from desmet import llm_config
     from desmet.cost_calculator import estimate_cost
 
-    model = os.environ.get("DESMET_MODEL", "")
+    model = llm_config.get_config().model
     result = failed_stage_result(
         platform_id,
         stage_name,
         f"Stage timed out after {timeout_seconds}s",
         wall_clock_seconds=float(timeout_seconds),
     )
+    result.iterations = None
     result.tokens_input = tokens_seen
-    result.cost_usd = estimate_cost(model, input_tokens=tokens_seen) if model else 0.0
-    result.framework_metrics = {"timed_out": 1.0}
-    result.resource_metrics = resource_summary.to_dict()
+    result.cost_usd = (
+        estimate_cost(model, input_tokens=tokens_seen) if model and tokens_seen else 0.0
+    )
+    result.framework_metrics = {"timed_out": 1.0, "llm_calls": None, "budget_exhausted": 0.0}
+    if resource_summary is not None:
+        result.resource_metrics = resource_summary.to_dict()
     return result
 
 

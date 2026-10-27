@@ -42,7 +42,9 @@ class StageResult:
 
     # Timing & resource usage
     wall_clock_seconds: float = 0.0
-    iterations: int = 0
+    # LLM calls; None when unknown (stage killed on timeout, or usage only
+    # available as an aggregate) — stored as NULL, never a fabricated 0.
+    iterations: int | None = 0
     tool_calls_count: int = 0
     tokens_input: int = 0
     tokens_output: int = 0
