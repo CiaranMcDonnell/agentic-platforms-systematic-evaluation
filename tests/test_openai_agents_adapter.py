@@ -248,3 +248,92 @@ def test_planner_fallback_records_plan_source():
     assert 'trace.metadata' in src or 'metadata["plan_source"]' in src or "metadata['plan_source']" in src
     # Must not silently swallow — either logs, records error, or narrows except.
     assert 'errors.append' in src or '_log.warning' in src
+
+
+def _usage_responses(n):
+    from types import SimpleNamespace
+
+    return [
+        SimpleNamespace(usage=SimpleNamespace(input_tokens=10, output_tokens=5))
+        for _ in range(n)
+    ]
+
+
+async def _run_with_fake_runner(monkeypatch, tmp_path, structured):
+    """Run _run_agent with Runner.run faked: the structured planner behaves as
+    *structured* says, the free-text planner and the executor make 1 call."""
+    from types import SimpleNamespace
+
+    pytest.importorskip("agents")
+    import agents
+
+    from desmet.adapters._shared.observation import (
+        ObservationCollector,
+        ObservationRequirements,
+    )
+    from desmet.adapters._shared.retry import ProgressReporter, RetryPolicy
+    from desmet.adapters.sdk.openai_agents import OpenAIAgentsAdapter
+    from desmet.harness.context import StageContext
+    from desmet.harness.story import DifficultyLevel, UserStory
+    from desmet.harness.trace import AgentTrace
+
+    async def fake_run(agent, input=None, max_turns=None, **kw):
+        if agent.output_type is not None:
+            return structured()
+        text = "1. step" if agent.name.endswith("_planner") else "done"
+        return SimpleNamespace(new_items=[], raw_responses=_usage_responses(1), final_output=text)
+
+    monkeypatch.setattr(agents.Runner, "run", staticmethod(fake_run))
+    adapter = OpenAIAgentsAdapter()
+    adapter._model = "gpt-test"
+    policy = RetryPolicy(max_retries=0, stage_name="requirements", workspace=tmp_path)
+    monkeypatch.setattr(policy, "validate", lambda: (True, "ok"))
+    story = UserStory(
+        id="US-001", title="t", description="d",
+        difficulty=DifficultyLevel.BASIC, category="smoke", prompt="p",
+    )
+    context = StageContext(story=story, workspace=tmp_path, platform_id="openai_agents")
+    collector = ObservationCollector(
+        AgentTrace(),
+        requirements=ObservationRequirements(
+            usage=False, tool_calls=False, llm_duration=False,
+            messages=False, iterations=False,
+        ),
+    )
+    await adapter._run_agent(
+        "requirements", "p", None, [], collector, context, policy,
+        ProgressReporter(callback=None, collector=collector),
+    )
+    return collector.trace
+
+
+async def test_structured_planner_max_turns_calls_are_recorded(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from desmet.adapters._shared.budget import llm_calls_used
+
+    def structured():
+        from agents.exceptions import MaxTurnsExceeded
+
+        exc = MaxTurnsExceeded("planner ran out of turns")
+        exc.run_data = SimpleNamespace(new_items=[], raw_responses=_usage_responses(3))
+        raise exc
+
+    trace = await _run_with_fake_runner(monkeypatch, tmp_path, structured)
+    # structured planner 3 + free-text planner 1 + executor 1
+    assert llm_calls_used(trace) == 5
+    assert trace.total_tokens_input == 50
+
+
+async def test_structured_planner_without_plan_calls_are_recorded(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from desmet.adapters._shared.budget import llm_calls_used
+
+    def structured():
+        return SimpleNamespace(
+            new_items=[], raw_responses=_usage_responses(1), final_output="not a plan",
+        )
+
+    trace = await _run_with_fake_runner(monkeypatch, tmp_path, structured)
+    assert llm_calls_used(trace) == 3

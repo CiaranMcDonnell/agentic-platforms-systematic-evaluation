@@ -217,6 +217,9 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
         # OpenAI models.  Fall back to free-text planning for other models.
         plan: ImplementationPlan | None = None
         plan_source = "structured"
+        # The structured attempt's run (or the run_data of the exception it
+        # raised, e.g. MaxTurnsExceeded): its calls count either way.
+        planner_result = None
         try:
             planner = Agent(
                 name=f"desmet_{stage_name}_planner",
@@ -233,6 +236,7 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
             # Known provider/model incompatibilities with structured output.
             _log.warning("Structured planner unavailable; falling back to free-text: %s", exc)
             plan_source = "freetext"
+            planner_result = getattr(exc, "run_data", None)
         except Exception as exc:  # noqa: BLE001 — we want to record, not suppress
             # Unexpected failure — record to trace.errors so the run is auditable.
             _log.warning("Structured planner failed unexpectedly: %s", exc)
@@ -240,8 +244,17 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
                 f"planner_structured_failed: {type(exc).__name__}: {exc}"
             )
             plan_source = "fallback_error"
+            planner_result = getattr(exc, "run_data", None)
 
         if plan is None:
+            # The failed structured attempt still made (and paid for) its
+            # LLM calls: record them before the free-text run replaces it.
+            if planner_result is not None:
+                iters, tool_call_count = self._extract_trace(
+                    collector, planner_result, progress=progress,
+                    tool_call_count=tool_call_count,
+                )
+                total_iterations += iters
             # Free-text fallback: no output_type, parse steps from text
             planner = Agent(
                 name=f"desmet_{stage_name}_planner",
