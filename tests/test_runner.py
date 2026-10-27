@@ -84,6 +84,10 @@ def runner_setup(mock_adapter, sample_story, tmp_path, monkeypatch):
     baseline directory, and a temp results/logs directory."""
     # The run manifest snapshots pricing; never hit OpenRouter from tests.
     monkeypatch.setattr("desmet.cost_calculator.get_pricing", lambda: {})
+    # Never SSH to a real deploy server from tests (.env may configure one).
+    monkeypatch.setattr(
+        "desmet.adapters._shared.tools.harness_teardown_deploy", lambda *a, **k: None
+    )
     baseline = tmp_path / "baseline"
     baseline.mkdir()
     (baseline / "README.md").write_text("baseline")
@@ -575,6 +579,82 @@ class TestDeployMode:
         await runner.run_full_evaluation()
         assert seen == [("local", "local")]
         assert "DESMET_DEPLOY_MODE" not in os.environ
+
+
+class TestDeployHealth:
+    """deploy_healthy is True only when this execution's deploy stage passed
+    and its service answers; an earlier run's service can't stand in."""
+
+    @pytest.fixture
+    def deploy_env(self, runner_setup, monkeypatch):
+        runner, adapter = runner_setup
+        runner.config.verify_workspace = True
+        runner.config.deploy_mode = "remote"
+        calls: list = []
+        state = SimpleNamespace(teardown=True, healthy=True)
+
+        def teardown(platform_id, deploy_mode):
+            calls.append(("teardown", platform_id, deploy_mode))
+            return state.teardown
+
+        def health(*a, **k):
+            calls.append(("health",))
+            return state.healthy
+
+        deploy_result = adapter.build_and_deploy.return_value
+
+        async def deploy(ctx):
+            calls.append(("deploy",))
+            return deploy_result
+
+        adapter.build_and_deploy = deploy
+        monkeypatch.setattr("desmet.adapters._shared.tools.harness_teardown_deploy", teardown)
+        monkeypatch.setattr("desmet.adapters._shared.tools.harness_health_check", health)
+        monkeypatch.setattr(
+            "desmet.harness.verification.verify_execution",
+            lambda *a, **k: SimpleNamespace(
+                artifact_path="a.tar", tests_run=1, tests_passed=1,
+                tests_failed=0, pytest_exit_code=0, criteria_results={},
+            ),
+        )
+        return runner, deploy_result, calls, state
+
+    async def test_teardown_runs_before_deploy_stage(self, deploy_env):
+        runner, _, calls, _ = deploy_env
+        await runner.run_full_evaluation()
+        assert calls == [("teardown", "test_platform", "remote"), ("deploy",), ("health",)]
+        assert runner.results["test_platform"]["US-001"].deploy_healthy is True
+
+    async def test_failed_deploy_is_not_healthy(self, deploy_env):
+        runner, deploy_result, calls, _ = deploy_env
+        deploy_result.success = False
+        await runner.run_full_evaluation()
+        assert runner.results["test_platform"]["US-001"].deploy_healthy is False
+        assert ("health",) not in calls
+
+    async def test_failed_teardown_is_not_healthy(self, deploy_env):
+        runner, _, calls, state = deploy_env
+        state.teardown = False
+        progress: list[str] = []
+        runner.progress_callback = progress.append
+        await runner.run_full_evaluation()
+        assert runner.results["test_platform"]["US-001"].deploy_healthy is False
+        assert ("health",) not in calls
+        assert any("previous deployment" in m for m in progress)
+
+    async def test_no_deploy_stage_is_none(self, deploy_env):
+        runner, _, calls, _ = deploy_env
+        runner.config.stage = "codegen"
+        await runner.run_full_evaluation()
+        assert runner.results["test_platform"]["US-001"].deploy_healthy is None
+        assert calls == []
+
+    async def test_local_mode_is_none(self, deploy_env):
+        runner, deploy_result, _, _ = deploy_env
+        runner.config.deploy_mode = "local"
+        deploy_result.success = False
+        await runner.run_full_evaluation()
+        assert runner.results["test_platform"]["US-001"].deploy_healthy is None
 
 
 class TestTestCounts:

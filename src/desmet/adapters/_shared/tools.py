@@ -766,6 +766,16 @@ def _private_key_copy(key_path: str) -> str:
     return _KEY_COPIES[key_path]
 
 
+def _compose_project(platform_id: str) -> str:
+    """Compose project name for a platform's remote deployment.
+
+    One per platform, like the deploy port (``_deploy_port``): any story's
+    deploy replaces the platform's previous deployment, and the harness
+    teardown removes whatever is holding that port.
+    """
+    return f"desmet-{platform_id}".lower()
+
+
 def _deploy_remote(
     workspace: Path,
     platform_id: str,
@@ -871,9 +881,9 @@ def _deploy_remote(
         q_user_host = f"{shlex.quote(user)}@{shlex.quote(host)}"
 
         # Compose reads COMPOSE_PROJECT_NAME and PORT from .env in the
-        # project directory; the stable project name makes `up` replace
-        # the previous deployment of this platform/story.
-        compose_project = f"{platform_id}-{story_id}".lower()
+        # project directory; the per-platform project name makes `up`
+        # replace the previous deployment on this platform's port.
+        compose_project = _compose_project(platform_id)
         env_file = workspace / ".env"
         existing = env_file.read_text() if env_file.exists() else ""
         lines = [
@@ -921,7 +931,10 @@ def _deploy_remote(
             text=True,
             timeout=120,
         )
-        cmd = f'{ssh_opts} {q_user_host} "cd {q_remote} && docker compose up -d --build"'
+        cmd = (
+            f'{ssh_opts} {q_user_host} '
+            f'"cd {q_remote} && docker compose up -d --build --remove-orphans"'
+        )
     elif action == "health_check":
         q_url = shlex.quote(url)
         q_user_host = f"{shlex.quote(user)}@{shlex.quote(host)}"
@@ -972,23 +985,10 @@ def harness_health_check(
 
     if deploy_mode == "local":
         return None
-    host = os.environ.get("DEPLOY_HOST")
-    user = os.environ.get("DEPLOY_USER")
-    key = os.environ.get("DEPLOY_KEY_PATH")
-    if not all([host, user, key]):
-        return None
     port = _deploy_port(platform_id, story_id)
-    cmd = [
-        "ssh",
-        "-i", os.path.expanduser(key),
-        "-p", os.environ.get("DEPLOY_PORT", "22"),
-        "-o", "IdentitiesOnly=yes",
-        "-o", "BatchMode=yes",
-        "-o", "StrictHostKeyChecking=accept-new",
-        "-o", "ConnectTimeout=15",
-        f"{user}@{host}",
-        f"curl -sf http://localhost:{port}/health",
-    ]
+    cmd = _harness_ssh_argv(f"curl -sf http://localhost:{port}/health")
+    if cmd is None:
+        return None
     for attempt in range(attempts):
         try:
             if subprocess.run(cmd, capture_output=True, timeout=60).returncode == 0:
@@ -998,6 +998,54 @@ def harness_health_check(
         if attempt < attempts - 1:
             time.sleep(delay_seconds)
     return False
+
+
+def _harness_ssh_argv(remote_cmd: str) -> list[str] | None:
+    """ssh argv running *remote_cmd* on the deploy server from the harness host.
+
+    Built as an argv (not ``_deploy_remote``'s POSIX shell string) so it
+    also runs on a Windows host.  ``None`` when deploy isn't configured.
+    """
+    host = os.environ.get("DEPLOY_HOST")
+    user = os.environ.get("DEPLOY_USER")
+    key = os.environ.get("DEPLOY_KEY_PATH")
+    if not all([host, user, key]):
+        return None
+    return [
+        "ssh",
+        "-i", os.path.expanduser(key),
+        "-p", os.environ.get("DEPLOY_PORT", "22"),
+        "-o", "IdentitiesOnly=yes",
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "ConnectTimeout=15",
+        f"{user}@{host}",
+        remote_cmd,
+    ]
+
+
+def harness_teardown_deploy(platform_id: str, deploy_mode: str) -> bool | None:
+    """Take down the platform's previous remote deployment before a deploy stage.
+
+    Compose project and port are per platform and nothing else removes a
+    deployment, so without this a later deploy that fails would still find
+    an earlier run's service answering on the port.  Runs ``docker compose
+    -p <project> down`` from the deploy base directory, which desmet-shell
+    allows.  Returns ``None`` in local mode or when deploy isn't
+    configured, otherwise whether the teardown succeeded.
+    """
+    if deploy_mode == "local":
+        return None
+    base = os.environ.get("DEPLOY_BASE_PATH", "/opt/desmet")
+    cmd = _harness_ssh_argv(
+        f"cd {shlex.quote(base)} && docker compose -p {_compose_project(platform_id)} down"
+    )
+    if cmd is None:
+        return None
+    try:
+        return subprocess.run(cmd, capture_output=True, timeout=120).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def _check_completion(workspace: Path, stage: str) -> tuple[bool, str]:

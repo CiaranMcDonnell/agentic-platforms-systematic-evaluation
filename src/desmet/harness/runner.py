@@ -633,11 +633,31 @@ class EvaluationRunner:
                 import asyncio as _aio
                 from desmet.harness import container_runner
 
+                # None: no teardown needed (local mode / deploy unconfigured).
+                teardown_ok: bool | None = None
+
                 # Execute selected stages sequentially
                 for stage_key, method_name in stages_to_run:
                     # Grant access to deploy_remote tool for the deploy stage
                     if stage_key == "deploy" and "deploy_remote" not in stage_ctx.allowed_tools:
                         stage_ctx.allowed_tools.append("deploy_remote")
+
+                    if stage_key == "deploy":
+                        # Remove the platform's previous deployment, so neither
+                        # the agent nor the health check can mistake an earlier
+                        # run's service on the port for this run's.
+                        from desmet.adapters._shared.tools import harness_teardown_deploy
+                        teardown_ok = await _aio.to_thread(
+                            harness_teardown_deploy, platform_id, self.config.deploy_mode,
+                        )
+                        if teardown_ok is False:
+                            logger.error("deploy_teardown_failed", platform=platform_id)
+                            if self.progress_callback is not None:
+                                self.progress_callback(
+                                    "  [DEPLOY] ERROR — could not take down the previous "
+                                    "deployment (is desmet-shell on the server up to "
+                                    "date?); deploy health will be recorded as failed"
+                                )
 
                     if self.progress_callback is not None:
                         self.progress_callback(
@@ -744,13 +764,20 @@ class EvaluationRunner:
                         logger.error("workspace_verification_failed", error=str(e))
 
                 # The deploy validator only checks Dockerfile/compose exist;
-                # confirm the service actually answers.
+                # confirm the service actually answers.  Only a deploy stage
+                # that passed, after a successful teardown, can be healthy:
+                # otherwise whatever answers is not this run's deployment.
                 if self.config.verify_workspace and "deploy" in stage_results:
                     from desmet.adapters._shared.tools import harness_health_check
-                    result.deploy_healthy = await _aio.to_thread(
-                        harness_health_check, workspace, platform_id, story.id,
-                        self.config.deploy_mode,
-                    )
+                    if self.config.deploy_mode == "local":
+                        result.deploy_healthy = None
+                    elif stage_results["deploy"].success and teardown_ok is not False:
+                        result.deploy_healthy = await _aio.to_thread(
+                            harness_health_check, workspace, platform_id, story.id,
+                            self.config.deploy_mode,
+                        )
+                    else:
+                        result.deploy_healthy = False
                     if self.progress_callback is not None and result.deploy_healthy is not None:
                         self.progress_callback(
                             f"  [VERIFY] deploy health check: "
