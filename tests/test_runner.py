@@ -529,3 +529,11 @@ class TestTestCounts:
         r = runner.results["test_platform"]["US-001"]
         assert (r.tests_run, r.tests_passed, r.tests_failed) == (4, 1, 3)
         assert (r.reported_tests_run, r.reported_tests_passed) == (10, 10)
+
+
+async def test_repeat_index_reaches_result(runner_setup):
+    runner, _ = runner_setup
+    runner.config.repeats = 2
+    await runner.run_full_evaluation()
+    df = runner.store.get_executions(runner._current_run_id)
+    assert sorted(df["repeat_index"]) == [0, 1]

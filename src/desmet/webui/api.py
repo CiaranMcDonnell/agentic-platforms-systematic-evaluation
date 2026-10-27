@@ -264,6 +264,7 @@ class ScoreSubmission(BaseModel):
     story_id: str
     scores: dict[str, float]
     notes: dict[str, str]
+    repeat_index: int | None = None
 
     @field_validator("scores")
     @classmethod
@@ -1195,6 +1196,7 @@ async def get_story_score(platform_id: str, story_id: str, run_id: str | None = 
 
     return {
         "found": True,
+        "repeat_indices": _story_repeat_indices(run_id, platform_id, story_id),
         "scored": is_story_scored(story_metric),
         "scores": scores,
         "notes": notes,
@@ -1235,6 +1237,12 @@ def _story_budgets() -> dict[str, float]:
         return {}
 
 
+def _story_repeat_indices(run_id: str | None, platform_id: str, story_id: str) -> list[int]:
+    store = _get_result_store()
+    target_run = run_id or store.latest_run_id()
+    return store.repeat_indices(target_run, platform_id, story_id) if target_run else []
+
+
 @app.post("/api/dashboard/scoring/submit")
 async def submit_score(submission: ScoreSubmission, run_id: str | None = None):
     """Submit rubric scores for a platform/story pair.
@@ -1243,6 +1251,18 @@ async def submit_score(submission: ScoreSubmission, run_id: str | None = None):
     Likert (1-5) dimension scores and ``overall_score`` for the platform
     so downstream exports stay in sync.
     """
+    store = _get_result_store()
+    target_run = run_id or store.latest_run_id()
+    if target_run and submission.repeat_index is None:
+        repeats = store.repeat_indices(
+            target_run, submission.platform_id, submission.story_id
+        )
+        if len(repeats) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail=f"repeat_index required: this story has {len(repeats)} repeats",
+            )
+
     data = load_results_raw(run_id)
     update_story_scores(
         data,
@@ -1253,8 +1273,6 @@ async def submit_score(submission: ScoreSubmission, run_id: str | None = None):
     )
     save_results(data)
 
-    store = _get_result_store()
-    target_run = run_id or store.latest_run_id()
     recomputed: dict[str, float] = {}
     if target_run:
         store.update_rubric_scores_by_story(
@@ -1262,6 +1280,7 @@ async def submit_score(submission: ScoreSubmission, run_id: str | None = None):
             submission.platform_id,
             submission.story_id,
             submission.scores,
+            repeat_index=submission.repeat_index,
         )
         recomputed = recompute_platform_likert_from_store(
             store,

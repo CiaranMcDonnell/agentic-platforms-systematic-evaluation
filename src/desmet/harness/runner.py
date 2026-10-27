@@ -501,6 +501,7 @@ class EvaluationRunner:
             status=StoryStatus.RUNNING,
             start_time=datetime.now(timezone.utc),
             execution_mode=self._execution_mode_for(platform_id),
+            repeat_index=repeat_index,
         )
 
         structlog.contextvars.bind_contextvars(

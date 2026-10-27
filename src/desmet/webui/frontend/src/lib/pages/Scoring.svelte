@@ -22,6 +22,7 @@
   let saving = $state(false);
   let saveMsg = $state('');
   let loadingScore = $state(false);
+  let selectedRepeat = $state<number | null>(null);
   let activeTab = $state<'langfuse' | 'langsmith' | 'graph'>('langfuse');
   let langsmithAvailable = $state<boolean | null>(null);
 
@@ -51,6 +52,8 @@
     loadingScore = true;
     scoreData = null;
     scoreData = await fetchStoryScore(selectedPlatform, selectedStory);
+    // Repeats are scored one at a time; default to the first.
+    selectedRepeat = (scoreData?.repeat_indices?.length ?? 0) > 1 ? scoreData!.repeat_indices![0] : null;
     loadingScore = false;
     // Lazy-check LangSmith only when relevant (langgraph + has run ID)
     if (selectedPlatform === 'langgraph' && scoreData?.langsmith_run_id && langsmithAvailable === null) {
@@ -82,6 +85,7 @@
         story_id: selectedStory,
         scores,
         notes,
+        ...(selectedRepeat !== null ? { repeat_index: selectedRepeat } : {}),
       });
       saveMsg = 'Saved';
     } catch {
@@ -161,6 +165,16 @@
   </div>
 
   {#if scoreData && rubric}
+    {#if (scoreData.repeat_indices?.length ?? 0) > 1}
+      <div style="margin-bottom: 28px; max-width: 240px;">
+        <label class="label" for="score-repeat">Repeat</label>
+        <select id="score-repeat" class="input" bind:value={selectedRepeat}>
+          {#each scoreData.repeat_indices ?? [] as r}
+            <option value={r}>Repeat {r + 1}</option>
+          {/each}
+        </select>
+      </div>
+    {/if}
     <!-- Execution Evidence -->
     <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 28px;">
       <div class="card">

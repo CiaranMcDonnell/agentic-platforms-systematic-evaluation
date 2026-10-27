@@ -113,6 +113,7 @@ export interface ScoringRubric {
 
 export interface StoryScoreData {
   found: boolean;
+  repeat_indices?: number[];
   scored?: boolean;
   scores?: Record<string, number>;
   notes?: Record<string, string>;
@@ -445,7 +446,7 @@ export const fetchStoryScore = (pid: string, sid: string) =>
 export const fetchAgentGraph = (pid: string, sid: string) =>
   request<CommunicationGraph>(`/api/dashboard/graph/${pid}/${sid}`);
 
-export const submitScore = (data: { platform_id: string; story_id: string; scores: Record<string, number>; notes: Record<string, string> }) =>
+export const submitScore = (data: { platform_id: string; story_id: string; scores: Record<string, number>; notes: Record<string, string>; repeat_index?: number }) =>
   request<{ success: boolean }>(
     withRun('/api/dashboard/scoring/submit'),
     { method: 'POST', body: JSON.stringify(data) },

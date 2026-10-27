@@ -424,12 +424,15 @@ class ResultStore:
         platform_id: str,
         story_id: str,
         scores: dict[str, float],
+        *,
+        repeat_index: int | None = None,
     ) -> bool:
         """Update rubric score columns on the execution matching a platform/story.
 
         *scores* keys are dimension names (e.g. ``"pipeline_completeness"``),
-        automatically prefixed with ``rubric_``.  Returns True if a row was
-        updated.
+        automatically prefixed with ``rubric_``.  When *repeat_index* is given
+        only that repeat is updated; otherwise every repeat of the story is.
+        Returns True if a row was updated.
         """
         valid_dims = {
             "pipeline_completeness",
@@ -444,12 +447,25 @@ class ResultStore:
             return False
         set_clause = ", ".join(f"{col} = ?" for col in updates)
         values = list(updates.values()) + [run_id, platform_id, story_id]
+        where = "run_id = ? AND platform_id = ? AND story_id = ?"
+        if repeat_index is not None:
+            where += " AND repeat_index = ?"
+            values.append(repeat_index)
         result = self._conn.execute(
-            f"UPDATE executions SET {set_clause} "
-            f"WHERE run_id = ? AND platform_id = ? AND story_id = ?",
+            f"UPDATE executions SET {set_clause} WHERE {where}",
             values,
         )
-        return result.rowcount > 0
+        # DuckDB reports updated rows via the result's count row; rowcount is -1.
+        return (result.fetchone() or (0,))[0] > 0
+
+    def repeat_indices(self, run_id: str, platform_id: str, story_id: str) -> list[int]:
+        """Return the sorted repeat indices stored for a platform/story in a run."""
+        rows = self._conn.execute(
+            "SELECT DISTINCT COALESCE(repeat_index, 0) FROM executions "
+            "WHERE run_id = ? AND platform_id = ? AND story_id = ? ORDER BY 1",
+            [run_id, platform_id, story_id],
+        ).fetchall()
+        return [int(r[0]) for r in rows]
 
     def update_platform_scores(
         self,
