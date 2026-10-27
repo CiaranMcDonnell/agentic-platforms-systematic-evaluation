@@ -1,12 +1,18 @@
-"""Pin the runs the FormaliSE paper reports and assert its numbers against the store.
+"""Pin the runs the FormaliSE paper reports and export them as the artifact.
 
-Usage: uv run --with duckdb python docs/paper/data/extract_reported_runs.py
+Usage (stop the webui first — DuckDB allows one writer):
+    uv run python docs/paper/data/extract_reported_runs.py
 
-Selection rule (author, 2026-10-27): for each platform, the reported run is its
-complete end-to-end US-001 execution; runs cancelled part-way during adapter
-development are excluded. Baseline (gpt-4.1-mini) rows come from run 0273188d
-except Google ADK, which comes from 51ea5ac9. The Sonnet cross-model pass is
-whichever Sonnet run carries the token totals the thesis reports.
+Selection rule: the reported dataset is exactly the runs listed in
+PINNED_RUNS, all produced by one harness version (store schema >= 5, so
+stage outcomes, workspace tests, hidden acceptance tests and the
+harness-side deploy health check are recorded for every execution).
+
+Before exporting, each pinned run's 1-5 Likert scores are recomputed from
+the stored rubric data so the artifact matches the current scoring code
+(submit_score only writes rubric columns).  The script fails without
+writing anything if a pinned run is missing, incomplete, or has an
+unexpected number of executions.
 """
 
 from __future__ import annotations
@@ -16,97 +22,130 @@ import json
 import sys
 from pathlib import Path
 
-import duckdb
+import yaml
+
+from desmet.harness.metrics import recompute_platform_likert_from_store
+from desmet.harness.store import ResultStore
 
 REPO = Path(__file__).resolve().parents[3]
 STORE = REPO / "results" / "desmet.duckdb"
+STORIES = REPO / "data" / "stories"
 OUT_JSON = Path(__file__).with_name("reported-runs.json")
 OUT_CSV = REPO / "docs" / "paper" / "artifact" / "results-reported.csv"
 
-BASELINE_PREFIXES = {"0273188d": ["openai_agents_sdk", "langgraph", "crewai", "microsoft_agent_framework"], "51ea5ac9": ["google_adk"]}
-EXPECTED_BASELINE = {
-    "openai_agents_sdk": 100_383,
-    "langgraph": 190_309,
-    "crewai": 103_776,
-    "microsoft_agent_framework": 239_801,
-    "google_adk": 56_764,
-}
-EXPECTED_SONNET = {"langgraph": 209_130, "openai_agents_sdk": 111_442, "crewai": 538_715}
+PLATFORMS = [
+    "langgraph",
+    "crewai",
+    "microsoft_agent_framework",
+    "openai_agents_sdk",
+    "google_adk",
+]
+REPEATS = 3
 
-EXEC_COLS = (
-    "execution_id, run_id, platform_id, story_id, status, wall_clock_seconds, iterations, tool_calls, "
-    "tokens_input, tokens_output, tokens_input + tokens_output AS tokens_total, cost_usd, human_interventions, "
-    "score_pipeline_completeness, score_efficiency, score_orchestration, score_autonomy, overall_score, "
-    "rubric_pipeline_completeness, rubric_tool_integration, rubric_error_recovery, rubric_trace_quality, "
-    "rubric_time_efficiency, rubric_autonomy, resource_peak_memory_bytes, framework_metrics, trace_path"
-)
+# label -> (run_id, story ids).  Fill in after the reported runs complete.
+PINNED_RUNS: dict[str, tuple[str, list[str]]] = {
+    # "sonnet-5.5/US-001": ("<run_id>", ["US-001"]),
+    # "gpt-5.6-terra/US-001": ("<run_id>", ["US-001"]),
+    # "glm-5.3/US-001": ("<run_id>", ["US-001"]),
+}
+
+# Exported columns.  trace_path / artifact_path are local filesystem paths
+# (they identify the author's machine) and are deliberately excluded.
+EXEC_COLS = [
+    "execution_id", "run_id", "platform_id", "story_id", "repeat_index", "status",
+    "stages_passed", "wall_clock_seconds", "iterations", "tool_calls",
+    "tokens_input", "tokens_output", "cost_usd", "human_interventions",
+    "tests_run", "tests_passed", "tests_failed", "pytest_exit_code",
+    "criteria_results", "deploy_healthy",
+    "rubric_pipeline_completeness", "rubric_tool_integration", "rubric_error_recovery",
+    "rubric_trace_quality", "rubric_time_efficiency", "rubric_autonomy",
+    "resource_peak_memory_bytes", "framework_metrics",
+    "score_pipeline_completeness", "score_efficiency", "score_orchestration",
+    "score_autonomy", "overall_score",
+]
+
+
+def story_budgets() -> dict[str, float]:
+    budgets = {}
+    for f in STORIES.rglob("*.yaml"):
+        data = yaml.safe_load(f.read_text(encoding="utf-8"))
+        budgets[data["id"]] = float(data.get("time_budget_seconds", 600))
+    return budgets
 
 
 def main() -> int:
-    con = duckdb.connect(str(STORE), read_only=True)
-    runs = con.execute("SELECT run_id, started_at, model FROM runs ORDER BY started_at").fetchall()
-    by_prefix = {r[0][:8]: r for r in runs}
+    if not PINNED_RUNS:
+        print("PINNED_RUNS is empty: fill in the reported run ids first.")
+        return 1
 
-    reported: dict[str, dict] = {"baseline": {}, "sonnet": {}}
-    rows: list[tuple] = []
+    store = ResultStore(db_path=STORE)
+    con = store._conn
     failures: list[str] = []
 
-    # Baseline rows.
-    for prefix, platforms in BASELINE_PREFIXES.items():
-        run_id, started, model = by_prefix[prefix]
-        for platform in platforms:
-            row = con.execute(
-                f"SELECT {EXEC_COLS} FROM executions WHERE run_id = ? AND platform_id = ? AND story_id LIKE 'US%001%'",
-                [run_id, platform],
-            ).fetchone()
-            if row is None:
-                failures.append(f"baseline {platform}: no execution in run {prefix}")
-                continue
-            tokens = row[10]
-            if tokens != EXPECTED_BASELINE[platform]:
-                failures.append(f"baseline {platform}: expected {EXPECTED_BASELINE[platform]:,} tokens, store has {tokens:,}")
-            rows.append(row)
-            reported["baseline"][platform] = {"run_id": run_id, "model": model, "started_at": str(started), "tokens": tokens}
+    version = con.execute("SELECT version FROM store_meta").fetchone()[0]
+    if version < 5:
+        failures.append(f"store schema {version} < 5: verification columns missing")
 
-    # Sonnet pass: find, per platform, the Sonnet execution whose total matches the thesis.
-    sonnet = con.execute(
-        f"SELECT {EXEC_COLS} FROM executions e JOIN runs r USING (run_id) "
-        "WHERE lower(r.model) LIKE '%sonnet%' AND e.story_id LIKE 'US%001%' ORDER BY r.started_at"
-    ).fetchall()
-    sonnet_run_ids: set[str] = set()
-    for platform, expected in EXPECTED_SONNET.items():
-        match = [r for r in sonnet if r[2] == platform and r[10] == expected]
-        if not match:
-            seen = sorted({(r[1][:8], r[10]) for r in sonnet if r[2] == platform})
-            failures.append(f"sonnet {platform}: expected {expected:,} tokens; Sonnet rows seen {seen}")
+    budgets = story_budgets()
+    reported: dict[str, dict] = {}
+    rows: list[tuple] = []
+
+    for label, (run_id, stories) in sorted(PINNED_RUNS.items()):
+        run = con.execute(
+            "SELECT run_id, model, started_at, finished_at FROM runs WHERE run_id = ?", [run_id]
+        ).fetchone()
+        if run is None:
+            failures.append(f"{label}: run {run_id} not in store")
             continue
-        rows.append(match[0])
-        sonnet_run_ids.add(match[0][1])
-        reported["sonnet"][platform] = {"run_id": match[0][1], "tokens": expected}
-    # Carry the other platforms from the same Sonnet run(s) so the artifact holds the whole pass.
-    for r in sonnet:
-        if r[1] in sonnet_run_ids and r not in rows:
-            rows.append(r)
-            reported["sonnet"].setdefault(r[2], {"run_id": r[1], "tokens": r[10]})
+        if run[3] is None:
+            failures.append(f"{label}: run {run_id} never finished")
 
-    header = [c.strip().split(" AS ")[-1] for c in EXEC_COLS.split(",")]
-    print(f"{'run':8} {'platform':16} {'status':10} {'tokens':>9} {'cost':>7} {'wall':>7}")
-    for r in rows:
-        print(f"{r[1][:8]:8} {r[2]:16} {r[4]:10} {r[10]:>9,} {r[11]:>7.3f} {r[5] / 60:>6.1f}m")
+        scores = {p: recompute_platform_likert_from_store(store, run_id, p, budgets) for p in PLATFORMS}
+
+        # Platform-level score_* columns are written onto every execution
+        # row by the recompute above (store.update_platform_scores).
+        run_rows = con.execute(
+            f"SELECT {', '.join(EXEC_COLS)} FROM executions "
+            "WHERE run_id = ? AND story_id IN (SELECT unnest(?)) "
+            "ORDER BY story_id, platform_id, repeat_index",
+            [run_id, stories],
+        ).fetchall()
+
+        expected = len(PLATFORMS) * REPEATS * len(stories)
+        if len(run_rows) != expected:
+            failures.append(f"{label}: expected {expected} executions, store has {len(run_rows)}")
+        for r in run_rows:
+            row = dict(zip(EXEC_COLS, r))
+            if row["platform_id"] not in PLATFORMS:
+                failures.append(f"{label}: unexpected platform {row['platform_id']}")
+            if row["criteria_results"] is None:
+                failures.append(f"{label}: {row['execution_id']} has no acceptance results")
+        rows.extend(run_rows)
+        reported[label] = {
+            "run_id": run_id,
+            "model": run[1],
+            "started_at": str(run[2]),
+            "finished_at": str(run[3]),
+            "stories": stories,
+            "executions": len(run_rows),
+            "platform_scores": scores,
+        }
+
+    store.close()
 
     if failures:
-        print("\nASSERTION FAILURES:")
+        print("ASSERTION FAILURES (nothing written):")
         for f in failures:
             print("  " + f)
         return 1
 
-    OUT_JSON.write_text(json.dumps(reported, indent=2) + "\n")
+    OUT_JSON.write_text(json.dumps(reported, indent=2, default=str) + "\n")
     OUT_CSV.parent.mkdir(parents=True, exist_ok=True)
-    with OUT_CSV.open("w", newline="") as fh:
+    with OUT_CSV.open("w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
-        w.writerow(header)
+        w.writerow(EXEC_COLS)
         w.writerows(rows)
-    print(f"\nwrote {OUT_JSON.relative_to(REPO)} and {OUT_CSV.relative_to(REPO)} ({len(rows)} executions)")
+    print(f"wrote {OUT_JSON.relative_to(REPO)} and {OUT_CSV.relative_to(REPO)} ({len(rows)} executions)")
     return 0
 
 

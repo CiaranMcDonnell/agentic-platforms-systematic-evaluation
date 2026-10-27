@@ -757,6 +757,15 @@ class EvaluationRunner:
                     overheads = [fm["framework_overhead_ms"] for fm in all_fm
                                  if fm.get("framework_overhead_ms") is not None]
                     agg["framework_overhead_ms"] = sum(overheads) if overheads else None
+                    # Per-stage LLM-call budget: total calls, and which
+                    # stages stopped because the budget ran out.
+                    agg["llm_calls"] = sum(fm.get("llm_calls") or 0 for fm in all_fm)
+                    agg["budget_exhausted_stages"] = sum(
+                        fm.get("budget_exhausted") or 0 for fm in all_fm
+                    )
+                    for sname, sr in stage_results.items():
+                        if (sr.framework_metrics or {}).get("budget_exhausted"):
+                            agg[f"budget_exhausted_{sname}"] = 1.0
                     result.framework_metrics = agg
                     # Auto-compute the three trace-derivable rubric
                     # dimensions.  The other two (pipeline_completeness,

@@ -279,44 +279,6 @@ class TestCrewAIAdapterStructure:
         assert callable(adapter._build_crew)
 
 
-class TestIterationBudget:
-    def test_budget_allocation_default_50(self):
-        from desmet.adapters.multiagent.crewai import _compute_iter_budget
-        planner, executor, reviewer = _compute_iter_budget(50)
-        assert planner == 10
-        assert executor == 30
-        assert reviewer == 10
-
-    def test_budget_allocation_custom_30(self):
-        from desmet.adapters.multiagent.crewai import _compute_iter_budget
-        planner, executor, reviewer = _compute_iter_budget(30)
-        assert planner + executor + reviewer <= 30
-        assert executor > planner
-        assert executor > reviewer
-
-    def test_budget_allocation_minimum(self):
-        from desmet.adapters.multiagent.crewai import _compute_iter_budget
-        planner, executor, reviewer = _compute_iter_budget(10)
-        assert planner >= 1
-        assert executor >= 1
-        assert reviewer >= 1
-
-    def test_budget_allocation_retry(self):
-        """On retry, planner budget is 0 and executor gets the extra allocation."""
-        from desmet.adapters.multiagent.crewai import _compute_iter_budget
-        planner, executor, reviewer = _compute_iter_budget(50, retry=True)
-        assert planner == 0
-        assert reviewer == 10
-        assert executor == 40
-
-    def test_budget_allocation_retry_minimum(self):
-        from desmet.adapters.multiagent.crewai import _compute_iter_budget
-        planner, executor, reviewer = _compute_iter_budget(5, retry=True)
-        assert planner == 0
-        assert executor >= 1
-        assert reviewer >= 1
-
-
 class TestSuccessAfterBudget:
     """Regression: a stage that produced the required artifacts must
     report success even if the iteration counter happened to land at or
@@ -592,7 +554,8 @@ def test_planner_fallback_records_plan_source():
 
     from desmet.adapters.multiagent.crewai import CrewAIAdapter
 
-    src = inspect.getsource(CrewAIAdapter._run_agent)
+    # The retry loop lives in _run_attempts (called under the budget hook).
+    src = inspect.getsource(CrewAIAdapter._run_attempts)
     assert 'plan_source' in src
     assert 'trace.metadata' in src or 'metadata["plan_source"]' in src or "metadata['plan_source']" in src
     # Must not silently swallow — either logs, records error, or narrows except.

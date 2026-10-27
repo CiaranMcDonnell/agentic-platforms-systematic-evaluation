@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from desmet.adapters._shared.budget import mark_budget_exhausted, remaining_llm_calls
 from desmet.adapters._shared.base import ToolAgentAdapter
 from desmet.adapters._shared.planning import ImplementationPlan, build_executor_instructions, parse_plan_text
 from desmet.adapters._shared.prompts import get_stage_persona, get_sub_persona
@@ -27,6 +28,30 @@ from desmet.llm_config import get_config as get_llm_config
 
 
 _log = logging.getLogger(__name__)
+
+
+def _item_metadata(item: Any) -> dict[str, Any]:
+    """Trace metadata naming the agent that produced a ``RunItem``.
+
+    Every Agents SDK run item carries the ``Agent`` that emitted it, which is
+    the only place the handoff chain (planner → executor → reviewer) is
+    visible in the local trace.
+    """
+    agent = getattr(item, "agent", None)
+    name = getattr(agent, "name", None) if agent is not None else None
+    return {"agent": str(name)} if name else {}
+
+
+def _conversation(run) -> list:
+    """Input items for continuing *run* (a RunResult or RunErrorDetails).
+
+    Mirrors ``RunResultBase.to_input_list``, which RunErrorDetails lacks.
+    """
+    from agents import ItemHelpers
+
+    return ItemHelpers.input_to_new_input_list(run.input) + [
+        item.to_input_item() for item in run.new_items
+    ]
 
 
 # ── Data models ───────────────────────────────────────────────────────────────
@@ -278,20 +303,28 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
         )
 
         # ── Step 3: Retry loop ─────────────────────────────────────────────
-        # Give each attempt a generous turn budget. The planner used ~3 turns,
-        # so the remaining budget is split across retry attempts.
-        max_turns = max(10, (context.max_iterations - 3) // max(1, policy.max_retries))
+        # Shared per-stage LLM-call budget (budget.py).  One turn is one LLM
+        # call, so each attempt's max_turns is whatever the planner and
+        # earlier attempts left; running out ends the stage.
         result = None
+        # The latest run's data, successful (RunResult) or not (the
+        # RunErrorDetails on a guardrail/max-turns exception), so a retry
+        # carries the conversation forward either way.
+        last_run = None
         last_feedback = ""
 
         for attempt in range(policy.total_attempts()):
+            max_turns = remaining_llm_calls(collector.trace, context.max_iterations)
+            if max_turns <= 0:
+                mark_budget_exhausted(collector.trace)
+                break
             try:
-                if result is None:
+                if last_run is None:
                     input_msg = prompt
                 else:
                     # Retry with conversation carry-forward AND the actual
                     # validator feedback so the model knows what to fix.
-                    input_msg = result.to_input_list() + [
+                    input_msg = _conversation(last_run) + [
                         {
                             "role": "user",
                             "content": (
@@ -305,6 +338,7 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
                 tool_time_before = sum(tc.duration_ms for tc in collector.trace.tool_calls)
                 run_t0 = time.monotonic()
                 result = await Runner.run(executor_agent, input=input_msg, max_turns=max_turns)
+                last_run = result
                 run_duration_ms = (time.monotonic() - run_t0) * 1000
 
                 iters, tool_call_count = self._extract_trace(
@@ -336,28 +370,40 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
                     progress.validation_failed(
                         attempt + 1, policy.total_attempts(), last_feedback,
                     )
-                    if total_iterations >= context.max_iterations:
-                        break
                     continue
 
-            except OutputGuardrailTripwireTriggered:
+            except OutputGuardrailTripwireTriggered as exc:
+                # The aborted run's model calls still cost tokens; record
+                # them instead of dropping them.
+                if exc.run_data is not None:
+                    last_run = exc.run_data
+                    iters, tool_call_count = self._extract_trace(
+                        collector, exc.run_data, progress=progress,
+                        tool_call_count=tool_call_count,
+                    )
+                    total_iterations += iters
                 total_iterations += 1
                 _, last_feedback = policy.validate()
                 progress.validation_failed(attempt + 1, policy.total_attempts(), last_feedback)
-                if total_iterations >= context.max_iterations:
-                    break
                 continue
 
-            except MaxTurnsExceeded:
-                # Executor/reviewer exhausted their turn budget — treat as retry
-                total_iterations += max_turns
-                progress.agent_status("executor", f"max turns exceeded (attempt {attempt + 1}/{policy.total_attempts()})")
-                # Pull current feedback so the next retry (if any) tells
-                # the model what's still missing.
-                _, last_feedback = policy.validate()
-                if total_iterations >= context.max_iterations:
-                    break
-                continue
+            except MaxTurnsExceeded as exc:
+                # max_turns is the remaining LLM-call budget, so hitting it
+                # means the stage's budget is spent: no further attempts.
+                if exc.run_data is not None:
+                    last_run = exc.run_data
+                    iters, tool_call_count = self._extract_trace(
+                        collector, exc.run_data, progress=progress,
+                        tool_call_count=tool_call_count,
+                    )
+                    total_iterations += iters
+                else:
+                    total_iterations += max_turns
+                progress.agent_status(
+                    "executor", f"LLM-call budget exhausted (attempt {attempt + 1}/{policy.total_attempts()})"
+                )
+                mark_budget_exhausted(collector.trace)
+                break
 
         collector.mark_iterations(total_iterations)
 
@@ -391,7 +437,7 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
         for item in result.new_items:
             if isinstance(item, MessageOutputItem):
                 text = getattr(item.raw_item.content[0], "text", "") if item.raw_item.content else ""
-                collector.record_message("assistant", text)
+                collector.record_message("assistant", text, metadata=_item_metadata(item))
             elif isinstance(item, ToolCallItem):
                 tool_call_count += 1
                 call = item.raw_item
@@ -401,7 +447,10 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
             elif isinstance(item, ToolCallOutputItem):
                 collector.record_message(
                     "tool", str(item.output),
-                    metadata={"tool_call_id": getattr(item.raw_item, "call_id", "")},
+                    metadata={
+                        "tool_call_id": getattr(item.raw_item, "call_id", ""),
+                        **_item_metadata(item),
+                    },
                 )
 
         # Token usage from raw_responses
@@ -409,7 +458,7 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
             collector.record_llm_response(raw_usage=getattr(resp, "usage", None))
 
         # Record final output
-        if result.final_output:
+        if getattr(result, "final_output", None):
             collector.record_message("assistant", str(result.final_output), metadata={"event": "final_output"})
 
         return len(result.new_items), tool_call_count

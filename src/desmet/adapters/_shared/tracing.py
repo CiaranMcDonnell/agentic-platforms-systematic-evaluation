@@ -96,6 +96,10 @@ def record_usage(
     """
     trace.total_tokens_input += input_tokens
     trace.total_tokens_output += output_tokens
+    if input_tokens or output_tokens:
+        # One model response = one LLM call: the shared unit for the
+        # per-stage budget (see budget.py).
+        trace.metadata["llm_calls"] = trace.metadata.get("llm_calls", 0) + 1
     if cost_usd > 0:
         trace.total_cost_usd += cost_usd
     elif model and (input_tokens or output_tokens):
@@ -318,6 +322,10 @@ def compute_framework_metrics(
         "framework_overhead_ms": (
             round(framework_overhead_ms, 1) if framework_overhead_ms is not None else None
         ),
+        # Per-stage LLM-call budget (budget.py): calls used, and 1.0 when
+        # the stage stopped because the budget ran out.
+        "llm_calls": float(trace.metadata.get("llm_calls", 0)),
+        "budget_exhausted": 1.0 if trace.metadata.get("budget_exhausted") else 0.0,
     }
 
 

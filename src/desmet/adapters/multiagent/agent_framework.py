@@ -20,6 +20,11 @@ import logging
 import time
 from typing import Any
 
+from desmet.adapters._shared.budget import (
+    budget_exhausted,
+    mark_budget_exhausted,
+    remaining_llm_calls,
+)
 from desmet.adapters._shared.base import ToolAgentAdapter
 from desmet.adapters._shared.observation import ObservationCollector
 from desmet.adapters._shared.planning import (
@@ -46,7 +51,7 @@ MAX_RESET_COUNT = 2
 # -- Usage tracking middleware ------------------------------------------------
 
 
-def _build_usage_middleware(collector: ObservationCollector) -> Any:
+def _build_usage_middleware(collector: ObservationCollector, budget: int | None = None) -> Any:
     """Construct a ChatMiddleware subclass bound to *collector*.
 
     Agent Framework's middleware contract (v1.0) requires:
@@ -63,10 +68,15 @@ def _build_usage_middleware(collector: ObservationCollector) -> Any:
     imported at module load time (agent-framework may not be installed
     when the module is imported for a different platform's run).
     """
-    from agent_framework import ChatMiddleware
+    from agent_framework import ChatMiddleware, MiddlewareTermination
 
     class _UsageTrackingMiddleware(ChatMiddleware):
         async def process(self, context: Any, call_next: Any) -> None:
+            # Shared per-stage LLM-call budget (budget.py): block the call
+            # once it is spent; the streaming loop then stops the workflow.
+            if budget is not None and remaining_llm_calls(collector.trace, budget) <= 0:
+                mark_budget_exhausted(collector.trace)
+                raise MiddlewareTermination("LLM-call budget exhausted")
             t0 = time.monotonic()
             await call_next()
             duration_ms = (time.monotonic() - t0) * 1000
@@ -223,8 +233,12 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
 
         collector.record_message("user", prompt)
 
+        # Every other adapter samples at DESMET_TEMPERATURE (default 0.0);
+        # without this MAF ran at the provider default temperature.
+        sampling = {"temperature": context.temperature}
+
         # Register usage tracking middleware on agents
-        middleware = _build_usage_middleware(collector)
+        middleware = _build_usage_middleware(collector, budget=context.max_iterations)
 
         # -- Step 1: Planner agent (structured output) ------------------------
         plan: ImplementationPlan | None = None
@@ -234,6 +248,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                 name=f"desmet_{stage_name}_planner",
                 instructions=planner_persona.backstory,
                 client=self._client,
+                default_options=sampling,
                 middleware=[middleware],
             )
             # agent-framework 1.0 moved ``response_format`` off ``Agent.run``
@@ -278,6 +293,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                         "files to create, and files to modify."
                     ),
                     client=self._client,
+                    default_options=sampling,
                     middleware=[middleware],
                 )
                 planner_result = await planner.run(prompt)
@@ -335,6 +351,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
             description="Implements the plan by writing files, running commands, and building the project.",
             instructions=executor_instructions,
             client=self._client,
+            default_options=sampling,
             tools=executor_tools,
             middleware=[middleware],
         )
@@ -349,6 +366,7 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                 "## Task\n" + prompt
             ),
             client=self._client,
+            default_options=sampling,
             tools=reviewer_tools,
             middleware=[middleware],
         )
@@ -364,19 +382,16 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                 "Stop when the reviewer confirms all artifacts are present."
             ),
             client=self._client,
+            default_options=sampling,
             middleware=[middleware],
         )
 
-        # Cap at 4 manager rounds. Successful stages observed in the
-        # gpt-4.1-mini baseline converge in a single manager round
-        # (~5 ``executor_completed`` events). 4 rounds permits one full
-        # executor→reviewer→re-executor→final-review rework cycle while
-        # bounding worst-case token cost to ~100k per stage — a prior
-        # cap of 12 let a single deploy stage resubmit accumulated history
-        # 11 times and burn 510k tokens before ``max_round_count`` fired.
-        # Not a fix for MagenticOne's completion-detection behaviour,
-        # just a tighter bound on the damage.
-        max_rounds = min(context.max_iterations - 1, 4)
+        # The shared per-stage LLM-call budget (budget.py, enforced in the
+        # usage middleware) is what bounds MAF, as for every other adapter.
+        # max_round_count is set no tighter than that budget; the previous
+        # MAF-only cap of 4 manager rounds stopped MAF earlier than the
+        # other frameworks.
+        max_rounds = context.max_iterations
 
         workflow = MagenticBuilder(
             participants=[executor_agent, reviewer_agent],
@@ -556,9 +571,11 @@ class AgentFrameworkAdapter(ToolAgentAdapter):
                         type(event.data).__name__,
                     )
 
-                # Check iteration limit — break out of streaming loop;
-                # final success state is decided by policy.validate() below.
-                if total_iterations >= context.max_iterations:
+                # Stop once the shared LLM-call budget is spent (the
+                # middleware blocks further calls); success is decided by
+                # policy.validate() below.  total_iterations counts events,
+                # a different unit, so it no longer stops the run.
+                if budget_exhausted(collector.trace):
                     break
 
             # Flush any remaining chunks

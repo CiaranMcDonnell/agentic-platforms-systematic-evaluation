@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# Restricted login shell for the DESMET deploy user.
+#
+# sshd runs the login shell as `desmet-shell -c "<command>"`.  Only the
+# command shapes the harness's deploy tool sends are allowed
+# (src/desmet/adapters/_shared/tools.py::_deploy_remote):
+#
+#   git clone -b <branch> <repo> /opt/desmet/<platform>/<story>
+#   cd /opt/desmet/<...> && git fetch|pull origin <branch>
+#   cd /opt/desmet/<...> && docker compose up -d --build
+#   curl -sf http://localhost:<port>/<path>
+#
+# plus whoami / id / docker ps / ssh -T git@github.com for setup checks.
+#
+# `docker compose up` builds and runs agent-written compose files, and
+# docker-group membership is root-equivalent, so every compose project is
+# checked first: no privileged mode, host namespaces, devices, added
+# capabilities, or bind mounts outside the project directory.
+set -euo pipefail
+
+BASE=/opt/desmet
+
+deny() { echo "desmet-shell: denied: $*" >&2; exit 126; }
+
+[ "${1:-}" = "-c" ] || deny "interactive login is disabled"
+cmdline="${2:-}"
+[ -n "$cmdline" ] || deny "empty command"
+
+# No shell metacharacters other than the '&&' separator.  Quotes are
+# allowed because the tool shlex-quotes its arguments.
+stripped="${cmdline//&&/}"
+case "$stripped" in
+  *[\;\|\&\$\`\<\>\(\)\{\}\\]*|*$'\n'*) deny "shell metacharacters" ;;
+esac
+[[ "$cmdline" =~ ^[A-Za-z0-9\ _./:@\'\"=+,~%-]+(\&\&[A-Za-z0-9\ _./:@\'\"=+,~%-]+)*$ ]] \
+  || deny "unexpected characters"
+
+under_base() {
+  local p
+  p=$(realpath -m -- "$1")
+  [ "$p" = "$BASE" ] || [[ "$p" == "$BASE"/* ]]
+}
+
+# Reject compose projects that could escape the container onto the host.
+# Reads `docker compose config --format json` on stdin.
+COMPOSE_POLICY='
+import json, os, sys
+project = os.path.realpath(sys.argv[1])
+cfg = json.load(sys.stdin)
+bad = []
+for name, svc in (cfg.get("services") or {}).items():
+    if svc.get("privileged"):
+        bad.append(f"{name}: privileged")
+    for key in ("network_mode", "pid", "ipc", "userns_mode", "uts"):
+        if str(svc.get(key, "")).startswith("host"):
+            bad.append(f"{name}: {key}=host")
+    for key in ("cap_add", "devices", "security_opt", "device_cgroup_rules"):
+        if svc.get(key):
+            bad.append(f"{name}: {key}")
+    for vol in svc.get("volumes") or []:
+        if vol.get("type") == "bind":
+            src = os.path.realpath(vol.get("source", ""))
+            if src != project and not src.startswith(project + os.sep):
+                bad.append(f"{name}: bind mount {src}")
+# Named volumes can bind-mount host paths via driver_opts (type=none,
+# o=bind, device=/), which the per-service check above never sees.
+for vname, vol in (cfg.get("volumes") or {}).items():
+    vol = vol or {}
+    if vol.get("driver_opts") or vol.get("driver") not in (None, "local"):
+        bad.append(f"volume {vname}: driver/driver_opts")
+for kind in ("configs", "secrets"):
+    for cname, c in (cfg.get(kind) or {}).items():
+        f = (c or {}).get("file")
+        if f:
+            src = os.path.realpath(f)
+            if src != project and not src.startswith(project + os.sep):
+                bad.append(f"{kind} {cname}: file {src}")
+if bad:
+    print("compose policy: " + "; ".join(bad), file=sys.stderr)
+    sys.exit(1)
+'
+
+check_compose() {
+  local dir="$1"
+  docker compose --project-directory "$dir" config --format json 2>/dev/null     | python3 -c "$COMPOSE_POLICY" "$dir" || deny "compose policy violation in $dir"
+}
+
+cwd="$HOME"
+IFS=$'\n' read -r -d '' -a segments < <(printf '%s\0' "${cmdline//&&/$'\n'}") || true
+
+for seg in "${segments[@]}"; do
+  # Safe: metacharacters were rejected above, so eval only re-splits
+  # words and strips the quoting shlex added.
+  eval "set -- $seg"
+  [ $# -gt 0 ] || continue
+
+  case "$1" in
+    whoami|id)
+      [ $# -eq 1 ] || deny "$1 takes no arguments"
+      "$1" ;;
+
+    cd)
+      [ $# -eq 2 ] && under_base "$2" || deny "cd outside $BASE"
+      cwd=$(realpath -m -- "$2"); cd "$cwd" ;;
+
+    mkdir)
+      [ $# -eq 3 ] && [ "$2" = "-p" ] && under_base "$3" || deny "mkdir outside $BASE"
+      mkdir -p -- "$3" ;;
+
+    git)
+      case "${2:-}" in
+        clone)
+          [ $# -eq 6 ] && [ "$3" = "-b" ] || deny "git clone -b <branch> <repo> <path>"
+          [[ "$5" == git@github.com:* ]] || deny "clone source must be github"
+          under_base "$6" || deny "clone target outside $BASE"
+          git clone -b "$4" -- "$5" "$6" ;;
+        fetch|pull)
+          [ $# -eq 4 ] && [ "$3" = "origin" ] || deny "git $2 origin <branch>"
+          under_base "$cwd" || deny "git outside $BASE"
+          git "$2" origin "$4" ;;
+        status|log)
+          under_base "$cwd" || deny "git outside $BASE"
+          git "$2" ;;
+        *) deny "git ${2:-}" ;;
+      esac ;;
+
+    docker)
+      if [ "${2:-}" = "ps" ] && [ $# -eq 2 ]; then
+        docker ps
+      elif [ "${2:-}" = "compose" ]; then
+        under_base "$cwd" || deny "docker compose outside $BASE"
+        case "${3:-}" in
+          up|build|restart|start) check_compose "$cwd" ;;
+          down|ps|logs|stop) ;;
+          *) deny "docker compose ${3:-}" ;;
+        esac
+        shift 2
+        docker compose --project-directory "$cwd" "$@"
+      else
+        deny "docker ${2:-}"
+      fi ;;
+
+    curl)
+      [ $# -eq 3 ] && [ "$2" = "-sf" ] || deny "curl -sf <url>"
+      [[ "$3" =~ ^http://localhost:[0-9]+(/[A-Za-z0-9._~/%-]*)?$ ]] || deny "curl to localhost only"
+      curl -sf --max-time 20 -- "$3" ;;
+
+    ssh)
+      [ "$*" = "ssh -T git@github.com" ] || deny "ssh"
+      ssh -T git@github.com || true ;;
+
+    *) deny "$1" ;;
+  esac
+done
