@@ -30,7 +30,7 @@ from desmet.adapters._shared.tracing import (
     finish_trace,
     start_trace,
 )
-from desmet.adapters._shared.validation import audit_workspace
+from desmet.adapters._shared.validation import audit_workspace, snapshot_workspace
 from desmet.harness.adapter import BasePlatformAdapter
 from desmet.harness.context import StageContext
 from desmet.harness.results import (
@@ -102,6 +102,7 @@ class ToolAgentAdapter(BasePlatformAdapter):
 
         reset_loop_tracker()
         trace = start_trace()
+        workspace_before = snapshot_workspace(str(context.workspace))
         try:
             if stage_name == "codegen":
                 prior = context.get_prior_result("requirements")
@@ -178,6 +179,9 @@ class ToolAgentAdapter(BasePlatformAdapter):
                 success=success,
                 iterations=iterations,
                 framework_metrics=fm,
+                workspace_changed=(
+                    snapshot_workspace(str(context.workspace)) != workspace_before
+                ),
             )
         except Exception as e:
             finish_trace(trace, error=str(e))

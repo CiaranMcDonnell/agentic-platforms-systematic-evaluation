@@ -139,11 +139,15 @@ class StoryResult:
     tests_run: int = 0
     tests_passed: int = 0
     tests_failed: int = 0
+    pytest_exit_code: int | None = None
+    # Harness-side health check after deploy; None in local mode / no deploy.
+    deploy_healthy: bool | None = None
     coverage_delta: float = 0.0
 
     # Artifacts
     output_files: list[str] = field(default_factory=list)
     git_diff: str | None = None
+    artifact_path: str | None = None
     trace_file: str | None = None
     log_file: str | None = None
     langfuse_trace_id: str | None = None

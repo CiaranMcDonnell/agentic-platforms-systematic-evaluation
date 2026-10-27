@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 from collections.abc import Callable, Generator
 from pathlib import Path
@@ -29,6 +30,16 @@ _IMAGE_TAG = "1.0"
 _BASE_IMAGE = f"desmet-eval-base:{_IMAGE_TAG}"
 
 _STAGE_NAMES = {"requirements", "codegen", "testing", "deploy"}
+
+# Hard wall-clock cap per stage.  Without it a model that loops (e.g. GLM
+# retrying an unreachable deploy for 18+ minutes) runs unbounded and its
+# time/token/cost figures stop meaning anything.  600s is the basic-story
+# time budget; no Sonnet/Terra stage on US-001 exceeded 152s.
+STAGE_TIMEOUT_SECONDS = int(os.environ.get("DESMET_STAGE_TIMEOUT", "600"))
+
+# Progress lines end with "(<elapsed>s, <cumulative> tokens)"; on timeout
+# the last value is the only token count we have for the killed stage.
+_PROGRESS_TOKENS_RE = re.compile(r"\(\s*\d+s,\s*([\d,]+) tokens\)")
 
 # Built from config/platforms.yaml — maps SDK platform IDs to their pip extra.
 # Visual platforms (no pip_extra) are excluded.
@@ -522,6 +533,35 @@ def _current_trace_propagation_env() -> list[str]:
         return []
 
 
+def _timed_out_result(
+    platform_id: str,
+    stage_name: str,
+    tokens_seen: int,
+    resource_summary: Any,
+) -> StageResult:
+    """Failed StageResult for a stage killed at ``STAGE_TIMEOUT_SECONDS``.
+
+    The container's own result JSON is lost with the process, so tokens
+    come from the last progress line (input/output split unknown, recorded
+    as input) and cost is priced at the input rate — both lower bounds.
+    """
+    from desmet.cost_calculator import estimate_cost
+
+    model = os.environ.get("DESMET_MODEL", "")
+    return StageResult(
+        platform_id=platform_id,
+        stage_name=stage_name,
+        success=False,
+        completed=False,
+        error_message=f"Stage timed out after {STAGE_TIMEOUT_SECONDS}s",
+        wall_clock_seconds=float(STAGE_TIMEOUT_SECONDS),
+        tokens_input=tokens_seen,
+        cost_usd=estimate_cost(model, input_tokens=tokens_seen) if model else 0.0,
+        framework_metrics={"timed_out": 1.0},
+        resource_metrics=resource_summary.to_dict(),
+    )
+
+
 async def run_stage_in_container(
     platform_id: str,
     stage_name: str,
@@ -579,20 +619,48 @@ async def run_stage_in_container(
     )
 
     # Stream stderr (progress) line by line
+    last_tokens = 0
+
     async def _stream_stderr():
+        nonlocal last_tokens
         while True:
             line = await proc.stderr.readline()
             if not line:
                 break
             text = line.decode("utf-8", errors="replace").rstrip()
+            m = _PROGRESS_TOKENS_RE.search(text)
+            if m:
+                last_tokens = max(last_tokens, int(m.group(1).replace(",", "")))
             if text and progress_callback:
                 progress_callback(text)
 
-    stderr_task = asyncio.create_task(_stream_stderr())
-    try:
-        stdout_data = await proc.stdout.read()
+    async def _collect() -> bytes:
+        out = await proc.stdout.read()
         await stderr_task
         await proc.wait()
+        return out
+
+    stderr_task = asyncio.create_task(_stream_stderr())
+    try:
+        stdout_data = await asyncio.wait_for(_collect(), timeout=STAGE_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        resource_summary = monitor.stop()
+        proc.kill()
+        await proc.wait()
+        stderr_task.cancel()
+        # Killing `docker exec` leaves the agent running inside the
+        # container; removing the container stops it.
+        stop_container(platform_id, story_id)
+        try:
+            ctx_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+        if progress_callback:
+            progress_callback(
+                f"  [{stage_name.upper()}] TIMEOUT after {STAGE_TIMEOUT_SECONDS}s "
+                f"({last_tokens:,} tokens so far)"
+            )
+        return _timed_out_result(platform_id, stage_name, last_tokens, resource_summary)
     except asyncio.CancelledError:
         # Kill the docker exec process and stop the container
         monitor.stop()

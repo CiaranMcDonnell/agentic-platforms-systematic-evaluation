@@ -12,7 +12,7 @@ from typing import Any
 import duckdb
 import pandas as pd
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 5
 
 _CREATE_SQL = """\
 CREATE TABLE IF NOT EXISTS store_meta (
@@ -63,7 +63,15 @@ CREATE TABLE IF NOT EXISTS executions (
     repeat_index            INTEGER DEFAULT 0,
     resource_peak_memory_bytes  BIGINT,
     resource_avg_cpu_percent    FLOAT,
-    resource_net_tx_bytes       BIGINT
+    resource_net_tx_bytes       BIGINT,
+    stages_passed       BOOLEAN,
+    tests_run           INTEGER,
+    tests_passed        INTEGER,
+    tests_failed        INTEGER,
+    pytest_exit_code    INTEGER,
+    artifact_path       VARCHAR,
+    criteria_results    VARCHAR,
+    deploy_healthy      BOOLEAN
 );
 """
 
@@ -101,6 +109,29 @@ class ResultStore:
                     "ALTER TABLE executions ADD COLUMN IF NOT EXISTS resource_net_tx_bytes BIGINT",
                 ]:
                     self._conn.execute(col_sql)
+            if current < 3:
+                # NULL on legacy rows: stage outcomes weren't persisted.
+                self._conn.execute(
+                    "ALTER TABLE executions ADD COLUMN IF NOT EXISTS stages_passed BOOLEAN"
+                )
+            if current < 4:
+                # NULL on legacy rows: workspaces weren't verified.
+                for col_sql in [
+                    "ALTER TABLE executions ADD COLUMN IF NOT EXISTS tests_run INTEGER",
+                    "ALTER TABLE executions ADD COLUMN IF NOT EXISTS tests_passed INTEGER",
+                    "ALTER TABLE executions ADD COLUMN IF NOT EXISTS tests_failed INTEGER",
+                    "ALTER TABLE executions ADD COLUMN IF NOT EXISTS pytest_exit_code INTEGER",
+                    "ALTER TABLE executions ADD COLUMN IF NOT EXISTS artifact_path VARCHAR",
+                ]:
+                    self._conn.execute(col_sql)
+            if current < 5:
+                # JSON {criterion_id: met}; NULL when no acceptance tests ran.
+                self._conn.execute(
+                    "ALTER TABLE executions ADD COLUMN IF NOT EXISTS criteria_results VARCHAR"
+                )
+                self._conn.execute(
+                    "ALTER TABLE executions ADD COLUMN IF NOT EXISTS deploy_healthy BOOLEAN"
+                )
             self._conn.execute("UPDATE store_meta SET version = ?", [_SCHEMA_VERSION])
 
     # ------------------------------------------------------------------
@@ -139,6 +170,7 @@ class ResultStore:
     ) -> None:
         """Insert one platform×story execution row."""
         fm_json = json.dumps(result.framework_metrics) if result.framework_metrics else None
+        scored = getattr(metrics, "scored_dimensions", set())
         self._conn.execute(
             "INSERT INTO executions ("
             "  execution_id, run_id, platform_id, story_id, status,"
@@ -150,8 +182,11 @@ class ResultStore:
             "  rubric_time_efficiency, rubric_autonomy,"
             "  framework_metrics, trace_path, langfuse_trace_id, langsmith_run_id,"
             "  repeat_index, resource_peak_memory_bytes,"
-            "  resource_avg_cpu_percent, resource_net_tx_bytes"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  resource_avg_cpu_percent, resource_net_tx_bytes, stages_passed,"
+            "  tests_run, tests_passed, tests_failed, pytest_exit_code, artifact_path,"
+            "  criteria_results, deploy_healthy"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
+            " ?, ?, ?, ?, ?, ?, ?)",
             [
                 result.execution_id,
                 run_id,
@@ -167,12 +202,19 @@ class ResultStore:
                 result.tokens_output,
                 result.api_cost_usd,
                 result.human_interventions,
-                metrics.pipeline_completeness_score,
-                metrics.tool_integration_score,
-                metrics.error_recovery_score,
-                metrics.trace_quality_score,
-                metrics.time_efficiency_score,
-                metrics.autonomy_score,
+                *(
+                    # NULL marks "not scored yet" so it can't be mistaken
+                    # for a genuine 0 when scores are recomputed later.
+                    getattr(metrics, f"{dim}_score") if dim in scored else None
+                    for dim in (
+                        "pipeline_completeness",
+                        "tool_integration",
+                        "error_recovery",
+                        "trace_quality",
+                        "time_efficiency",
+                        "autonomy",
+                    )
+                ),
                 fm_json,
                 result.trace_file,
                 result.langfuse_trace_id,
@@ -181,6 +223,15 @@ class ResultStore:
                 (result.resource_metrics or {}).get("peak_memory_bytes"),
                 (result.resource_metrics or {}).get("avg_cpu_percent"),
                 (result.resource_metrics or {}).get("net_tx_total_bytes"),
+                result.success,
+                # Only meaningful once verification ran; NULL otherwise.
+                result.tests_run if result.artifact_path else None,
+                result.tests_passed if result.artifact_path else None,
+                result.tests_failed if result.artifact_path else None,
+                result.pytest_exit_code,
+                result.artifact_path,
+                json.dumps(result.criteria_results) if result.criteria_results else None,
+                result.deploy_healthy,
             ],
         )
 

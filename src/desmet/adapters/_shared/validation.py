@@ -6,6 +6,7 @@ produced the expected artefacts in the workspace directory.
 
 from __future__ import annotations
 
+import json
 import os
 import py_compile
 from pathlib import Path
@@ -14,6 +15,18 @@ _REQUIREMENTS_KEYWORDS = {"functional", "non-functional", "acceptance", "constra
 
 
 _SKIP_DIRS = {".venv", "venv", "node_modules", ".git", "__pycache__"}
+
+# Written into each workspace by the runner: JSON list of the files the
+# baseline shipped with, so validators can ignore artefacts the agent
+# didn't produce (e.g. the baseline's own unrendered design diagrams).
+BASELINE_FILES_NAME = ".desmet-baseline-files.json"
+
+
+def _baseline_files(ws: Path) -> set[str]:
+    try:
+        return set(json.loads((ws / BASELINE_FILES_NAME).read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return set()
 
 
 def _walk_files(root: Path, pattern: str):
@@ -32,6 +45,40 @@ def _walk_files(root: Path, pattern: str):
                 yield Path(dirpath) / fn
 
 
+def _has_requirements_doc(design_dir: Path) -> bool:
+    """A .md/.txt in *design_dir* mentioning at least two requirement kinds."""
+    for pattern in ("*.md", "*.txt"):
+        for f in _walk_files(design_dir, pattern):
+            content = f.read_text(errors="ignore").lower()
+            if sum(1 for kw in _REQUIREMENTS_KEYWORDS if kw in content) >= 2:
+                return True
+    return False
+
+
+def _diagrams_rendered(ws: Path, design_dir: Path, baseline: set[str]) -> bool:
+    """At least one new Mermaid diagram, and every new one rendered to a sibling SVG.
+
+    ``mmdc`` only writes the SVG when the source parses, so a missing or
+    empty SVG means the diagram is not valid Mermaid.  Diagrams that
+    shipped with the baseline are ignored.
+    """
+    sources = [
+        src
+        for src in (*_walk_files(design_dir, "*.mermaid"), *_walk_files(design_dir, "*.mmd"))
+        if str(src.relative_to(ws)).replace("\\", "/") not in baseline
+    ]
+    if not sources:
+        return False
+    for src in sources:
+        svg = src.with_suffix(".svg")
+        try:
+            if "<svg" not in svg.read_text(errors="ignore")[:4096]:
+                return False
+        except OSError:
+            return False
+    return True
+
+
 def validate_workspace(stage: str, workspace: str) -> bool:
     """Check whether *workspace* contains expected artefacts for *stage*.
 
@@ -44,17 +91,9 @@ def validate_workspace(stage: str, workspace: str) -> bool:
         design_dir = ws / "docs" / "design"
         if not design_dir.exists():
             return False
-        for f in _walk_files(design_dir, "*.md"):
-            content = f.read_text(errors="ignore").lower()
-            hits = sum(1 for kw in _REQUIREMENTS_KEYWORDS if kw in content)
-            if hits >= 2:
-                return True
-        for f in _walk_files(design_dir, "*.txt"):
-            content = f.read_text(errors="ignore").lower()
-            hits = sum(1 for kw in _REQUIREMENTS_KEYWORDS if kw in content)
-            if hits >= 2:
-                return True
-        return False
+        return _has_requirements_doc(design_dir) and _diagrams_rendered(
+            ws, design_dir, _baseline_files(ws)
+        )
 
     if stage == "codegen":
         for py_file in _walk_files(ws, "*.py"):
@@ -152,3 +191,25 @@ def audit_workspace(
                 )
 
     return warnings
+
+
+def snapshot_workspace(workspace: str) -> dict[str, tuple[int, int]]:
+    """Map each workspace file to ``(mtime_ns, size)``.
+
+    Taken before and after a stage so ``build_stage_result`` can tell
+    whether the agent actually changed the workspace, independent of
+    how faithfully the platform reported its tool calls.
+    """
+    ws = Path(workspace)
+    snapshot: dict[str, tuple[int, int]] = {}
+    for dirpath, dirnames, filenames in os.walk(ws, onerror=lambda _: None):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        for fn in filenames:
+            fpath = Path(dirpath) / fn
+            try:
+                st = fpath.stat()
+            except OSError:
+                continue
+            rel = str(fpath.relative_to(ws)).replace("\\", "/")
+            snapshot[rel] = (st.st_mtime_ns, st.st_size)
+    return snapshot

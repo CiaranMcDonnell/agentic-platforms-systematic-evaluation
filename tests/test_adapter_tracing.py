@@ -523,6 +523,68 @@ class TestBuildStageResult:
         assert result.success is True
 
 
+    def test_mutating_stage_with_no_progress_fails_without_errors(self) -> None:
+        """A codegen stage that neither called a productive tool nor changed
+        the workspace did nothing, even if the validator passed on
+        baseline files and no error was recorded.
+        """
+        trace = start_trace()
+        record_tool_call(trace, "read_file", {"path": "app.py"}, "...")
+        finish_trace(trace)
+
+        result = build_stage_result(
+            StageResult,
+            platform_id="x",
+            stage_name="codegen",
+            trace=trace,
+            success=True,
+            iterations=1,
+            workspace_changed=False,
+        )
+
+        assert result.success is False
+        assert result.completed is False
+        assert "No productive tool call" in result.error_message
+
+    def test_mutating_stage_with_workspace_change_stays_successful(self) -> None:
+        """A changed workspace counts as progress even when the platform's
+        tool-call reporting missed the write.
+        """
+        trace = start_trace()
+        finish_trace(trace)
+
+        result = build_stage_result(
+            StageResult,
+            platform_id="x",
+            stage_name="codegen",
+            trace=trace,
+            success=True,
+            iterations=1,
+            workspace_changed=True,
+        )
+
+        assert result.success is True
+
+    def test_requirements_stage_with_no_progress_stays_successful(self) -> None:
+        """Requirements may be answered in-message, so the error-free
+        no-op rule doesn't apply to it.
+        """
+        trace = start_trace()
+        finish_trace(trace)
+
+        result = build_stage_result(
+            RequirementsResult,
+            platform_id="x",
+            stage_name="requirements",
+            trace=trace,
+            success=True,
+            iterations=1,
+            workspace_changed=False,
+        )
+
+        assert result.success is True
+
+
 # ── TestRecordNodeEvent ─────────────────────────────────────────────────
 
 

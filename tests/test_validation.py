@@ -13,6 +13,8 @@ class TestValidateWorkspace:
             "## Acceptance criteria\n"
             "## Constraint: must be fast\n"
         )
+        (design / "class.mermaid").write_text("classDiagram\n  class A\n")
+        (design / "class.svg").write_text("<svg xmlns='http://www.w3.org/2000/svg'></svg>")
         assert validate_workspace("requirements", str(tmp_path)) is True
 
     def test_requirements_fails_no_file(self, tmp_path):
@@ -103,6 +105,9 @@ class TestValidateWorkspace:
             "## Acceptance criteria\n"
             "## Constraint: must be fast\n"
         )
+        (docs / "diagrams").mkdir()
+        (docs / "diagrams" / "flow.mmd").write_text("sequenceDiagram\n")
+        (docs / "diagrams" / "flow.svg").write_text("<svg></svg>")
         assert validate_workspace("requirements", str(tmp_path)) is True
 
     def test_codegen_passes_in_subdirectory(self, tmp_path):
@@ -119,3 +124,42 @@ class TestValidateWorkspace:
 
     def test_unknown_stage_returns_false(self, tmp_path):
         assert validate_workspace("unknown_stage", str(tmp_path)) is False
+
+
+class TestRequirementsDiagrams:
+    """Requirements also need new Mermaid diagrams that rendered to SVG."""
+
+    @staticmethod
+    def _workspace(tmp_path, baseline=()):
+        import json
+
+        design = tmp_path / "docs" / "design"
+        design.mkdir(parents=True)
+        (design / "requirements.md").write_text("functional\nnon-functional\n")
+        (tmp_path / ".desmet-baseline-files.json").write_text(json.dumps(list(baseline)))
+        return design
+
+    def test_fails_without_any_diagram(self, tmp_path):
+        self._workspace(tmp_path)
+        assert validate_workspace("requirements", str(tmp_path)) is False
+
+    def test_fails_when_a_diagram_did_not_render(self, tmp_path):
+        design = self._workspace(tmp_path)
+        (design / "a.mermaid").write_text("classDiagram")
+        (design / "a.svg").write_text("<svg></svg>")
+        (design / "b.mermaid").write_text("not mermaid")
+        assert validate_workspace("requirements", str(tmp_path)) is False
+
+    def test_baseline_diagrams_are_ignored(self, tmp_path):
+        design = self._workspace(tmp_path, ["docs/design/diagrams/old.mermaid"])
+        (design / "diagrams").mkdir()
+        (design / "diagrams" / "old.mermaid").write_text("never rendered")
+        (design / "new.mmd").write_text("sequenceDiagram")
+        (design / "new.svg").write_text("<svg></svg>")
+        assert validate_workspace("requirements", str(tmp_path)) is True
+
+    def test_only_baseline_diagrams_is_not_enough(self, tmp_path):
+        design = self._workspace(tmp_path, ["docs/design/old.mermaid", "docs/design/old.svg"])
+        (design / "old.mermaid").write_text("classDiagram")
+        (design / "old.svg").write_text("<svg></svg>")
+        assert validate_workspace("requirements", str(tmp_path)) is False

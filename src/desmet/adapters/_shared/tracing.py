@@ -24,6 +24,12 @@ from desmet.harness.trace import AgentMessage, AgentTrace, ToolCall
 # the validator may pass purely on baseline-workspace files.
 _PRODUCTIVE_TOOLS = frozenset({"write_file", "execute_shell", "deploy_remote"})
 
+# Stages whose whole purpose is to change the workspace or a remote
+# target. For these, "success" with no evidence of progress is treated
+# as a false positive even when no error was recorded. ``requirements``
+# is excluded because some platforms answer it purely in-message.
+_MUTATING_STAGES = frozenset({"codegen", "testing", "deploy"})
+
 
 # ── Trace lifecycle ─────────────────────────────────────────────────────
 
@@ -326,6 +332,7 @@ def build_stage_result(
     success: bool,
     iterations: int,
     error_message: str | None = None,
+    workspace_changed: bool | None = None,
     **extra_fields: Any,
 ) -> StageResult:
     """Construct a ``StageResult`` subclass from trace data.
@@ -365,10 +372,24 @@ def build_stage_result(
     # ``read_file`` call — the read passes the empty-list check but the
     # stage produced no test artifacts. Demote instead when no tool call
     # in this stage *mutated* workspace state.
-    made_progress = any(tc.tool_name in _PRODUCTIVE_TOOLS for tc in trace.tool_calls)
-    if success and trace.errors and not made_progress:
+    #
+    # For mutating stages the guard also fires without an error: a
+    # codegen/testing/deploy stage that neither called a productive tool
+    # nor changed the workspace has done nothing, whatever the validator
+    # says. ``workspace_changed`` (from a before/after snapshot) covers
+    # platforms whose tool-call reporting is lossy; when the caller
+    # doesn't supply it we only trust the error-gated rule.
+    made_progress = bool(workspace_changed) or any(
+        tc.tool_name in _PRODUCTIVE_TOOLS for tc in trace.tool_calls
+    )
+    no_op_mutating_stage = stage_name in _MUTATING_STAGES and workspace_changed is not None
+    if success and not made_progress and (trace.errors or no_op_mutating_stage):
         success = False
         completed = False
+        if error_message is None:
+            error_message = (
+                f"No productive tool call or workspace change in {stage_name} stage"
+            )
 
     return result_cls(
         platform_id=platform_id,

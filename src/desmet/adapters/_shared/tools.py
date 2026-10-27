@@ -746,6 +746,26 @@ def _deploy_local(
     return f"Error: unknown action '{action}'. Valid: push, restart, health_check"
 
 
+_KEY_COPIES: dict[str, str] = {}
+
+
+def _private_key_copy(key_path: str) -> str:
+    """Return a 0600 copy of *key_path* (cached per process)."""
+    import tempfile
+
+    if key_path not in _KEY_COPIES:
+        try:
+            data = Path(os.path.expanduser(key_path)).read_bytes()
+        except OSError:
+            return key_path  # let ssh report the missing key
+        fd, copy = tempfile.mkstemp(prefix="desmet_deploy_key_")
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.chmod(copy, 0o600)
+        _KEY_COPIES[key_path] = copy
+    return _KEY_COPIES[key_path]
+
+
 def _deploy_remote(
     workspace: Path,
     platform_id: str,
@@ -772,19 +792,15 @@ def _deploy_remote(
     branch = f"{platform_id}/{story_id}"
     remote_path = f"{base}/{platform_id}/{story_id}"
     port = _deploy_port(platform_id, story_id)
-    # StrictModes=no is required because the deploy key is bind-mounted
-    # into the container from the host (see container_runner._ensure_container).
-    # On Windows hosts and on certain Linux bind-mount setups the file
-    # appears with permissions wider than 600 inside the container, which
-    # would otherwise cause OpenSSH to refuse to use it.  The actual
-    # privilege boundary is enforced by the restricted shell on the
-    # deploy server (see docs/spec/deploy-infrastructure.md), not by
-    # client-side mode bits.
+    # ssh refuses a private key it owns that is group/world readable, and
+    # the bind-mounted key can arrive 0777.  Use a 0600 private copy.
+    # (StrictModes is a server-only option; passing it to the client made
+    # every remote action fail with "Bad configuration option".)
+    key = _private_key_copy(key)
     ssh_opts = (
         f"ssh -i {shlex.quote(key)} -p {shlex.quote(ssh_port)} "
         f"-o IdentitiesOnly=yes "
-        f"-o StrictHostKeyChecking=accept-new "
-        f"-o StrictModes=no"
+        f"-o StrictHostKeyChecking=accept-new"
     )
 
     if action == "push":
@@ -839,50 +855,26 @@ def _deploy_remote(
     timeouts = {"restart": 180, "health_check": 30}
 
     if action == "restart":
-        # SSH to server: clone or pull the branch, then docker compose up.
-        # The restricted shell (desmet-shell) allows:
-        #   git clone [-b branch] <url> <path>
-        #   cd <path> && git pull|fetch|status|log
-        #   docker compose --project-directory <path> <subcommand>
+        # Push the workspace (with compose env), then clone that exact
+        # commit into a directory named after it and compose up there.
+        # Branches are force-pushed every run, so `git pull` into a fixed
+        # directory fails on diverged history and silently left the server
+        # building stale code.  A per-commit directory is immutable: a
+        # repeated restart on the same commit reuses it, a new commit gets
+        # a fresh clone.  The restricted shell (desmet-shell) allows
+        # `git clone -b <branch> <repo> <path>` and `cd <path> && docker
+        # compose ...` under /opt/desmet.
         import subprocess as _sp
 
         q_branch = shlex.quote(branch)
-        q_remote = shlex.quote(remote_path)
         q_repo = shlex.quote(deploy_repo)
         q_user_host = f"{shlex.quote(user)}@{shlex.quote(host)}"
 
-        # Step 1: git clone (first deploy) or cd && git pull (subsequent)
-        clone_result = _sp.run(
-            f'{ssh_opts} {q_user_host} "git clone -b {q_branch} {q_repo} {q_remote}"',
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        if clone_result.returncode != 0:
-            # Already cloned — pull latest
-            _sp.run(
-                f'{ssh_opts} {q_user_host} "cd {q_remote} && git fetch origin {q_branch}"',
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            _sp.run(
-                f'{ssh_opts} {q_user_host} "cd {q_remote} && git pull origin {q_branch}"',
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-
-        # Step 2: docker compose up.
-        # Write .env into workspace before the git push (done in the push
-        # action) so docker compose reads COMPOSE_PROJECT_NAME and PORT
-        # automatically from the working directory.
+        # Compose reads COMPOSE_PROJECT_NAME and PORT from .env in the
+        # project directory; the stable project name makes `up` replace
+        # the previous deployment of this platform/story.
         compose_project = f"{platform_id}-{story_id}".lower()
         env_file = workspace / ".env"
-        # Write/overwrite compose vars (filter out old values, append new)
         existing = env_file.read_text() if env_file.exists() else ""
         lines = [
             ln
@@ -893,34 +885,42 @@ def _deploy_remote(
         lines.append(f"PORT={port}")
         env_file.write_text("\n".join(lines) + "\n")
 
-        # Re-push so .env is on the server
+        git_safe = ["git", "-c", f"safe.directory={workspace}", "-c", "safe.directory=*"]
+        _sp.run([*git_safe, "add", "-A"], cwd=workspace, capture_output=True, timeout=10)
         _sp.run(
-            ["git", "add", "-A"],
+            [*git_safe, "commit", "-m", "add compose env"],
             cwd=workspace,
             capture_output=True,
             timeout=10,
         )
-        _sp.run(
-            ["git", "commit", "-m", "add compose env"],
+        push = _sp.run(
+            [*git_safe, "push", "deploy", f"HEAD:{branch}", "--force"],
             cwd=workspace,
-            capture_output=True,
-            timeout=10,
-        )
-        _sp.run(
-            ["git", "push", "deploy", f"HEAD:{branch}", "--force"],
-            cwd=workspace,
-            capture_output=True,
-            timeout=60,
-        )
-        # Pull on server
-        _sp.run(
-            f'{ssh_opts} {q_user_host} "cd {q_remote} && git pull origin {q_branch}"',
-            shell=True,
             capture_output=True,
             text=True,
             timeout=60,
         )
+        if push.returncode != 0:
+            return f"Error: restart failed to push workspace: {push.stdout}{push.stderr}"
+        sha = _sp.run(
+            [*git_safe, "rev-parse", "--short=12", "HEAD"],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+        if not sha:
+            return "Error: restart could not resolve the pushed commit"
 
+        q_remote = shlex.quote(f"{remote_path}/{sha}")
+        # Fails harmlessly when this commit is already cloned.
+        _sp.run(
+            f'{ssh_opts} {q_user_host} "git clone -b {q_branch} {q_repo} {q_remote}"',
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
         cmd = f'{ssh_opts} {q_user_host} "cd {q_remote} && docker compose up -d --build"'
     elif action == "health_check":
         q_url = shlex.quote(url)
@@ -938,11 +938,65 @@ def _deploy_remote(
             timeout=timeouts.get(action, 60),
         )
         output = result.stdout + result.stderr
+        if result.returncode != 0:
+            # Without this a failed curl/compose looks like plain output
+            # ("(no output)"), so neither the agent nor the harness can
+            # tell it failed.
+            return f"Error: {action} failed (exit {result.returncode}): {output or '(no output)'}"
         return output if output else "(no output)"
     except subprocess.TimeoutExpired:
         return f"Error: {action} timed out"
     except Exception as exc:
         return f"Error: {exc}"
+
+
+def harness_health_check(
+    workspace: Path,
+    platform_id: str,
+    story_id: str,
+    attempts: int = 3,
+    delay_seconds: float = 5.0,
+) -> bool | None:
+    """Independently check the deployed service after the deploy stage.
+
+    Runs on the harness host (not in the platform container), so it builds
+    the ssh argv directly instead of reusing ``_deploy_remote``'s POSIX
+    shell string, which Windows ``cmd`` can't parse.  A "passed" deploy
+    stage is then backed by a live endpoint rather than the agent's own
+    report.  Returns ``None`` in local mode, where platform containers
+    can't run Docker and nothing is deployed, or when deploy isn't
+    configured.
+    """
+    import time
+
+    if os.environ.get("DESMET_DEPLOY_MODE", "remote") == "local":
+        return None
+    host = os.environ.get("DEPLOY_HOST")
+    user = os.environ.get("DEPLOY_USER")
+    key = os.environ.get("DEPLOY_KEY_PATH")
+    if not all([host, user, key]):
+        return None
+    port = _deploy_port(platform_id, story_id)
+    cmd = [
+        "ssh",
+        "-i", os.path.expanduser(key),
+        "-p", os.environ.get("DEPLOY_PORT", "22"),
+        "-o", "IdentitiesOnly=yes",
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "ConnectTimeout=15",
+        f"{user}@{host}",
+        f"curl -sf http://localhost:{port}/health",
+    ]
+    for attempt in range(attempts):
+        try:
+            if subprocess.run(cmd, capture_output=True, timeout=60).returncode == 0:
+                return True
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        if attempt < attempts - 1:
+            time.sleep(delay_seconds)
+    return False
 
 
 def _check_completion(workspace: Path, stage: str) -> tuple[bool, str]:

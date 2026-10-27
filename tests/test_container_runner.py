@@ -387,3 +387,66 @@ class TestEnsureContainerDeployWiring:
         )
         joined = " ".join(run_call.args[0])
         assert "/run/secrets/deploy_key" not in joined
+
+
+class TestStageTimeout:
+    """A stage that never finishes is killed and reported as a failure."""
+
+    @staticmethod
+    def _hanging_proc():
+        import asyncio
+
+        lines = [b"    tool 3 - write_file -> a.py  (12s, 4,100 tokens)\n",
+                 b"    tool 9 - execute_shell -> ls  (40s, 98,765 tokens)\n"]
+
+        async def readline():
+            if lines:
+                return lines.pop(0)
+            await asyncio.sleep(3600)
+
+        async def read():
+            await asyncio.sleep(3600)
+
+        proc = MagicMock()
+        proc.stderr.readline = readline
+        proc.stdout.read = read
+
+        async def wait():
+            return -9
+
+        proc.wait = wait
+        return proc
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_failed_result_with_token_lower_bound(self, tmp_path):
+        from desmet.harness import container_runner as cr
+
+        context = MagicMock()
+        context.story.id = "US-001"
+        context.workspace = tmp_path
+        context.to_dict.return_value = {}
+        proc = self._hanging_proc()
+        progress: list[str] = []
+
+        async def fake_exec(*args, **kwargs):
+            return proc
+
+        with patch.object(cr, "STAGE_TIMEOUT_SECONDS", 0.2), \
+                patch.object(cr, "has_image", return_value=True), \
+                patch.object(cr, "_ensure_container", return_value="c"), \
+                patch.object(cr, "ResourceMonitor") as monitor, \
+                patch.object(cr, "stop_container") as stop, \
+                patch("asyncio.create_subprocess_exec", side_effect=fake_exec), \
+                patch("desmet.cost_calculator.estimate_cost", return_value=0.01):
+            monitor.return_value.stop.return_value.to_dict.return_value = {}
+            result = await cr.run_stage_in_container(
+                "langgraph", "deploy", context, progress.append
+            )
+
+        assert result.success is False
+        assert "timed out" in result.error_message
+        assert result.tokens_input == 98_765
+        assert result.framework_metrics == {"timed_out": 1.0}
+        proc.kill.assert_called_once()
+        stop.assert_called_once_with("langgraph", "US-001")
+        assert any("TIMEOUT" in line for line in progress)

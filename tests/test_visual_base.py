@@ -139,7 +139,13 @@ class TestExecuteVisualStage:
                 return ["missing file: main.py"]
             return []
 
-        with patch("desmet.adapters._shared.visual_base.audit_workspace", side_effect=mock_audit):
+        # The workflow "writes" main.py between the before/after snapshots,
+        # otherwise the no-progress guard would demote the stage.
+        with patch("desmet.adapters._shared.visual_base.audit_workspace", side_effect=mock_audit), \
+                patch(
+                    "desmet.adapters._shared.visual_base.snapshot_workspace",
+                    side_effect=[{}, {"main.py": (1, 1)}],
+                ):
             result = await adapter._execute_visual_stage(
                 "codegen",
                 lambda s, **kw: "Build: " + s.prompt,

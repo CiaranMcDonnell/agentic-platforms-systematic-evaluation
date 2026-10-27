@@ -31,7 +31,7 @@ class TestSchema:
     def test_schema_version(self, store: ResultStore):
         version = store._conn.execute("SELECT version FROM store_meta").fetchone()
         assert version is not None
-        assert version[0] == 2
+        assert version[0] == 5
 
 
 class TestRunLifecycle:
@@ -235,3 +235,33 @@ class TestExport:
         df = pd.read_csv(out)
         assert len(df) == 1
         assert df.iloc[0]["platform_id"] == "langgraph"
+
+
+class TestRecomputeUsesStageOutcome:
+    def _save(self, store: ResultStore, run_id: str, stage_success: bool) -> None:
+        from desmet.harness.metrics import StoryMetrics
+        from desmet.harness.results import StageResult
+        from desmet.harness.story import StoryResult, StoryStatus
+
+        result = StoryResult(
+            story_id="US-001",
+            platform_id="p",
+            execution_id=f"e-{stage_success}",
+            status=StoryStatus.COMPLETED,
+        )
+        result.raw_result = {
+            "codegen": StageResult(platform_id="p", stage_name="codegen", success=stage_success)
+        }
+        store.save_execution(run_id, result, StoryMetrics.from_story_result(result))
+
+    @pytest.mark.parametrize("stage_success", [True, False])
+    def test_recompute_respects_failed_stages(self, store: ResultStore, stage_success: bool):
+        from desmet.harness.metrics import recompute_platform_likert_from_store
+
+        run_id = store.create_run()
+        self._save(store, run_id, stage_success)
+        assert bool(store.get_executions(run_id)["stages_passed"].iloc[0]) is stage_success
+
+        scores = recompute_platform_likert_from_store(store, run_id, "p", {})
+        # Unscored pipeline rubric -> completion ratio alone: 1.0 -> 5, 0.0 -> 1
+        assert scores["score_pipeline_completeness"] == (5.0 if stage_success else 1.0)

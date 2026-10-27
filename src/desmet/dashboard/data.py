@@ -180,14 +180,14 @@ def load_results_raw(run_id: str | None = None) -> dict[str, Any]:
                 "tokens_input": int(row["tokens_input"] or 0),
                 "tokens_output": int(row["tokens_output"] or 0),
                 "api_cost_usd": row["cost_usd"],
-                "pipeline_completeness_score": row["rubric_pipeline_completeness"],
-                "tool_integration_score": row["rubric_tool_integration"],
-                "error_recovery_score": row["rubric_error_recovery"],
-                "trace_quality_score": row["rubric_trace_quality"],
-                "time_efficiency_score": row["rubric_time_efficiency"],
-                "autonomy_score": row["rubric_autonomy"],
+                "pipeline_completeness_score": _rubric(row, "pipeline_completeness"),
+                "tool_integration_score": _rubric(row, "tool_integration"),
+                "error_recovery_score": _rubric(row, "error_recovery"),
+                "trace_quality_score": _rubric(row, "trace_quality"),
+                "time_efficiency_score": _rubric(row, "time_efficiency"),
+                "autonomy_score": _rubric(row, "autonomy"),
                 "scored": any(
-                    row.get(f"rubric_{d}") not in (None, 0.0)
+                    _rubric(row, d) not in (None, 0.0)
                     for d in ["pipeline_completeness", "tool_integration",
                               "error_recovery", "trace_quality",
                               "time_efficiency", "autonomy"]
@@ -363,6 +363,12 @@ def update_story_scores(
             sm["scored"] = True
             break
     return data
+
+
+def _rubric(row: Any, dim: str) -> float | None:
+    """Rubric value from an executions row; NULL/NaN means unscored."""
+    val = row.get(f"rubric_{dim}")
+    return None if val is None or pd.isna(val) else float(val)
 
 
 def is_story_scored(story_metrics: dict[str, Any]) -> bool:

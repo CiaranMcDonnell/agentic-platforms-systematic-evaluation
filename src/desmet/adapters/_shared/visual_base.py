@@ -33,7 +33,7 @@ from desmet.adapters._shared.tracing import (
     record_message,
     start_trace,
 )
-from desmet.adapters._shared.validation import audit_workspace
+from desmet.adapters._shared.validation import audit_workspace, snapshot_workspace
 from desmet.harness.adapter import VisualPlatformAdapter
 from desmet.harness.context import StageContext
 from desmet.harness.results import (
@@ -106,6 +106,7 @@ class VisualAgentAdapter(VisualPlatformAdapter):
         """Shared template: build prompt → run workflow → validate → retry → build result."""
         platform_id = self.platform_info.id
         trace = start_trace()
+        workspace_before = snapshot_workspace(str(context.workspace))
         try:
             if stage_name == "codegen":
                 prior = context.get_prior_result("requirements")
@@ -174,6 +175,9 @@ class VisualAgentAdapter(VisualPlatformAdapter):
                 success=success,
                 iterations=iterations,
                 framework_metrics=fm,
+                workspace_changed=(
+                    snapshot_workspace(str(context.workspace)) != workspace_before
+                ),
             )
 
         except Exception as e:

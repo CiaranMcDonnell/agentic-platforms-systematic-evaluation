@@ -32,6 +32,7 @@ from desmet.observability import (
     record_generation,
 )
 from desmet.harness.story_loader import prepare_stage_context
+from desmet.adapters._shared.validation import BASELINE_FILES_NAME
 
 from .adapter import BasePlatformAdapter
 from .auto_rubric import compute_auto_rubric_scores
@@ -94,6 +95,7 @@ class RunnerConfig:
     verbose: bool = False
     save_traces: bool = True
     deploy_mode: str = "local"  # "local" or "remote"
+    verify_workspace: bool = True  # archive workspace + run its pytest suite
 
 
 class EvaluationRunner:
@@ -448,6 +450,11 @@ class EvaluationRunner:
                             str(Path(_dp, f).relative_to(workspace)).replace("\\", "/")
                         )
                 stage_ctx.metadata["baseline_files"] = sorted(_baseline)
+                # Validators run inside the platform container without the
+                # stage context, so they read the baseline list from here.
+                (workspace / BASELINE_FILES_NAME).write_text(
+                    json.dumps(sorted(_baseline)), encoding="utf-8"
+                )
 
                 # Accumulator for per-stage results
                 stage_results: dict[str, StageResult] = {}
@@ -554,6 +561,49 @@ class EvaluationRunner:
                 # Clean up platform container after story completes
                 from desmet.harness import container_runner
                 await _aio.to_thread(container_runner.stop_container, platform_id, story.id)
+
+                # Archive the workspace and run its test suite so the
+                # result records whether the code works, not just whether
+                # the validators' artefacts exist.
+                if self.config.verify_workspace:
+                    from desmet.harness.verification import verify_execution
+                    try:
+                        verification = await _aio.to_thread(
+                            verify_execution,
+                            workspace,
+                            self.config.results_dir / "artifacts" / result.execution_id,
+                            container_runner._BASE_IMAGE,
+                            story.id,
+                            [ac.id for ac in story.acceptance_criteria],
+                        )
+                        result.artifact_path = verification.artifact_path
+                        result.tests_run = verification.tests_run
+                        result.tests_passed = verification.tests_passed
+                        result.tests_failed = verification.tests_failed
+                        result.pytest_exit_code = verification.pytest_exit_code
+                        result.criteria_results = verification.criteria_results
+                        if self.progress_callback is not None:
+                            met = sum(verification.criteria_results.values())
+                            self.progress_callback(
+                                f"  [VERIFY] pytest exit={verification.pytest_exit_code} — "
+                                f"{verification.tests_passed}/{verification.tests_run} passed; "
+                                f"acceptance {met}/{len(verification.criteria_results)} criteria met"
+                            )
+                    except Exception as e:
+                        logger.error("workspace_verification_failed", error=str(e))
+
+                # The deploy validator only checks Dockerfile/compose exist;
+                # confirm the service actually answers.
+                if self.config.verify_workspace and "deploy" in stage_results:
+                    from desmet.adapters._shared.tools import harness_health_check
+                    result.deploy_healthy = await _aio.to_thread(
+                        harness_health_check, workspace, platform_id, story.id
+                    )
+                    if self.progress_callback is not None and result.deploy_healthy is not None:
+                        self.progress_callback(
+                            f"  [VERIFY] deploy health check: "
+                            f"{'OK' if result.deploy_healthy else 'FAILED'}"
+                        )
 
                 # Stop eval container before post-processing — Docker
                 # ----- Aggregate results into StoryResult -----
