@@ -97,6 +97,21 @@ def has_image(platform_id: str) -> bool:
         return False
 
 
+def image_digest(platform_id: str) -> str | None:
+    """Return the image ID (content digest) for a platform, or None on failure."""
+    try:
+        result = subprocess.run(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", image_name(platform_id)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    out = result.stdout.strip()
+    return out if result.returncode == 0 and out else None
+
+
 def build_image(
     platform_id: str,
     progress_callback: Callable[[str], None] | None = None,

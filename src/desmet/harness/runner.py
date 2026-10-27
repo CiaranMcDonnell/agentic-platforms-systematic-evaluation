@@ -36,6 +36,7 @@ from desmet.adapters._shared.validation import BASELINE_FILES_NAME
 
 from .adapter import BasePlatformAdapter
 from .auto_rubric import compute_auto_rubric_scores
+from .context import StageContext
 from .metrics import MetricsCollector, SetupMetrics, StageMetrics, StoryMetrics
 from .results import CodeResult, StageResult, TestResult
 from .store import ResultStore
@@ -96,6 +97,9 @@ class RunnerConfig:
     save_traces: bool = True
     deploy_mode: str = "local"  # "local" or "remote"
     verify_workspace: bool = True  # archive workspace + run its pytest suite
+    # "container": every stage runs in the platform's Docker image.
+    # "in_process": stages call the adapter directly, never touching Docker.
+    execution_mode: str = "container"
 
 
 class EvaluationRunner:
@@ -122,6 +126,19 @@ class EvaluationRunner:
         self.stories = stories
         self.baseline_repo = baseline_repo
         self.progress_callback = progress_callback
+
+        if config.execution_mode not in ("container", "in_process"):
+            raise ValueError(f"Unknown execution_mode: {config.execution_mode!r}")
+        if config.execution_mode == "in_process":
+            from desmet.harness.adapter import ContainerOnlyAdapter
+            stubs = [pid for pid, a in platforms.items() if isinstance(a, ContainerOnlyAdapter)]
+            if stubs:
+                raise ValueError(
+                    f"execution_mode='in_process' cannot run container-only adapters: {stubs}"
+                )
+
+        # Platform image build outcome, filled once per platform per run
+        self._built_images: dict[str, bool] = {}
 
         # Setup directories
         self.config.results_dir.mkdir(parents=True, exist_ok=True)
@@ -187,6 +204,9 @@ class EvaluationRunner:
                     platform_id=platform_id,
                     platform_name=adapter.platform_info.name,
                 )
+
+                if self.config.execution_mode == "container" and not self.config.dry_run:
+                    await self._prepare_platform_image(platform_id)
 
                 # Run each story
                 for story in stories_to_run:
@@ -280,6 +300,8 @@ class EvaluationRunner:
             tags=["single-story"],
         ) as trace:
             try:
+                if self.config.execution_mode == "container" and not self.config.dry_run:
+                    await self._prepare_platform_image(platform_id)
                 repeat_results: list[StoryResult] = []
                 for repeat_idx in range(self.config.repeats):
                     result = await self._run_story(
@@ -371,6 +393,42 @@ class EvaluationRunner:
         ("deploy", "build_and_deploy"),
     ]
 
+    async def _prepare_platform_image(self, platform_id: str) -> bool:
+        """Build the platform image once; later stories reuse the outcome.
+
+        Always rebuilds so source/config changes are picked up.  Runs in a
+        thread so the blocking subprocess doesn't freeze the event loop.
+        """
+        import asyncio as _aio
+        from desmet.harness import container_runner
+        if self.progress_callback:
+            self.progress_callback(f"  Building Docker image for {platform_id}...")
+        ok = await _aio.to_thread(
+            container_runner.build_image,
+            platform_id,
+            progress_callback=self.progress_callback,
+        )
+        self._built_images[platform_id] = bool(ok)
+        if not ok:
+            logger.error("image_build_failed", platform=platform_id)
+        return bool(ok)
+
+    async def _run_stage(
+        self,
+        platform_id: str,
+        adapter: BasePlatformAdapter,
+        stage_key: str,
+        method_name: str,
+        ctx: StageContext,
+    ) -> StageResult:
+        """Run one stage via the configured execution mode (the only switch)."""
+        if self.config.execution_mode == "container":
+            from desmet.harness import container_runner
+            return await container_runner.run_stage_in_container(
+                platform_id, stage_key, ctx, self.progress_callback,
+            )
+        return await getattr(adapter, method_name)(ctx)
+
     async def _run_story(
         self,
         platform_id: str,
@@ -398,6 +456,7 @@ class EvaluationRunner:
             execution_id=f"{platform_id}_{story.id}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}{suffix}",
             status=StoryStatus.RUNNING,
             start_time=datetime.now(timezone.utc),
+            execution_mode=self.config.execution_mode,
         )
 
         structlog.contextvars.bind_contextvars(
@@ -408,6 +467,16 @@ class EvaluationRunner:
         if self.config.dry_run:
             logger.info("dry_run_skip")
             result.status = StoryStatus.SKIPPED
+            structlog.contextvars.unbind_contextvars("story_id", "execution_id")
+            return result
+
+        if (
+            self.config.execution_mode == "container"
+            and not self._built_images.get(platform_id, False)
+        ):
+            result.status = StoryStatus.FAILED
+            result.error_message = f"Docker image build failed for {platform_id}"
+            result.finalize_timing()
             structlog.contextvars.unbind_contextvars("story_id", "execution_id")
             return result
 
@@ -470,23 +539,8 @@ class EvaluationRunner:
                 # Initialise git remote in workspace for deploy stage
                 self._init_deploy_repo(workspace, platform_id, story.id)
 
-                # Build platform image once per story (always rebuild
-                # so source/config changes are picked up).  Run in a
-                # thread so the blocking subprocess doesn't freeze the
-                # event loop (WebSocket, cancel, etc. stay responsive).
                 import asyncio as _aio
                 from desmet.harness import container_runner
-                if self.progress_callback:
-                    self.progress_callback(
-                        f"  Building Docker image for {platform_id}..."
-                    )
-                build_ok = await _aio.to_thread(
-                    container_runner.build_image,
-                    platform_id,
-                    progress_callback=self.progress_callback,
-                )
-                if not build_ok and not hasattr(adapter, "generate_requirements"):
-                    raise RuntimeError(f"Docker image build failed for {platform_id}")
 
                 # Execute selected stages sequentially
                 for stage_key, method_name in stages_to_run:
@@ -507,14 +561,9 @@ class EvaluationRunner:
                             f"stage-{stage_key}",
                             metadata={"platform_id": platform_id, "story_id": story.id},
                         ):
-                            if await _aio.to_thread(container_runner.has_image, platform_id):
-                                stage_result = await container_runner.run_stage_in_container(
-                                    platform_id, stage_key, stage_ctx,
-                                    self.progress_callback,
-                                )
-                            else:
-                                stage_method = getattr(adapter, method_name)
-                                stage_result = await stage_method(stage_ctx)
+                            stage_result = await self._run_stage(
+                                platform_id, adapter, stage_key, method_name, stage_ctx,
+                            )
                             stage_ctx.add_artifacts(stage_key, stage_result)
                             stage_results[stage_key] = stage_result
 
@@ -559,8 +608,8 @@ class EvaluationRunner:
                         # Continue -- do NOT block later stages
 
                 # Clean up platform container after story completes
-                from desmet.harness import container_runner
-                await _aio.to_thread(container_runner.stop_container, platform_id, story.id)
+                if self.config.execution_mode == "container":
+                    await _aio.to_thread(container_runner.stop_container, platform_id, story.id)
 
                 # Archive the workspace and run its test suite so the
                 # result records whether the code works, not just whether

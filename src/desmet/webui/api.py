@@ -783,6 +783,11 @@ async def _execute_run(run: RunState, req: RunRequest):
         config = RunnerConfig(dry_run=req.dry_run, verbose=True, stage=resolved_stage)
         config.repeats = req.repeats
         config.deploy_mode = req.deploy_mode
+        config.execution_mode = (
+            "container"
+            if any(isinstance(a, ContainerOnlyAdapter) for a in adapters.values())
+            else "in_process"
+        )
         if req.results_dir:
             config.results_dir = Path(req.results_dir)
             config.logs_dir = Path(req.results_dir) / "logs"

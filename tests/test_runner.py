@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from desmet.harness.adapter import ContainerOnlyAdapter
 from desmet.harness.context import StageContext
 from desmet.harness.results import (
     CodeResult,
@@ -83,6 +84,7 @@ def runner_setup(mock_adapter, sample_story, tmp_path):
     config = RunnerConfig(
         results_dir=tmp_path / "results",
         logs_dir=tmp_path / "logs",
+        execution_mode="in_process",
     )
     runner = EvaluationRunner(
         config=config,
@@ -371,3 +373,61 @@ def test_save_stage_traces_includes_langsmith_run_id(tmp_path):
     assert trace_files, "No trace file written"
     data = json.loads(trace_files[0].read_text())
     assert data["stages"]["requirements"]["langsmith_run_id"] == "ls-run-abc"
+
+
+class TestExecutionMode:
+    """One explicit execution path per run; image built once per platform."""
+
+    async def test_build_failure_fails_platform_stories(self, runner_setup, fake_containers):
+        runner, adapter = runner_setup
+        runner.config.execution_mode = "container"
+        fake_containers.build_ok = False
+        await runner.run_full_evaluation()
+        r = runner.results["test_platform"]["US-001"]
+        assert r.status == StoryStatus.FAILED
+        assert "image build failed" in r.error_message.lower()
+        assert r.execution_mode == "container"
+        assert fake_containers.run_stage_calls == []
+        adapter.generate_requirements.assert_not_called()
+
+    async def test_image_built_once_per_platform(self, runner_setup, fake_containers):
+        runner, _ = runner_setup
+        runner.config.execution_mode = "container"
+        runner.config.repeats = 3
+        await runner.run_full_evaluation()
+        assert fake_containers.build_calls == ["test_platform"]
+        assert len(fake_containers.run_stage_calls) == 3 * 4
+
+    async def test_container_mode_does_not_call_adapter_stages(self, runner_setup, fake_containers):
+        runner, adapter = runner_setup
+        runner.config.execution_mode = "container"
+        await runner.run_full_evaluation()
+        adapter.generate_code.assert_not_called()
+        assert runner.results["test_platform"]["US-001"].execution_mode == "container"
+
+    async def test_single_story_builds_once(self, runner_setup, fake_containers):
+        runner, _ = runner_setup
+        runner.config.execution_mode = "container"
+        runner.config.repeats = 2
+        await runner.run_single_story("test_platform", "US-001")
+        assert fake_containers.build_calls == ["test_platform"]
+
+    async def test_in_process_never_touches_docker(self, runner_setup, fake_containers):
+        runner, _ = runner_setup
+        await runner.run_full_evaluation()
+        assert fake_containers.build_calls == [] and fake_containers.run_stage_calls == []
+        assert fake_containers.stop_calls == []
+        assert runner.results["test_platform"]["US-001"].execution_mode == "in_process"
+
+    def test_in_process_rejects_container_only_adapter(self, tmp_path, sample_story):
+        with pytest.raises(ValueError):
+            EvaluationRunner(
+                RunnerConfig(
+                    results_dir=tmp_path,
+                    logs_dir=tmp_path / "l",
+                    execution_mode="in_process",
+                ),
+                {"p": ContainerOnlyAdapter("langgraph")},
+                [sample_story],
+                tmp_path,
+            )
