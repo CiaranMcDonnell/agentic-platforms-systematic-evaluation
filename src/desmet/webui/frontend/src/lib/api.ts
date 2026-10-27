@@ -440,8 +440,10 @@ export const fetchRubric = () =>
 export const fetchScoringMatrix = (runId?: string | null) =>
   request<ScoringMatrixData>(withRun('/api/dashboard/scoring/matrix', runId));
 
-export const fetchStoryScore = (pid: string, sid: string) =>
-  request<StoryScoreData>(withRun(`/api/dashboard/scoring/${pid}/${sid}`));
+export const fetchStoryScore = (pid: string, sid: string, repeatIndex?: number | null) =>
+  request<StoryScoreData>(withRun(
+    `/api/dashboard/scoring/${pid}/${sid}` + (repeatIndex != null ? `?repeat_index=${repeatIndex}` : ''),
+  ));
 
 export const fetchAgentGraph = (pid: string, sid: string) =>
   request<CommunicationGraph>(`/api/dashboard/graph/${pid}/${sid}`);

@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import queue
+import re
 import shutil
 import subprocess
 import uuid
@@ -1138,15 +1139,25 @@ async def get_rubric():
 
 
 @app.get("/api/dashboard/scoring/{platform_id}/{story_id}")
-async def get_story_score(platform_id: str, story_id: str, run_id: str | None = None):
-    """Get current scores and trace info for a platform/story pair."""
+async def get_story_score(
+    platform_id: str,
+    story_id: str,
+    run_id: str | None = None,
+    repeat_index: int | None = None,
+):
+    """Get current scores and trace info for one repeat of a platform/story pair.
+
+    Metrics and rubric scores come from the execution row for *repeat_index*
+    (default 0; legacy rows without one count as 0).
+    """
+    repeat = repeat_index or 0
     data = load_results_raw(run_id)
     pdata = data.get("platforms", {}).get(platform_id, {})
     metrics = pdata.get("story_metrics", [])
 
     story_metric = None
     for sm in metrics:
-        if sm.get("story_id") == story_id:
+        if sm.get("story_id") == story_id and (sm.get("repeat_index") or 0) == repeat:
             story_metric = sm
             break
 
@@ -1160,7 +1171,9 @@ async def get_story_score(platform_id: str, story_id: str, run_id: str | None = 
         scores[dim] = story_metric.get(f"{dim}_score", 0)
 
     # Trace files
-    trace_files = list_trace_files(platform_id, story_id)
+    trace_files = _trace_files_for_repeat(
+        list_trace_files(platform_id, story_id), repeat
+    )
     trace_data = None
     langfuse_tid = None
     raw_trace: dict = {}
@@ -1237,6 +1250,18 @@ def _story_budgets() -> dict[str, float]:
         return {}
 
 
+_REPEAT_TRACE_RE = re.compile(r"_r(\d+)_(?:stages|trace)\.json$")
+
+
+def _trace_files_for_repeat(files: list[Path], repeat: int) -> list[Path]:
+    """Keep the trace files of one repeat (``_r<N>`` suffix; repeat 0 has none)."""
+    def file_repeat(f: Path) -> int:
+        m = _REPEAT_TRACE_RE.search(f.name)
+        return int(m.group(1)) if m else 0
+
+    return [f for f in files if file_repeat(f) == repeat]
+
+
 def _story_repeat_indices(run_id: str | None, platform_id: str, story_id: str) -> list[int]:
     store = _get_result_store()
     target_run = run_id or store.latest_run_id()
@@ -1270,6 +1295,7 @@ async def submit_score(submission: ScoreSubmission, run_id: str | None = None):
         submission.story_id,
         submission.scores,
         submission.notes,
+        submission.repeat_index,
     )
     save_results(data)
 

@@ -173,6 +173,7 @@ def load_results_raw(run_id: str | None = None) -> dict[str, Any]:
         for _, row in group.iterrows():
             sm: dict[str, Any] = {
                 "story_id": row["story_id"],
+                "repeat_index": _repeat_index(row),
                 "success": row["status"] == "completed",
                 "wall_clock_seconds": row["wall_clock_seconds"],
                 "iterations": int(row["iterations"] or 0),
@@ -344,8 +345,12 @@ def update_story_scores(
     story_id: str,
     scores: Mapping[str, float],
     notes: dict[str, str],
+    repeat_index: int | None = None,
 ) -> dict[str, Any]:
     """Mutate *data* in-place: write dimension scores for a story.
+
+    Only the record for *repeat_index* is written (records without a
+    ``repeat_index`` count as repeat 0; ``None`` means 0).
 
     For each key in *scores* (e.g. ``"correctness"``), sets
     ``sm["correctness_score"] = value``.  Also stores *notes* under
@@ -356,13 +361,19 @@ def update_story_scores(
     platforms = data.get("platforms", {})
     pdata = platforms.get(platform_id, {})
     for sm in pdata.get("story_metrics", []):
-        if sm.get("story_id") == story_id:
+        if sm.get("story_id") == story_id and (sm.get("repeat_index") or 0) == (repeat_index or 0):
             for dim, value in scores.items():
                 sm[f"{dim}_score"] = value
             sm["scoring_notes"] = dict(notes)
             sm["scored"] = True
             break
     return data
+
+
+def _repeat_index(row: Any) -> int:
+    """Repeat index from an executions row; legacy NULL/NaN counts as 0."""
+    val = row.get("repeat_index")
+    return 0 if val is None or pd.isna(val) else int(val)
 
 
 def _rubric(row: Any, dim: str) -> float | None:

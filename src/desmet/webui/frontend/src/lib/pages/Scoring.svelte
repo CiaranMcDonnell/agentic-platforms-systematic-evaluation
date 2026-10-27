@@ -46,14 +46,30 @@
     }
   });
 
+  // Platform/story change: forget the repeat and load the story's first one.
+  function onTargetChange() {
+    selectedRepeat = null;
+    return loadScore();
+  }
+
+  let loadSeq = 0;
+
   async function loadScore() {
     if (!selectedPlatform || !selectedStory) return;
+    const seq = ++loadSeq;
     saveMsg = '';
     loadingScore = true;
+    // Drop the old form so evidence/scores can never be saved onto another repeat.
     scoreData = null;
-    scoreData = await fetchStoryScore(selectedPlatform, selectedStory);
-    // Repeats are scored one at a time; default to the first.
-    selectedRepeat = (scoreData?.repeat_indices?.length ?? 0) > 1 ? scoreData!.repeat_indices![0] : null;
+    let data = await fetchStoryScore(selectedPlatform, selectedStory, selectedRepeat);
+    const repeats = data?.repeat_indices ?? [];
+    if (selectedRepeat === null && repeats.length > 1) {
+      // Repeats are scored one at a time; default to the first that exists.
+      selectedRepeat = repeats[0];
+      if (repeats[0] !== 0) data = await fetchStoryScore(selectedPlatform, selectedStory, selectedRepeat);
+    }
+    if (seq !== loadSeq) return;  // superseded by a newer selection
+    scoreData = data;
     loadingScore = false;
     // Lazy-check LangSmith only when relevant (langgraph + has run ID)
     if (selectedPlatform === 'langgraph' && scoreData?.langsmith_run_id && langsmithAvailable === null) {
@@ -146,7 +162,7 @@
   <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 28px;">
     <div>
       <label class="label" for="score-platform">Platform</label>
-      <select id="score-platform" class="input" bind:value={selectedPlatform} onchange={loadScore}>
+      <select id="score-platform" class="input" bind:value={selectedPlatform} onchange={onTargetChange}>
         <option value="">Select platform…</option>
         {#each store.platforms as p}
           <option value={p.id}>{p.name}</option>
@@ -155,7 +171,7 @@
     </div>
     <div>
       <label class="label" for="score-story">Story</label>
-      <select id="score-story" class="input" bind:value={selectedStory} onchange={loadScore}>
+      <select id="score-story" class="input" bind:value={selectedStory} onchange={onTargetChange}>
         <option value="">Select story…</option>
         {#each store.stories as s}
           <option value={s.id}>{s.title}</option>
@@ -168,7 +184,7 @@
     {#if (scoreData.repeat_indices?.length ?? 0) > 1}
       <div style="margin-bottom: 28px; max-width: 240px;">
         <label class="label" for="score-repeat">Repeat</label>
-        <select id="score-repeat" class="input" bind:value={selectedRepeat}>
+        <select id="score-repeat" class="input" bind:value={selectedRepeat} onchange={loadScore}>
           {#each scoreData.repeat_indices ?? [] as r}
             <option value={r}>Repeat {r + 1}</option>
           {/each}

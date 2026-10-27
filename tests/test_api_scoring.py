@@ -13,6 +13,7 @@ from desmet.webui import api
 
 
 def _save(store: ResultStore, run_id: str, repeat_index: int) -> None:
+    # Distinct wall clock per repeat so tests can tell the rows apart.
     result = StoryResult(
         story_id="US-001",
         platform_id="p",
@@ -20,7 +21,7 @@ def _save(store: ResultStore, run_id: str, repeat_index: int) -> None:
         status=StoryStatus.COMPLETED,
         start_time=datetime(2026, 3, 28, 9, 19, 0, tzinfo=timezone.utc),
         end_time=datetime(2026, 3, 28, 9, 22, 0, tzinfo=timezone.utc),
-        wall_clock_seconds=10.0,
+        wall_clock_seconds=10.0 + repeat_index,
         repeat_index=repeat_index,
     )
     store.save_execution(
@@ -67,3 +68,59 @@ def test_submit_with_repeat_index_scores_only_that_repeat(client_with_two_repeat
     df = store.get_executions(run_id).set_index("repeat_index")
     assert pd.isna(df.loc[0, "rubric_autonomy"])
     assert df.loc[1, "rubric_autonomy"] == 2.0
+
+
+@pytest.fixture
+def real_loader(client_with_two_repeats, monkeypatch):
+    """Route load_results_raw through the temp store and capture the JSON mirror."""
+    from desmet.dashboard import data as dash_data
+
+    client, store, run_id = client_with_two_repeats
+    monkeypatch.setattr(dash_data, "_get_store", lambda: store)
+    monkeypatch.setattr(api, "load_results_raw", dash_data.load_results_raw)
+    monkeypatch.setattr(api, "list_trace_files", lambda p, s: [])
+    saved: list[dict] = []
+    monkeypatch.setattr(api, "save_results", lambda data: saved.append(data))
+    return client, store, run_id, saved
+
+
+def test_story_score_returns_selected_repeat_evidence(real_loader):
+    client, _, _, _ = real_loader
+    r0 = client.get("/api/dashboard/scoring/p/US-001", params={"repeat_index": 0}).json()
+    r1 = client.get("/api/dashboard/scoring/p/US-001", params={"repeat_index": 1}).json()
+    assert r0["wall_clock_seconds"] == 10.0
+    assert r1["wall_clock_seconds"] == 11.0
+    assert r1["repeat_indices"] == [0, 1]
+
+
+def test_story_score_returns_selected_repeat_rubric(real_loader):
+    client, store, run_id, _ = real_loader
+    store.update_rubric_scores_by_story(
+        run_id, "p", "US-001", {"autonomy": 3.0}, repeat_index=1
+    )
+    r0 = client.get("/api/dashboard/scoring/p/US-001", params={"repeat_index": 0}).json()
+    r1 = client.get("/api/dashboard/scoring/p/US-001", params={"repeat_index": 1}).json()
+    assert r0["scored"] is False
+    assert r1["scored"] is True and r1["scores"]["autonomy"] == 3.0
+
+
+def test_json_mirror_written_to_submitted_repeat_only(real_loader):
+    client, _, _, saved = real_loader
+    resp = client.post(
+        "/api/dashboard/scoring/submit",
+        json=_body(repeat_index=1, notes={"autonomy": "good"}),
+    )
+    assert resp.status_code == 200
+    by_repeat = {sm["repeat_index"]: sm for sm in saved[-1]["platforms"]["p"]["story_metrics"]}
+    assert by_repeat[1]["scoring_notes"] == {"autonomy": "good"}
+    assert "scoring_notes" not in by_repeat[0]
+
+
+def test_update_story_scores_defaults_to_repeat_zero_for_legacy_records():
+    from desmet.dashboard.data import update_story_scores
+
+    data = {"platforms": {"p": {"story_metrics": [{"story_id": "US-001"}]}}}
+    update_story_scores(data, "p", "US-001", {"autonomy": 2}, {}, repeat_index=1)
+    assert "autonomy_score" not in data["platforms"]["p"]["story_metrics"][0]
+    update_story_scores(data, "p", "US-001", {"autonomy": 2}, {})
+    assert data["platforms"]["p"]["story_metrics"][0]["autonomy_score"] == 2
