@@ -822,11 +822,10 @@ async def _execute_run(run: RunState, req: RunRequest):
             # so all platform executions share the same DuckDB run_id.
             # Otherwise the Scoring page (which loads "latest run") only
             # sees the last platform that ran.
-            shared_run_id = runner.store.create_run(
-                model=os.environ.get("DESMET_MODEL"),
-                temperature=float(os.environ.get("DESMET_TEMPERATURE", "0")),
+            shared_run_id = runner.create_run(
                 platforms_filter=list(adapters.keys()),
                 stories_filter=[story_id],
+                platform_ids=list(adapters.keys()),
             )
             try:
                 for pid in adapters:

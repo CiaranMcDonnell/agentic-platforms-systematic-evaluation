@@ -116,6 +116,26 @@ class TestRunManifest:
         assert run["execution_mode"] == "container"
         assert json.loads(run["image_digests"]) == {"test_platform": fake_containers.digest}
 
+    async def test_shared_run_id_path_gets_manifest_and_resolved_model(
+        self, runner_setup, monkeypatch
+    ):
+        """Web single-story runs create the run via runner.create_run, then
+        pass run_id to run_single_story."""
+        monkeypatch.setenv("DESMET_MODEL", "gpt-manifest-test")
+        runner, _ = runner_setup
+        run_id = runner.create_run(
+            platforms_filter=["test_platform"],
+            stories_filter=["US-001"],
+            platform_ids=["test_platform"],
+        )
+        await runner.run_single_story("test_platform", "US-001", run_id=run_id)
+        run = runner.store.get_run(run_id).iloc[0]
+        assert run["model"] == "gpt-manifest-test"
+        assert run["execution_mode"] == "in_process"
+        assert run["deploy_mode"] == "remote"
+        assert len(run["prompts_sha256"]) == 64
+        assert run["provider"]
+
     async def test_in_process_run_has_no_image_digests(self, runner_setup):
         runner, _ = runner_setup
         await runner.run_full_evaluation()

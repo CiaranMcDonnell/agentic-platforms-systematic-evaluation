@@ -190,13 +190,11 @@ class EvaluationRunner:
         start_time = datetime.now(timezone.utc)
 
         # Create a persistent run record
-        self._current_run_id = self.store.create_run(
-            model=llm_config.get_config().model,
-            temperature=float(os.environ.get("DESMET_TEMPERATURE", "0")),
+        self._current_run_id = self.create_run(
             platforms_filter=self.config.platforms,
             stories_filter=self.config.stories,
+            platform_ids=self._filter_platforms(),
         )
-        self._write_manifest(self._filter_platforms())
 
         # Filter platforms and stories if configured
         platforms_to_run = self._filter_platforms()
@@ -304,14 +302,11 @@ class EvaluationRunner:
             raise ValueError(f"Unknown story: {story_id}")
 
         adapter = self.platforms[platform_id]
-        self._current_run_id = run_id or self.store.create_run(
-            model=llm_config.get_config().model,
-            temperature=float(os.environ.get("DESMET_TEMPERATURE", "0")),
+        self._current_run_id = run_id or self.create_run(
             platforms_filter=[platform_id],
             stories_filter=[story_id],
+            platform_ids=[platform_id],
         )
-        if run_id is None:
-            self._write_manifest([platform_id])
         # Track whether we own the run lifecycle so a shared run isn't
         # finished prematurely by the first platform to complete.
         self._owns_current_run = run_id is None
@@ -422,12 +417,30 @@ class EvaluationRunner:
         ("deploy", "build_and_deploy"),
     ]
 
-    def _write_manifest(self, platform_ids: Any) -> None:
+    def create_run(
+        self,
+        *,
+        platforms_filter: list[str] | None,
+        stories_filter: list[str] | None,
+        platform_ids: Any,
+    ) -> str:
+        """Create a run row with the resolved model and its full manifest.
+
+        Every run row is created here (including shared runs made by the
+        web API before calling run_single_story), so the manifest is
+        written exactly once per run.
+        """
+        run_id = self.store.create_run(
+            model=llm_config.get_config().model,
+            temperature=float(os.environ.get("DESMET_TEMPERATURE", "0")),
+            platforms_filter=platforms_filter,
+            stories_filter=stories_filter,
+        )
         repo_root = Path(__file__).resolve().parents[3]
         self.store.update_run_manifest(
-            self._current_run_id,
-            collect_manifest(self.config, repo_root, platform_ids),
+            run_id, collect_manifest(self.config, repo_root, platform_ids)
         )
+        return run_id
 
     def _record_image_digest(self, platform_id: str, digest: str | None) -> None:
         """Merge the platform's built image digest into the run manifest."""
