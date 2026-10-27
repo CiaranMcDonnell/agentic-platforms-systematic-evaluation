@@ -51,7 +51,7 @@ Four issues surfaced only under the second model. (1)~CrewAI's internal task-lev
   caption: [Model sensitivity on US-001 between `gpt-4.1-mini` and `claude-sonnet-4.6`. Stage delta: stages passing under the baseline minus stages passing under Sonnet. Token amplification is computed on successfully completed work only; n/a where provider errors truncated the comparable work.],
 ) <tab-sensitivity>
 
-@tab-sensitivity isolates a signal available from neither run alone: how much each framework amplifies model-level variance. LangGraph and OpenAI Agents SDK are effectively model-invariant on this task (zero stage delta, ~1.1× tokens, no new error class). CrewAI amplifies by 5.19×, far above the floor a slightly more verbose model would produce, consistent with full-history replay compounding per-turn verbosity non-linearly. The ADK and MAF rows reflect provider- rather than framework-level faults and do not support a framework fragility claim.
+@tab-sensitivity isolates a signal available from neither run alone: how much each framework amplifies model-level variance. LangGraph and OpenAI Agents SDK are effectively model-invariant on this task (zero stage delta, ≈1.1× tokens, no new error class). CrewAI amplifies by 5.19×, far above the floor a slightly more verbose model would produce, consistent with full-history replay compounding per-turn verbosity non-linearly. The ADK and MAF rows reflect provider- rather than framework-level faults and do not support a framework fragility claim.
 
 == Findings
 
@@ -59,10 +59,10 @@ Four issues surfaced only under the second model. (1)~CrewAI's internal task-lev
 
 *F2. rtc is a reliable stage-level indicator of orchestration pathology.* It separates platforms that converge on a stage (OpenAI SDK, ADK, MAF at 0.00) from those whose retry policy absorbs loop-defence warnings (CrewAI at 0.33; LangGraph at 0.06 from a single code-generation retry), and stages with elevated rtc correspond one-to-one with stages that triggered the harness loop guard. Prior framework evaluations @yin2025comprehensive @mehta2025clear report task success without instrumenting intra-stage retry. (RQ1)
 
-*F3. Token cost on identical work spans ~2.4×.* With the same model and task, framework choice alone moves inference cost by a factor that would dominate most model-choice differences. Because several adapter fixes narrowed this spread before the reported runs, 2.4× is a conservative bound on what an unhardened integration shows. (RQ2)
+*F3. Token cost on identical work spans ≈2.4×.* With the same model and task, framework choice alone moves inference cost by a factor that would dominate most model-choice differences. Because several adapter fixes narrowed this spread before the reported runs, 2.4× is a conservative bound on what an unhardened integration shows. (RQ2)
 
 *F4. No single (model, provider) run surfaces all framework fragilities.* The Sonnet pass exposed three distinct fault classes invisible under the baseline; an evaluation on one backend @derouiche2025agentic cannot detect them. The harness makes the comparison cheap enough to repeat. (RQ1)
 
-*F5. Frameworks differ in how much they amplify model-level variance.* ~1.1× for LangGraph and OpenAI SDK against ~5.2× for CrewAI on identical work; with two model conditions this is descriptive, and promoting it to a scored _Model Robustness_ dimension needs at least three. (RQ2)
+*F5. Frameworks differ in how much they amplify model-level variance.* ≈1.1× for LangGraph and OpenAI SDK against ≈5.2× for CrewAI on identical work; with two model conditions this is descriptive, and promoting it to a scored _Model Robustness_ dimension needs at least three. (RQ2)
 
 *F6. File-presence validation is insufficient as a success signal.* The productive-tool-call guard demoted four zero-work stages in the MAF Sonnet run and an intermittent ADK Testing-stage abort after a single read; a narrower zero-tool-call check would miss the latter. (RQ1)

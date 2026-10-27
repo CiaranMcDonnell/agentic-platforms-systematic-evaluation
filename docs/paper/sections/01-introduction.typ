@@ -13,6 +13,6 @@ The contributions are:
 
 + an open evaluation harness with a template-method adapter contract (one platform-specific method per adapter), a four-stage pipeline with real test execution and remote deployment, and per-call token, cost, timing, and trace capture across five SDKs with different instrumentation surfaces (@sec-harness);
 + a framework-centric metric set and DESMET-style rubric, including the redundant-tool-call rate as a stage-level indicator of orchestration pathology and a productive-tool-call guard that prevents false-positive stage success (@sec-framework);
-+ an evaluation of five platforms on one task with one model, plus a cross-model repeat, showing a ~2.4× token-cost spread on identical work, that conversation-history policy rather than architectural category predicts that spread, and that a second model exposes fragilities the first does not (@sec-results).
++ an evaluation of five platforms on one task with one model, plus a cross-model repeat, showing a ≈2.4× token-cost spread on identical work, that conversation-history policy rather than architectural category predicts that spread, and that a second model exposes fragilities the first does not (@sec-results).
 
 @sec-related positions the work, @sec-framework defines the pipeline and rubric, @sec-harness describes the harness, @sec-setup and @sec-results report the evaluation, @sec-threats discusses validity, and @sec-conclusion concludes.
