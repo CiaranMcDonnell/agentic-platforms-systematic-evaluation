@@ -55,6 +55,9 @@ class StageContext:
     model: str = ""
     temperature: float = DEFAULT_TEMPERATURE
 
+    # Deploy stage mode: "remote" (SSH/git/docker, the intended design) or "local"
+    deploy_mode: str = "remote"
+
     # Accumulated stage results
     artifacts: dict[str, StageResult] = field(default_factory=dict)
 
@@ -110,6 +113,7 @@ class StageContext:
             "allowed_tools": list(self.allowed_tools),
             "model": self.model,
             "temperature": self.temperature,
+            "deploy_mode": self.deploy_mode,
             "artifacts": {k: v.to_dict() for k, v in self.artifacts.items()},
             "metadata": self.metadata,
         }
@@ -144,6 +148,7 @@ class StageContext:
             allowed_tools=data.get("allowed_tools", []),
             model=data.get("model", ""),
             temperature=data.get("temperature", 0.0),
+            deploy_mode=data.get("deploy_mode", "remote"),
             artifacts={
                 k: StageResult.from_dict(v) for k, v in data.get("artifacts", {}).items()
             },

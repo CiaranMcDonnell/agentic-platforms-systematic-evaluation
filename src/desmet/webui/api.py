@@ -252,7 +252,7 @@ class RunRequest(BaseModel):
     model: str | None = None
     results_dir: str | None = None
     repeats: int = 1
-    deploy_mode: str = "local"
+    deploy_mode: str = "remote"
 
 
 class DockerAction(BaseModel):

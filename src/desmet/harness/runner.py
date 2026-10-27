@@ -14,6 +14,7 @@ itself via ``prepare_stage_context``.
 """
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -64,6 +65,20 @@ def _force_remove_readonly(func, path, _exc_info):
             pass
 
 
+@contextlib.contextmanager
+def _scoped_env(name: str, value: str):
+    """Set an env var for the duration of the block, then restore it."""
+    previous = os.environ.get(name)
+    os.environ[name] = value
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = previous
+
+
 @dataclass
 class RunnerConfig:
     """Configuration for the evaluation runner."""
@@ -97,7 +112,7 @@ class RunnerConfig:
     dry_run: bool = False
     verbose: bool = False
     save_traces: bool = True
-    deploy_mode: str = "local"  # "local" or "remote"
+    deploy_mode: str = "remote"  # "remote" (intended design) or "local"
     verify_workspace: bool = True  # archive workspace + run its pytest suite
     # "container": every stage runs in the platform's Docker image.
     # "in_process": stages call the adapter directly, never touching Docker.
@@ -448,9 +463,10 @@ class EvaluationRunner:
                 timeout_seconds=timeout_seconds,
             )
         try:
-            return await asyncio.wait_for(
-                getattr(adapter, method_name)(ctx), timeout=timeout_seconds,
-            )
+            with _scoped_env("DESMET_DEPLOY_MODE", ctx.deploy_mode):
+                return await asyncio.wait_for(
+                    getattr(adapter, method_name)(ctx), timeout=timeout_seconds,
+                )
         except asyncio.TimeoutError:
             return failed_stage_result(
                 platform_id, stage_key, f"Stage timed out after {timeout_seconds}s",
@@ -536,6 +552,7 @@ class EvaluationRunner:
                     platform_id=platform_id,
                 )
                 stage_ctx.progress_callback = self.progress_callback
+                stage_ctx.deploy_mode = self.config.deploy_mode
 
                 # Snapshot baseline file paths for post-stage scope auditing
                 _skip = {".git", "__pycache__", ".venv", "venv", "node_modules"}
@@ -577,8 +594,6 @@ class EvaluationRunner:
                     # Grant access to deploy_remote tool for the deploy stage
                     if stage_key == "deploy" and "deploy_remote" not in stage_ctx.allowed_tools:
                         stage_ctx.allowed_tools.append("deploy_remote")
-                    if stage_key == "deploy":
-                        os.environ["DESMET_DEPLOY_MODE"] = self.config.deploy_mode
 
                     if self.progress_callback is not None:
                         self.progress_callback(

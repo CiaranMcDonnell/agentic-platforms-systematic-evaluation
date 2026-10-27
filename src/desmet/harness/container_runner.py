@@ -358,6 +358,7 @@ def _ensure_container(
     platform_id: str,
     story_id: str,
     workspace: Path,
+    deploy_mode: str,
 ) -> str:
     """Start a persistent container for the platform+story.
 
@@ -413,14 +414,14 @@ def _ensure_container(
         "DESMET_MODEL",
         "DESMET_TEMPERATURE",
         "DESMET_PROVIDER",
-        "DESMET_DEPLOY_MODE",
         "DEPLOY_HOST",
         "DEPLOY_PORT",
         "DEPLOY_USER",
         "DEPLOY_REPO",
         "DEPLOY_BASE_PATH",
     ]
-    env_flags: list[str] = []
+    # Deploy mode travels with the stage context, not the process env.
+    env_flags: list[str] = ["-e", f"DESMET_DEPLOY_MODE={deploy_mode}"]
     for var in _PASSTHROUGH_VARS:
         val = os.environ.get(var)
         if val:
@@ -436,7 +437,6 @@ def _ensure_container(
     # /run/secrets/deploy_key, so the env var DEPLOY_KEY_PATH inside
     # the container is set to that fixed path regardless of where the
     # host file lives.
-    deploy_mode = os.environ.get("DESMET_DEPLOY_MODE", "remote")
     deploy_key_host = os.environ.get("DEPLOY_KEY_PATH", "")
     deploy_key_mount: list[str] = []
     if deploy_mode != "local" and deploy_key_host:
@@ -593,7 +593,9 @@ async def run_stage_in_container(
         build_image(platform_id, progress_callback)
 
     story_id = context.story.id
-    container = _ensure_container(platform_id, story_id, context.workspace)
+    container = _ensure_container(
+        platform_id, story_id, context.workspace, context.deploy_mode,
+    )
 
     monitor = ResourceMonitor(container, poll_interval=2.0)
     monitor.start()

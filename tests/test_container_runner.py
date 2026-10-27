@@ -227,6 +227,28 @@ class TestEnsureContainerDeployWiring:
     """
 
     @patch("desmet.harness.container_runner.subprocess.run")
+    def test_container_gets_deploy_mode_from_context(self, mock_run, tmp_path, monkeypatch):
+        import desmet.harness.container_runner as cr
+
+        mock_run.side_effect = lambda cmd, *a, **k: MagicMock(
+            returncode=1 if "inspect" in cmd else 0, stdout="cid", stderr=""
+        )
+        key = tmp_path / "key"
+        key.write_text("k")
+        monkeypatch.setenv("DEPLOY_KEY_PATH", str(key))
+        monkeypatch.setenv("DESMET_DEPLOY_MODE", "remote")  # host env must not win
+
+        cr._ensure_container("langgraph", "US-001", tmp_path, deploy_mode="local")
+
+        argv = next(
+            c.args[0] for c in mock_run.call_args_list
+            if isinstance(c.args[0], list) and c.args[0][:2] == ["docker", "run"]
+        )
+        assert "DESMET_DEPLOY_MODE=local" in argv
+        assert "DESMET_DEPLOY_MODE=remote" not in argv
+        assert not any("/run/secrets/deploy_key" in a for a in argv)
+
+    @patch("desmet.harness.container_runner.subprocess.run")
     def test_deploy_env_vars_passed_through(self, mock_run, tmp_path, monkeypatch):
         """When DEPLOY_HOST/USER/PORT/REPO/BASE_PATH/MODE are set on the
         host, _ensure_container must add ``-e VAR=val`` flags for each.
@@ -248,13 +270,13 @@ class TestEnsureContainerDeployWiring:
 
         for var in (
             "DEPLOY_HOST", "DEPLOY_PORT", "DEPLOY_USER",
-            "DEPLOY_REPO", "DEPLOY_BASE_PATH", "DESMET_DEPLOY_MODE",
+            "DEPLOY_REPO", "DEPLOY_BASE_PATH",
         ):
             monkeypatch.setenv(var, f"value-{var}")
         # No key file → mount path is skipped
         monkeypatch.delenv("DEPLOY_KEY_PATH", raising=False)
 
-        cr._ensure_container("langgraph", "US-001", tmp_path)
+        cr._ensure_container("langgraph", "US-001", tmp_path, deploy_mode="remote")
 
         # Find the docker run invocation
         run_call = next(
@@ -266,7 +288,7 @@ class TestEnsureContainerDeployWiring:
 
         for var in (
             "DEPLOY_HOST", "DEPLOY_PORT", "DEPLOY_USER",
-            "DEPLOY_REPO", "DEPLOY_BASE_PATH", "DESMET_DEPLOY_MODE",
+            "DEPLOY_REPO", "DEPLOY_BASE_PATH",
         ):
             assert f"{var}=value-{var}" in joined_argv, (
                 f"missing {var} in docker run argv: {joined_argv}"
@@ -298,9 +320,8 @@ class TestEnsureContainerDeployWiring:
         key_file = tmp_path / "fake_deploy_key"
         key_file.write_text("not-a-real-key")
         monkeypatch.setenv("DEPLOY_KEY_PATH", str(key_file))
-        monkeypatch.setenv("DESMET_DEPLOY_MODE", "remote")
 
-        cr._ensure_container("langgraph", "US-001", tmp_path)
+        cr._ensure_container("langgraph", "US-001", tmp_path, deploy_mode="remote")
 
         run_call = next(
             c for c in mock_run.call_args_list
@@ -341,9 +362,8 @@ class TestEnsureContainerDeployWiring:
         key_file = tmp_path / "fake_deploy_key"
         key_file.write_text("not-a-real-key")
         monkeypatch.setenv("DEPLOY_KEY_PATH", str(key_file))
-        monkeypatch.setenv("DESMET_DEPLOY_MODE", "local")
 
-        cr._ensure_container("langgraph", "US-001", tmp_path)
+        cr._ensure_container("langgraph", "US-001", tmp_path, deploy_mode="local")
 
         run_call = next(
             c for c in mock_run.call_args_list
@@ -377,9 +397,8 @@ class TestEnsureContainerDeployWiring:
         mock_run.side_effect = fake_run
 
         monkeypatch.setenv("DEPLOY_KEY_PATH", str(tmp_path / "does-not-exist"))
-        monkeypatch.setenv("DESMET_DEPLOY_MODE", "remote")
 
-        cr._ensure_container("langgraph", "US-001", tmp_path)
+        cr._ensure_container("langgraph", "US-001", tmp_path, deploy_mode="remote")
 
         run_call = next(
             c for c in mock_run.call_args_list

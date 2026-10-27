@@ -5,6 +5,7 @@ codegen, testing, deploy), accumulates artifacts on the StageContext,
 tolerates individual stage failures, and respects dry_run.
 """
 import asyncio
+import os
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -465,3 +466,39 @@ class TestExecutionMode:
         assert bad.status == StoryStatus.FAILED
         assert bad.execution_mode == "container"
         assert fake_containers.build_calls == ["box"]
+
+
+class TestDeployMode:
+    def test_deploy_mode_defaults_remote(self, sample_story, tmp_path):
+        assert RunnerConfig().deploy_mode == "remote"
+        ctx = StageContext(story=sample_story, workspace=tmp_path)
+        assert ctx.deploy_mode == "remote"
+        data = ctx.to_dict()
+        assert data["deploy_mode"] == "remote"
+        data["deploy_mode"] = "local"
+        assert StageContext.from_dict(data).deploy_mode == "local"
+
+    async def test_runner_leaves_env_untouched(self, runner_setup, monkeypatch):
+        monkeypatch.delenv("DESMET_DEPLOY_MODE", raising=False)
+        runner, _ = runner_setup
+        await runner.run_full_evaluation()
+        assert "DESMET_DEPLOY_MODE" not in os.environ
+
+    async def test_in_process_stage_sees_mode_only_during_call(
+        self, runner_setup, monkeypatch
+    ):
+        monkeypatch.delenv("DESMET_DEPLOY_MODE", raising=False)
+        runner, adapter = runner_setup
+        runner.config.deploy_mode = "local"
+        seen = []
+        result = adapter.build_and_deploy.return_value
+
+        async def spy(ctx):
+            seen.append((ctx.deploy_mode, os.environ.get("DESMET_DEPLOY_MODE")))
+            return result
+
+        adapter.build_and_deploy = spy
+        await runner.run_full_evaluation()
+        assert seen == [("local", "local")]
+        assert "DESMET_DEPLOY_MODE" not in os.environ
+
