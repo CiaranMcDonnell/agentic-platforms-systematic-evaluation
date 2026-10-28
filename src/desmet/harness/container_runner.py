@@ -34,6 +34,9 @@ _STAGE_NAMES = {"requirements", "codegen", "testing", "deploy"}
 # Progress lines end with "(<elapsed>s, <cumulative> tokens)"; on timeout
 # the last value is the only token count we have for the killed stage.
 _PROGRESS_TOKENS_RE = re.compile(r"\(\s*\d+s,\s*([\d,]+) tokens\)")
+# Tool progress lines start "tool <n> — <name>"; the highest n seen is a
+# lower bound on the killed stage's tool calls.
+_PROGRESS_TOOL_RE = re.compile(r"^\s*tool (\d+) [—-] ")
 
 # Built from config/platforms.yaml — maps SDK platform IDs to their pip extra.
 # Visual platforms (no pip_extra) are excluded.
@@ -548,12 +551,14 @@ def _timed_out_result(
     tokens_seen: int,
     resource_summary: Any | None,
     timeout_seconds: int,
+    tool_calls_seen: int = 0,
 ) -> StageResult:
     """Failed StageResult for a stage killed at ``timeout_seconds``.
 
     The container's own result JSON is lost with the process, so tokens
     come from the last progress line (input/output split unknown, recorded
-    as input) and cost is priced at the input rate — both lower bounds.
+    as input) and cost is priced at the input rate — both lower bounds, as
+    is the tool-call count (highest tool number in the progress stream).
     The progress line carries no call count, so iterations and llm_calls
     are unknown (None, stored as NULL), not 0.
     """
@@ -568,6 +573,7 @@ def _timed_out_result(
         wall_clock_seconds=float(timeout_seconds),
     )
     result.iterations = None
+    result.tool_calls_count = tool_calls_seen
     result.tokens_input = tokens_seen
     result.cost_usd = (
         estimate_cost(model, input_tokens=tokens_seen) if model and tokens_seen else 0.0
@@ -640,9 +646,10 @@ async def run_stage_in_container(
 
     # Stream stderr (progress) line by line
     last_tokens = 0
+    last_tool = 0
 
     async def _stream_stderr():
-        nonlocal last_tokens
+        nonlocal last_tokens, last_tool
         while True:
             line = await proc.stderr.readline()
             if not line:
@@ -651,6 +658,9 @@ async def run_stage_in_container(
             m = _PROGRESS_TOKENS_RE.search(text)
             if m:
                 last_tokens = max(last_tokens, int(m.group(1).replace(",", "")))
+            t = _PROGRESS_TOOL_RE.match(text)
+            if t:
+                last_tool = max(last_tool, int(t.group(1)))
             if text and progress_callback:
                 progress_callback(text)
 
@@ -682,6 +692,7 @@ async def run_stage_in_container(
             )
         return _timed_out_result(
             platform_id, stage_name, last_tokens, resource_summary, timeout_seconds,
+            tool_calls_seen=last_tool,
         )
     except asyncio.CancelledError:
         # Kill the docker exec process and stop the container

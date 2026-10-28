@@ -1038,6 +1038,19 @@ async def chart_radar(run_id: str | None = None):
     return {"chart": radar_dimensions(dim_scores)}
 
 
+def _known_mean(df, col: str) -> float | None:
+    """Mean of *col*'s known values, rounded; None when the column is absent or
+    every value is unknown (e.g. iterations of timed-out stages) — NaN would
+    make the JSON response fail.
+    """
+    import pandas as pd
+
+    if col not in df.columns:
+        return None
+    vals = pd.to_numeric(df[col], errors="coerce").dropna()
+    return round(float(vals.mean()), 1) if not vals.empty else None
+
+
 @app.get("/api/dashboard/charts/efficiency")
 async def chart_efficiency(run_id: str | None = None):
     """ECharts option for efficiency breakdown."""
@@ -1477,15 +1490,9 @@ async def comparison_data(platforms: str = "", run_id: str | None = None):
         for pid in pids:
             pdf = metrics_df[metrics_df["platform_id"] == pid]
             efficiency[pid] = {
-                "avg_time": round(pdf["wall_clock_seconds"].mean(), 1)
-                if "wall_clock_seconds" in pdf.columns
-                else 0,
-                "avg_iterations": round(pdf["iterations"].mean(), 1)
-                if "iterations" in pdf.columns
-                else 0,
-                "avg_tool_calls": round(pdf["tool_calls"].mean(), 1)
-                if "tool_calls" in pdf.columns
-                else 0,
+                "avg_time": _known_mean(pdf, "wall_clock_seconds"),
+                "avg_iterations": _known_mean(pdf, "iterations"),
+                "avg_tool_calls": _known_mean(pdf, "tool_calls"),
             }
 
     # Category averages

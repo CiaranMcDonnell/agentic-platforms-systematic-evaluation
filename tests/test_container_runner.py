@@ -472,6 +472,8 @@ class TestStageTimeout:
         assert result.tokens_input == 98_765
         # Calls made before the kill are unknown, not zero.
         assert result.iterations is None
+        # Highest tool number seen in progress lines: a lower bound, not 0.
+        assert result.tool_calls_count == 9
         assert result.framework_metrics == {
             "timed_out": 1.0, "llm_calls": None, "budget_exhausted": 0.0,
         }

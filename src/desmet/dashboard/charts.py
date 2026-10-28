@@ -301,8 +301,14 @@ def bar_efficiency_breakdown(
 ) -> dict[str, Any]:
     """Grouped bar chart of averaged efficiency metrics per platform."""
     efficiency_cols = ["wall_clock_seconds", "iterations", "tool_calls"]
+    # Unknown values (None, e.g. iterations of a timed-out stage) become
+    # NaN and are skipped by mean(); an all-unknown platform stays NaN and
+    # is emitted as null below, since NaN is not valid JSON.
+    numeric = metrics_df.assign(
+        **{c: pd.to_numeric(metrics_df[c], errors="coerce") for c in efficiency_cols}
+    )
     agg = (
-        metrics_df.groupby(["platform_id", "platform_name"])[efficiency_cols]
+        numeric.groupby(["platform_id", "platform_name"])[efficiency_cols]
         .mean()
         .reset_index()
     )
@@ -320,7 +326,7 @@ def bar_efficiency_breakdown(
         series.append(dict(
             type="bar",
             name=label,
-            data=[round(v, 1) for v in agg[col]],
+            data=[None if pd.isna(v) else round(v, 1) for v in agg[col]],
             itemStyle=dict(color=colour, borderRadius=[4, 4, 0, 0]),
             barMaxWidth=24,
         ))
