@@ -6,7 +6,7 @@
     }: {
         data: {
             name: string;
-            obsType: "span" | "generation" | "tool";
+            obsType: string;
             stat: string;
             model: string | null;
             isError: boolean;
@@ -17,17 +17,22 @@
     const TYPE_COLORS: Record<string, string> = {
         generation: "var(--blue)",
         tool: "var(--green)",
+        agent: "var(--purple)",
+        chain: "var(--text-2)",
         span: "var(--text-2)",
     };
 
+    const TYPE_LABELS: Record<string, string> = {
+        generation: "LLM",
+        tool: "TOOL",
+        agent: "AGENT",
+        chain: "CHAIN",
+        event: "EVENT",
+        span: "SPAN",
+    };
+
     let typeColor = $derived(TYPE_COLORS[data.obsType] ?? "var(--text-2)");
-    let typeLabel = $derived(
-        data.obsType === "generation"
-            ? "LLM"
-            : data.obsType === "tool"
-              ? "TOOL"
-              : "SPAN",
-    );
+    let typeLabel = $derived(TYPE_LABELS[data.obsType] ?? "SPAN");
 </script>
 
 <div

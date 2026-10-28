@@ -56,14 +56,17 @@ from desmet.dashboard.data import (
     get_platform_summary_df,
     get_rubric_dim_averages,
     get_scoring_progress,
+    get_story_availability,
     get_story_metrics_df,
     is_story_scored,
     list_trace_files,
+    list_traced_pairs,
     load_results_raw,
     load_trace,
     save_results,
     update_story_scores,
 )
+from desmet.harness.execution_model import build_from_langfuse, build_from_stage_file
 from desmet.harness.graph import build_graph, build_timeline
 from desmet.harness.metrics import recompute_platform_likert_from_store
 from desmet.harness.store import ResultStore
@@ -1258,6 +1261,51 @@ async def get_agent_graph(platform_id: str, story_id: str):
     return result
 
 
+@app.get("/api/dashboard/execution/{platform_id}/{story_id}")
+async def get_execution_model(platform_id: str, story_id: str, source: str = "auto"):
+    """Return the canonical execution model (stages → agent turns → steps).
+
+    ``source`` is ``auto`` (Langfuse when the run has a trace id and the
+    server answers, otherwise the local stage file), ``langfuse`` or
+    ``local``. Whatever the source, stage success flags come from the local
+    file because Langfuse spans do not carry them; nor do they carry a
+    usable cost, so the harness-reported stage cost is overlaid too.
+    """
+    trace_files = list_trace_files(platform_id, story_id)
+    if not trace_files:
+        raise HTTPException(status_code=404, detail="No trace files found")
+    stage_file = load_trace(trace_files[-1])
+    local_model = build_from_stage_file(stage_file)
+    local_model.platform_id = local_model.platform_id or platform_id
+    local_model.story_id = local_model.story_id or story_id
+
+    trace_id = stage_file.get("langfuse_trace_id")
+    model = None
+    if source in ("auto", "langfuse") and trace_id:
+        detail = await langfuse_fetch_trace(trace_id)
+        if detail is not None:
+            model = build_from_langfuse(detail, platform_id=platform_id, story_id=story_id)
+            local_by_key = {s.key: s for s in local_model.stages}
+            for stage in model.stages:
+                local_stage = local_by_key.get(stage.key)
+                if local_stage is not None:
+                    stage.success = local_stage.success
+                    stage.error = stage.error or local_stage.error
+                    stage.reported_cost_usd = local_stage.reported_cost_usd
+        elif source == "langfuse":
+            raise HTTPException(status_code=404, detail="Langfuse trace unavailable")
+        else:
+            local_model.notes.append("Langfuse trace unavailable; built from the local stage file.")
+    elif source == "langfuse":
+        raise HTTPException(status_code=404, detail="Run has no Langfuse trace id")
+
+    if model is None:
+        model = local_model
+    payload = model.to_dict()
+    payload["langfuse_trace_id"] = trace_id
+    return payload
+
+
 def _story_budgets() -> dict[str, float]:
     """Map ``story_id`` to ``time_budget_seconds`` for every discoverable story.
 
@@ -1378,6 +1426,17 @@ async def scoring_progress(run_id: str | None = None):
     data = load_results_raw(run_id)
     progress = get_scoring_progress(data)
     return {"progress": {pid: {"scored": s, "total": t} for pid, (s, t) in progress.items()}}
+
+
+@app.get("/api/dashboard/scoring/availability")
+async def scoring_availability(run_id: str | None = None):
+    """Which platform/story pairs have results in the run and traces on disk.
+
+    Drives the Scoring page picker: each cell says whether the platform ran
+    the story, passed it and has been scored.
+    """
+    data = load_results_raw(run_id)
+    return {"run_id": data.get("run_id"), "platforms": get_story_availability(data, list_traced_pairs())}
 
 
 @app.get("/api/dashboard/scoring/matrix")

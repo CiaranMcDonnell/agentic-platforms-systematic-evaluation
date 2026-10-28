@@ -202,3 +202,31 @@ def test_framework_metrics_none_when_no_cost_data():
     metrics = resp.json()["platforms"][0]["metrics"]
     assert metrics["cost_usd"] is None
     assert metrics["total_tokens"] is None
+
+
+def test_story_availability_counts_repeats_and_trace_only_pairs():
+    from desmet.dashboard.data import get_story_availability
+
+    data = {
+        "platforms": {
+            "p": {
+                "story_metrics": [
+                    {"story_id": "US-001", "success": True, "scored": True, "wall_clock_seconds": 10,
+                     "tokens_input": 100, "tokens_output": 50, "api_cost_usd": 0.2},
+                    {"story_id": "US-001", "success": False, "scored": False, "wall_clock_seconds": 30,
+                     "tokens_input": 300, "tokens_output": 150, "api_cost_usd": None},
+                ]
+            }
+        }
+    }
+    out = get_story_availability(data, {("p", "US-001"), ("q", "US-002")})
+
+    a = out["p"]["US-001"]
+    assert (a["repeats"], a["passed"], a["scored"]) == (2, 1, 1)
+    assert a["wall_clock_seconds"] == 20
+    assert a["tokens"] == 300
+    assert a["cost_usd"] == 0.2
+    assert a["has_trace"] is True
+    # Trace on disk but no row in this run.
+    assert out["q"]["US-002"]["repeats"] == 0
+    assert out["q"]["US-002"]["has_trace"] is True

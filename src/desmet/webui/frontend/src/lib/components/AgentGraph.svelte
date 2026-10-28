@@ -21,10 +21,12 @@
     } from "../api";
     import AgentNode from "./AgentNode.svelte";
     import AgentClusterNode from "./AgentClusterNode.svelte";
+    import LabeledGroupNode from "./LabeledGroupNode.svelte";
     import ObservationNode from "./ObservationNode.svelte";
     import TransitionEdge from "./TransitionEdge.svelte";
     import TimelineCard from "./TimelineCard.svelte";
     import ObservationDrawer from "./ObservationDrawer.svelte";
+    import { normaliseRole, roleColor as canonicalRoleColor } from "../execution";
 
     let {
         platformId,
@@ -44,20 +46,16 @@
     let baseNodes: Node[] = $state([]);
     let edges: Edge[] = $state([]);
 
-    const ROLE_COLORS: Record<string, string> = {
-        planner: "#4ade80",
-        executor: "#4a9eff",
-        reviewer: "#ff6b6b",
-        manager: "#c084fc",
-    };
-
+    // Colour by canonical role so "Code Reviewer._execute_core",
+    // "invoke_agent desmet_codegen_executor" and "executor" all read alike.
     function roleColor(id: string): string {
-        return ROLE_COLORS[id] ?? "#888888";
+        return canonicalRoleColor(normaliseRole(id));
     }
 
     const nodeTypes: NodeTypes = {
         agent: AgentNode as any,
         agentCluster: AgentClusterNode as any,
+        labeledGroup: LabeledGroupNode as any,
         observation: ObservationNode as any,
     };
     const edgeTypes: EdgeTypes = { transition: TransitionEdge as any };
@@ -283,14 +281,17 @@
                     ? "var(--blue)"
                     : obs.type === "tool"
                       ? "var(--green)"
-                      : "var(--text-2)";
+                      : obs.type === "agent"
+                        ? "var(--purple)"
+                        : "var(--text-2)";
             out.push({
                 id: elkNode.id,
-                type: "group",
+                type: "labeledGroup",
                 position: { x: elkNode.x ?? 0, y: elkNode.y ?? 0 },
                 parentId,
                 extent: "parent" as const,
-                style: `width: ${elkNode.width}px; height: ${elkNode.height}px; background: rgba(255,255,255,0.015); border: 1px solid ${obsTypeColor}; border-radius: 8px; box-sizing: content-box;`,
+                width: elkNode.width,
+                height: elkNode.height,
                 data: {
                     label: obs.name,
                     color: obsTypeColor,

@@ -124,3 +124,19 @@ def test_update_story_scores_defaults_to_repeat_zero_for_legacy_records():
     assert "autonomy_score" not in data["platforms"]["p"]["story_metrics"][0]
     update_story_scores(data, "p", "US-001", {"autonomy": 2}, {})
     assert data["platforms"]["p"]["story_metrics"][0]["autonomy_score"] == 2
+
+
+def test_availability_endpoint_merges_run_rows_and_traces(monkeypatch):
+    data = {
+        "run_id": "r1",
+        "platforms": {"p": {"story_metrics": [{"story_id": "US-001", "success": True, "scored": False}]}},
+    }
+    monkeypatch.setattr(api, "load_results_raw", lambda run_id=None: data)
+    monkeypatch.setattr(api, "list_traced_pairs", lambda: {("p", "US-001"), ("q", "US-002")})
+
+    body = TestClient(api.app).get("/api/dashboard/scoring/availability").json()
+
+    assert body["run_id"] == "r1"
+    assert body["platforms"]["p"]["US-001"]["passed"] == 1
+    assert body["platforms"]["p"]["US-001"]["has_trace"] is True
+    assert body["platforms"]["q"]["US-002"]["repeats"] == 0

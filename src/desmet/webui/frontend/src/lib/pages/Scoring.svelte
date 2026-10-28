@@ -1,16 +1,17 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { get } from 'svelte/store';
-  import { scoringTarget } from '../stores';
+  import { scoringTarget, selectedResultsRunId } from '../stores';
   import {
     fetchRubric, fetchStoryScore, submitScore,
-    fetchLangSmithStatus,
+    fetchLangSmithStatus, fetchAvailability,
   } from '../api';
-  import type { ScoringRubric, StoryScoreData } from '../api';
+  import type { AvailabilityData, ScoringRubric, StoryScoreData } from '../api';
   import { store } from '../data.svelte';
   import TraceViewer from '../components/TraceViewer.svelte';
   import LangSmithTraceViewer from '../components/LangSmithTraceViewer.svelte';
-  import AgentGraph from '../components/AgentGraph.svelte';
+  import ExecutionView from '../components/ExecutionView.svelte';
+  import ScoringPicker from '../components/ScoringPicker.svelte';
 
   let rubric = $state<ScoringRubric | null>(null);
 
@@ -25,6 +26,29 @@
   let selectedRepeat = $state<number | null>(null);
   let activeTab = $state<'langfuse' | 'langsmith' | 'graph'>('langfuse');
   let langsmithAvailable = $state<boolean | null>(null);
+  let availability = $state<AvailabilityData | null>(null);
+
+  // Which platform/story pairs have a run (or at least a trace), so the
+  // picker can say so before anything is picked.
+  async function loadAvailability() {
+    try {
+      availability = await fetchAvailability();
+    } catch {
+      availability = null;
+    }
+  }
+
+  $effect(() => {
+    void $selectedResultsRunId;
+    loadAvailability();
+  });
+
+  function pickTarget(platformId: string, storyId: string) {
+    if (platformId === selectedPlatform && storyId === selectedStory) return;
+    selectedPlatform = platformId;
+    selectedStory = storyId;
+    onTargetChange();
+  }
 
   onMount(async () => {
     const rub = await fetchRubric();
@@ -104,6 +128,7 @@
         ...(selectedRepeat !== null ? { repeat_index: selectedRepeat } : {}),
       });
       saveMsg = 'Saved';
+      loadAvailability();
     } catch {
       saveMsg = 'Error saving';
     }
@@ -158,27 +183,14 @@
 <div>
   <h1 style="margin-bottom: 28px;">Scoring</h1>
 
-  <!-- Selectors -->
-  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 28px;">
-    <div>
-      <label class="label" for="score-platform">Platform</label>
-      <select id="score-platform" class="input" bind:value={selectedPlatform} onchange={onTargetChange}>
-        <option value="">Select platform…</option>
-        {#each store.platforms as p}
-          <option value={p.id}>{p.name}</option>
-        {/each}
-      </select>
-    </div>
-    <div>
-      <label class="label" for="score-story">Story</label>
-      <select id="score-story" class="input" bind:value={selectedStory} onchange={onTargetChange}>
-        <option value="">Select story…</option>
-        {#each store.stories as s}
-          <option value={s.id}>{s.title}</option>
-        {/each}
-      </select>
-    </div>
-  </div>
+  <ScoringPicker
+    platforms={store.platforms}
+    stories={store.stories}
+    availability={availability?.platforms ?? null}
+    {selectedPlatform}
+    {selectedStory}
+    onselect={pickTarget}
+  />
 
   {#if scoreData && rubric}
     {#if (scoreData.repeat_indices?.length ?? 0) > 1}
@@ -302,7 +314,7 @@
       </div>
 
       {#if activeTab === 'graph'}
-        <AgentGraph platformId={selectedPlatform} storyId={selectedStory} langfuseTraceId={scoreData.langfuse_trace_id} />
+        <ExecutionView platformId={selectedPlatform} storyId={selectedStory} langfuseTraceId={scoreData.langfuse_trace_id} availability={availability?.platforms ?? null} />
       {:else if showLangSmithTab && activeTab === 'langsmith'}
         <LangSmithTraceViewer runId={scoreData.langsmith_run_id!} />
       {:else if scoreData.langfuse_trace_id}

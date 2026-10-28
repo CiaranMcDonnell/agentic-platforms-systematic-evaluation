@@ -427,9 +427,67 @@ def get_rubric_dim_averages(
     return result
 
 
+def get_story_availability(
+    data: dict[str, Any],
+    traced: set[tuple[str, str]],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Per platform and story: what the run holds and whether a trace exists.
+
+    ``traced`` is the set of ``(platform_id, story_id)`` pairs with trace
+    files on disk; a pair can have a trace without a row in this run (an
+    earlier run's logs) and vice versa. Returns
+    ``{platform_id: {story_id: summary}}`` where summary counts repeats,
+    passes and scored repeats and averages time, tokens and cost.
+    """
+    out: dict[str, dict[str, dict[str, Any]]] = {}
+    for pid, pdata in data.get("platforms", {}).items():
+        by_story: dict[str, list[dict[str, Any]]] = {}
+        for sm in pdata.get("story_metrics", []):
+            by_story.setdefault(str(sm["story_id"]), []).append(sm)
+        for sid, rows in by_story.items():
+            n = len(rows)
+            costs = [float(r["api_cost_usd"]) for r in rows if r.get("api_cost_usd") is not None and not pd.isna(r["api_cost_usd"])]
+            out.setdefault(str(pid), {})[sid] = {
+                "repeats": n,
+                "passed": sum(1 for r in rows if r.get("success")),
+                "scored": sum(1 for r in rows if is_story_scored(r)),
+                "wall_clock_seconds": sum(float(r.get("wall_clock_seconds") or 0) for r in rows) / n,
+                "tokens": sum(int(r.get("tokens_input") or 0) + int(r.get("tokens_output") or 0) for r in rows) / n,
+                "cost_usd": sum(costs) / len(costs) if costs else None,
+                "has_trace": (str(pid), sid) in traced,
+            }
+    for pid, sid in traced:
+        out.setdefault(pid, {}).setdefault(
+            sid,
+            {
+                "repeats": 0,
+                "passed": 0,
+                "scored": 0,
+                "wall_clock_seconds": None,
+                "tokens": None,
+                "cost_usd": None,
+                "has_trace": True,
+            },
+        )
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Trace loading
 # ---------------------------------------------------------------------------
+
+
+def list_traced_pairs() -> set[tuple[str, str]]:
+    """Every ``(platform_id, story_id)`` with trace files under the logs dir."""
+    if not LOGS_DIR.is_dir():
+        return set()
+    return {
+        (p.name, s.name)
+        for p in LOGS_DIR.iterdir()
+        if p.is_dir()
+        for s in p.iterdir()
+        if s.is_dir() and (any(s.glob("*_stages.json")) or any(s.glob("*_trace.json")))
+    }
 
 
 def list_trace_files(platform_id: str, story_id: str) -> list[Path]:
