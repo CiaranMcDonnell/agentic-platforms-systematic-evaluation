@@ -23,21 +23,27 @@ git archive --format=tar HEAD \
 find "$STAGE/data/stories" -name '*.yaml' -exec sed -i '/^author:/d' {} +
 
 mkdir -p "$STAGE/results"
-cp "$HERE/results-reported.csv" "$STAGE/results/"
-# Per-stage JSON for each reported execution (paths from the trace_path column).
-uv run --quiet python - "$HERE/results-reported.csv" "$REPO" "$STAGE/results" <<'PY'
+cp "$HERE/results-reported.csv" "$HERE/results-stages.csv" "$STAGE/results/"
+cp "$REPO/docs/paper/data/reported-runs.json" "$REPO/docs/paper/data/summary.json" \
+   "$REPO/docs/paper/data/summarise.py" "$STAGE/results/"
+# Per-stage JSON for each reported execution (file names from the stages_file
+# column; the CSV carries no local paths).
+uv run --quiet python - "$HERE/results-reported.csv" "$REPO/results/logs" "$STAGE/results" <<'PY'
 import csv, shutil, sys
 from pathlib import Path
-rows = list(csv.DictReader(open(sys.argv[1], newline="")))
-repo, out = Path(sys.argv[2]), Path(sys.argv[3])
+rows = list(csv.DictReader(open(sys.argv[1], newline="", encoding="utf-8")))
+logs, out = Path(sys.argv[2]), Path(sys.argv[3])
+missing = 0
 for r in rows:
-    src = repo / r["trace_path"].replace("\\", "/")
-    if src.exists():
-        dst = out / "stages" / src.name
+    found = list(logs.rglob(r["stages_file"])) if r["stages_file"] else []
+    if len(found) == 1:
+        dst = out / "stages" / found[0].name
         dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(src, dst)
+        shutil.copy(found[0], dst)
     else:
-        print(f"missing stage file: {src}", file=sys.stderr)
+        missing += 1
+        print(f"stage file for {r['execution_id']}: {len(found)} matches", file=sys.stderr)
+sys.exit(1 if missing else 0)
 PY
 
 cp "$HERE/README-ARTIFACT.md" "$STAGE/README.md"

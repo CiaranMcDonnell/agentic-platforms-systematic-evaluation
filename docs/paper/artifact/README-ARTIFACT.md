@@ -14,28 +14,27 @@ criteria, and the executions the paper reports.
 | `config/platforms.yaml` | Platform registry and per-difficulty budget defaults |
 | `data/stories/` | Scenario YAML (US-001 is the reported scenario) |
 | `data/prompts/`, `data/gherkin/` | Prompt templates and acceptance criteria per scenario |
-| `results/results-reported.csv` | The ten reported executions exported from the result store (five baseline, five cross-model) |
+| `results/results-reported.csv` | The reported executions exported from the result store, one row per execution |
+| `results/results-stages.csv` | One row per execution × stage: tokens, cost, time, LLM calls, outcome and failure cause |
+| `results/reported-runs.json` | The reported runs and each run's manifest (git SHA, prompts hash, image digests, pricing snapshot) |
+| `results/summary.json`, `results/summarise.py` | The paper's per-platform × model tables, and the standard-library script that rebuilds them from the two CSVs |
 | `results/stages/*.json` | Per-stage results for each reported execution |
 | `pyproject.toml`, `uv.lock` | Dependency pins (the versions in the paper's Table III) |
 
 ## Reported executions
 
-| Pass | Run ID (prefix) | Model | Platforms |
-|---|---|---|---|
-| Baseline | `0273188d` | `gpt-4.1-mini` | OpenAI Agents SDK, LangGraph, CrewAI, Microsoft Agent Framework |
-| Baseline | `51ea5ac9` | `gpt-4.1-mini` | Google ADK |
-| Cross-model | `2b6c4730` | `anthropic/claude-sonnet-4.6` | all five |
+The reported runs (one per model, five platforms × three repeats each) are
+listed with their manifests in `results/reported-runs.json`.
 
-Selection rule: for each platform, the reported run is its complete
-end-to-end US-001 execution; runs cancelled part-way during adapter
-development are excluded.
-
-In the CSV, `status` is `completed` for every row (it records that the
-harness finished the run). Whether every stage passed is carried by
-`score_pipeline_completeness` (3.0 = all stages passed; 1.0 = at least one
-stage failed) and by the per-stage JSON. `framework_metrics` is a JSON object
-holding `tokens_per_stage`, `iteration_ratio`, `redundant_tool_call_rate`,
-`tool_failure_rate`, `first_action_latency_ms`, and `framework_overhead_ms`.
+In the CSVs, `status` is `completed` for every row (it records that the
+harness finished the run). Correctness is carried by `criteria_results`
+(hidden acceptance criteria), `tests_*` (the workspace test suite run by
+the harness), `deploy_healthy` (the harness's own health check) and
+`stages_passed`. `framework_metrics` is a JSON object holding
+`tokens_per_stage`, `iteration_ratio`, `redundant_tool_call_rate`,
+`tool_failure_rate`, `first_action_latency_ms`, `framework_overhead_ms`,
+`llm_calls` and `budget_exhausted_stages`. Rebuild the summary with
+`python results/summarise.py results/`.
 
 ## Re-running US-001 on one platform
 
@@ -58,11 +57,13 @@ presents the rubric form beside the Langfuse trace, and *Comparison* renders
 the cross-platform view. `uv run desmet export-typst` emits the result
 tables.
 
-## Reading the CSV
+## Reading the CSVs
 
 ```python
 import pandas as pd, json
 df = pd.read_csv("results/results-reported.csv")
 df["rtc"] = df["framework_metrics"].map(lambda s: json.loads(s)["redundant_tool_call_rate"])
-print(df[["run_id", "platform_id", "tokens_total", "cost_usd", "rtc", "overall_score"]])
+print(df.groupby(["model", "platform_id"])[["tokens_total", "cost_usd"]].median())
+stages = pd.read_csv("results/results-stages.csv")
+print(stages.pivot_table(index=["model", "platform_id"], columns="stage_name", values="cost_usd", aggfunc="median"))
 ```
