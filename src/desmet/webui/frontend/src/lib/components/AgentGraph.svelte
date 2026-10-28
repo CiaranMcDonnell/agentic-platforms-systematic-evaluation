@@ -32,10 +32,12 @@
         platformId,
         storyId,
         langfuseTraceId = null,
+        repeatIndex = 0,
     }: {
         platformId: string;
         storyId: string;
         langfuseTraceId?: string | null;
+        repeatIndex?: number;
     } = $props();
 
     // ── Shared state ──────────────────────────────────────────────
@@ -654,7 +656,7 @@
         edgeDotCounts = new Map();
 
         try {
-            graphData = await fetchAgentGraph(platformId, storyId);
+            graphData = await fetchAgentGraph(platformId, storyId, repeatIndex);
             if (graphData.nodes.length === 0) {
                 error = "No agent data available for this run.";
                 return;
@@ -801,6 +803,7 @@
 
     $effect(() => {
         if (platformId && storyId) {
+            void repeatIndex;
             if (langfuseTraceId) {
                 loadLangfuseGraph(langfuseTraceId);
             } else {

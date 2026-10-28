@@ -123,6 +123,8 @@ export interface StoryScoreData {
   success?: boolean;
   trace?: TraceData | null;
   langfuse_trace_id?: string | null;
+  /** False when the local trace is the pair's newest file, not this execution's own. */
+  trace_matched?: boolean;
   langsmith_run_id?: string | null;
   framework_metrics?: Record<string, number | null>;
 }
@@ -449,6 +451,8 @@ export interface StoryAvailability {
   tokens: number | null;
   cost_usd: number | null;
   has_trace: boolean;
+  /** Every repeat's own trace file is on disk (else views fall back to the newest). */
+  trace_matched: boolean;
 }
 
 export interface AvailabilityData {
@@ -467,8 +471,8 @@ export const fetchStoryScore = (pid: string, sid: string, repeatIndex?: number |
     `/api/dashboard/scoring/${pid}/${sid}` + (repeatIndex != null ? `?repeat_index=${repeatIndex}` : ''),
   ));
 
-export const fetchAgentGraph = (pid: string, sid: string) =>
-  request<CommunicationGraph>(`/api/dashboard/graph/${pid}/${sid}`);
+export const fetchAgentGraph = (pid: string, sid: string, repeatIndex = 0) =>
+  request<CommunicationGraph>(withRun(`/api/dashboard/graph/${pid}/${sid}?repeat_index=${repeatIndex}`));
 
 // ── Canonical execution model ───────────────
 
@@ -562,10 +566,20 @@ export interface ExecutionModel {
   transitions: ExecutionTransition[];
   notes: string[];
   langfuse_trace_id: string | null;
+  /** False when the stage file is the pair's newest, not this execution's own. */
+  trace_matched: boolean;
 }
 
-export const fetchExecutionModel = (pid: string, sid: string, source: 'auto' | ExecutionSource = 'auto') =>
-  request<ExecutionModel>(`/api/dashboard/execution/${pid}/${sid}?source=${source}`);
+/** The selected results run's execution for one repeat (default the first). */
+export const fetchExecutionModel = (
+  pid: string,
+  sid: string,
+  source: 'auto' | ExecutionSource = 'auto',
+  repeatIndex = 0,
+) =>
+  request<ExecutionModel>(
+    withRun(`/api/dashboard/execution/${pid}/${sid}?source=${source}&repeat_index=${repeatIndex}`),
+  );
 
 export const submitScore = (data: { platform_id: string; story_id: string; scores: Record<string, number>; notes: Record<string, string>; repeat_index?: number }) =>
   request<{ success: boolean }>(

@@ -174,6 +174,11 @@ def load_results_raw(run_id: str | None = None) -> dict[str, Any]:
             sm: dict[str, Any] = {
                 "story_id": row["story_id"],
                 "repeat_index": _repeat_index(row),
+                # Pin the execution to its own trace file and Langfuse trace,
+                # so views never pick up another run's logs for the pair.
+                "execution_id": _opt_str(row, "execution_id"),
+                "trace_path": _opt_str(row, "trace_path"),
+                "langfuse_trace_id": _opt_str(row, "langfuse_trace_id"),
                 "success": row["status"] == "completed",
                 "wall_clock_seconds": row["wall_clock_seconds"],
                 # NULL = unknown (timed-out stage), not 0.
@@ -377,6 +382,14 @@ def _repeat_index(row: Any) -> int:
     return 0 if val is None or pd.isna(val) else int(val)
 
 
+def _opt_str(row: Any, col: str) -> str | None:
+    """String column from an executions row; NULL/NaN/empty means absent."""
+    val = row.get(col)
+    if val is None or pd.isna(val) or not str(val):
+        return None
+    return str(val)
+
+
 def _rubric(row: Any, dim: str) -> float | None:
     """Rubric value from an executions row; NULL/NaN means unscored."""
     val = row.get(f"rubric_{dim}")
@@ -455,6 +468,9 @@ def get_story_availability(
                 "tokens": sum(int(r.get("tokens_input") or 0) + int(r.get("tokens_output") or 0) for r in rows) / n,
                 "cost_usd": sum(costs) / len(costs) if costs else None,
                 "has_trace": (str(pid), sid) in traced,
+                # Every repeat's own trace file is on disk; otherwise the
+                # views fall back to the pair's newest file from any run.
+                "trace_matched": all(own_trace_file(r, str(pid), sid) for r in rows),
             }
     for pid, sid in traced:
         out.setdefault(pid, {}).setdefault(
@@ -467,6 +483,7 @@ def get_story_availability(
                 "tokens": None,
                 "cost_usd": None,
                 "has_trace": True,
+                "trace_matched": False,
             },
         )
     return out
@@ -503,6 +520,26 @@ def list_trace_files(platform_id: str, story_id: str) -> list[Path]:
     if not files:
         files = sorted(trace_dir.glob("*_trace.json"))
     return files
+
+
+def own_trace_file(story_metric: dict[str, Any], platform_id: str, story_id: str) -> Path | None:
+    """The trace file an execution row recorded, if it is still on disk.
+
+    ``trace_path`` is written by whichever process ran the story, so it may
+    be relative, or absolute inside a container; when it does not resolve
+    as written, the same file name is looked up in the pair's logs folder.
+    """
+    pair_dir = LOGS_DIR / platform_id / story_id
+    candidates: list[Path] = []
+    raw = story_metric.get("trace_path")
+    if raw:
+        path = Path(str(raw))
+        candidates += [path] if path.is_absolute() else [REPO_ROOT / path, LOGS_DIR / path]
+        candidates.append(pair_dir / path.name)
+    # The runner names the file after the execution, so that finds it too.
+    if story_metric.get("execution_id"):
+        candidates.append(pair_dir / f"{story_metric['execution_id']}_stages.json")
+    return next((c for c in candidates if c.is_file()), None)
 
 
 def load_trace(trace_path: Path) -> dict[str, Any]:

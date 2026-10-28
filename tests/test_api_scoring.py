@@ -1,6 +1,7 @@
 """Scoring submission API: repeats must be scored individually."""
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -140,3 +141,18 @@ def test_availability_endpoint_merges_run_rows_and_traces(monkeypatch):
     assert body["platforms"]["p"]["US-001"]["passed"] == 1
     assert body["platforms"]["p"]["US-001"]["has_trace"] is True
     assert body["platforms"]["q"]["US-002"]["repeats"] == 0
+
+
+def test_story_score_prefers_the_rows_langfuse_id_and_flags_unmatched_trace(monkeypatch):
+    row = {"story_id": "US-001", "repeat_index": 0, "langfuse_trace_id": "row-trace"}
+    monkeypatch.setattr(api, "load_results_raw", lambda run_id=None: {"platforms": {"p": {"story_metrics": [row]}}})
+    monkeypatch.setattr(api, "_story_repeat_indices", lambda *a: [0])
+    monkeypatch.setattr(api, "list_trace_files", lambda p, s: [Path("other_stages.json")])
+    newest = {"langfuse_trace_id": "other-run", "stages": {"codegen": {"messages": [{"role": "assistant", "content": "x"}]}}}
+    monkeypatch.setattr(api, "load_trace", lambda path: newest)
+
+    body = TestClient(api.app).get("/api/dashboard/scoring/p/US-001").json()
+
+    assert body["langfuse_trace_id"] == "row-trace"
+    assert body["trace_matched"] is False
+    assert body["trace"]["messages"]

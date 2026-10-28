@@ -116,7 +116,8 @@
   }
 
   function cellTitle(p: Platform, s: Story, c: Cell): string {
-    const bits = [statusText(c), scoredText(c), usageText(c.a)].filter(Boolean);
+    const unmatched = c.a && c.a.repeats > 0 && c.a.has_trace && !c.a.trace_matched;
+    const bits = [statusText(c), scoredText(c), usageText(c.a), unmatched ? 'trace file not matched to this run' : ''].filter(Boolean);
     return `${p.name} — ${s.id} ${s.title}\n${bits.join(' · ')}`;
   }
 

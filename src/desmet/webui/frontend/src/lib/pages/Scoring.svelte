@@ -302,7 +302,7 @@
         <div class="trace-tabs">
           {#if hasLangfuseData}
             <button class="trace-tab" class:active={activeTab === 'langfuse'}
-              onclick={() => activeTab = 'langfuse'}>Langfuse Trace</button>
+              onclick={() => activeTab = 'langfuse'}>{scoreData.langfuse_trace_id ? 'Langfuse Trace' : 'Local Trace'}</button>
           {/if}
           {#if showLangSmithTab}
             <button class="trace-tab" class:active={activeTab === 'langsmith'}
@@ -312,9 +312,16 @@
             onclick={() => activeTab = 'graph'}>Agent Graph</button>
         </div>
       </div>
+      {#if scoreData.trace && scoreData.trace_matched === false}
+        <div class="trace-warn">
+          This run's own trace file is not on disk, so local trace data here is the newest file for
+          this platform and story and may come from another run.
+          {#if scoreData.langfuse_trace_id}The Langfuse trace is this run's own.{/if}
+        </div>
+      {/if}
 
       {#if activeTab === 'graph'}
-        <ExecutionView platformId={selectedPlatform} storyId={selectedStory} langfuseTraceId={scoreData.langfuse_trace_id} availability={availability?.platforms ?? null} />
+        <ExecutionView platformId={selectedPlatform} storyId={selectedStory} langfuseTraceId={scoreData.langfuse_trace_id} repeatIndex={selectedRepeat ?? 0} availability={availability?.platforms ?? null} />
       {:else if showLangSmithTab && activeTab === 'langsmith'}
         <LangSmithTraceViewer runId={scoreData.langsmith_run_id!} />
       {:else if scoreData.langfuse_trace_id}
@@ -376,6 +383,16 @@
   .score-level.active { border-color: var(--text-0); background: var(--bg-2); }
   .score-level-num { font-family: var(--mono); font-size: 12px; font-weight: 700; color: var(--text-0); }
   .score-level-desc { font-size: 10px; color: var(--text-2); line-height: 1.3; }
+  .trace-warn {
+    margin-bottom: 12px;
+    padding: 8px 12px;
+    font-size: 12px;
+    color: var(--yellow);
+    background: color-mix(in srgb, var(--yellow) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--yellow) 35%, transparent);
+    border-radius: 6px;
+  }
+
   .trace-tabs {
     display: flex;
     gap: 4px;

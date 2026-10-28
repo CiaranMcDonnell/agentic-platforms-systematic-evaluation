@@ -63,6 +63,7 @@ from desmet.dashboard.data import (
     list_traced_pairs,
     load_results_raw,
     load_trace,
+    own_trace_file,
     save_results,
     update_story_scores,
 )
@@ -1175,14 +1176,7 @@ async def get_story_score(
     """
     repeat = repeat_index or 0
     data = load_results_raw(run_id)
-    pdata = data.get("platforms", {}).get(platform_id, {})
-    metrics = pdata.get("story_metrics", [])
-
-    story_metric = None
-    for sm in metrics:
-        if sm.get("story_id") == story_id and (sm.get("repeat_index") or 0) == repeat:
-            story_metric = sm
-            break
+    story_metric = _story_metric(data, platform_id, story_id, repeat)
 
     if not story_metric:
         return {"found": False}
@@ -1193,16 +1187,11 @@ async def get_story_score(
     for dim in SCORING_DIMENSIONS:
         scores[dim] = story_metric.get(f"{dim}_score", 0)
 
-    # Trace files
-    trace_files = _trace_files_for_repeat(
-        list_trace_files(platform_id, story_id), repeat
-    )
+    # This execution's own trace file (or a flagged fallback for old rows)
+    loaded, trace_matched = _load_run_trace(story_metric, platform_id, story_id, repeat)
     trace_data = None
-    langfuse_tid = None
-    raw_trace: dict = {}
-    if trace_files:
-        raw_trace = load_trace(trace_files[-1])  # most recent
-        langfuse_tid = raw_trace.get("langfuse_trace_id")
+    raw_trace: dict = loaded or {}
+    if loaded is not None:
         # Flatten stage messages into a top-level messages list
         messages: list[dict] = []
         for stage in (raw_trace.get("stages") or {}).values():
@@ -1212,9 +1201,8 @@ async def get_story_score(
         elif raw_trace.get("messages"):
             trace_data = raw_trace
 
-    # Also check story_metric for langfuse_trace_id
-    if not langfuse_tid:
-        langfuse_tid = story_metric.get("langfuse_trace_id")
+    # The row's own Langfuse id wins; the file's is only a fallback.
+    langfuse_tid = story_metric.get("langfuse_trace_id") or raw_trace.get("langfuse_trace_id")
 
     # Extract langsmith_run_id from stage data (LangGraph only)
     langsmith_run_id = (
@@ -1226,7 +1214,7 @@ async def get_story_score(
             ),
             None,
         )
-        if trace_files
+        if loaded is not None
         else None
     )
 
@@ -1242,18 +1230,23 @@ async def get_story_score(
         "success": story_metric.get("success", False),
         "trace": _sanitize_trace(trace_data) if trace_data else None,
         "langfuse_trace_id": langfuse_tid,
+        # False when the local trace shown is the pair's newest file and
+        # cannot be tied to this execution (it may be another run's).
+        "trace_matched": trace_matched,
         "langsmith_run_id": langsmith_run_id,
         "framework_metrics": story_metric.get("framework_metrics") or None,
     }
 
 
 @app.get("/api/dashboard/graph/{platform_id}/{story_id}")
-async def get_agent_graph(platform_id: str, story_id: str):
+async def get_agent_graph(
+    platform_id: str, story_id: str, run_id: str | None = None, repeat_index: int = 0
+):
     """Build and return the agent communication graph and timeline for a run."""
-    trace_files = list_trace_files(platform_id, story_id)
-    if not trace_files:
+    sm = _story_metric(load_results_raw(run_id), platform_id, story_id, repeat_index)
+    raw_trace, _ = _load_run_trace(sm, platform_id, story_id, repeat_index)
+    if raw_trace is None:
         raise HTTPException(status_code=404, detail="No trace files found")
-    raw_trace = load_trace(trace_files[-1])
     graph = build_graph(raw_trace)
     timeline = build_timeline(raw_trace)
     result = graph.to_dict()
@@ -1262,7 +1255,13 @@ async def get_agent_graph(platform_id: str, story_id: str):
 
 
 @app.get("/api/dashboard/execution/{platform_id}/{story_id}")
-async def get_execution_model(platform_id: str, story_id: str, source: str = "auto"):
+async def get_execution_model(
+    platform_id: str,
+    story_id: str,
+    source: str = "auto",
+    run_id: str | None = None,
+    repeat_index: int = 0,
+):
     """Return the canonical execution model (stages → agent turns → steps).
 
     ``source`` is ``auto`` (Langfuse when the run has a trace id and the
@@ -1270,39 +1269,62 @@ async def get_execution_model(platform_id: str, story_id: str, source: str = "au
     ``local``. Whatever the source, stage success flags come from the local
     file because Langfuse spans do not carry them; nor do they carry a
     usable cost, so the harness-reported stage cost is overlaid too.
-    """
-    trace_files = list_trace_files(platform_id, story_id)
-    if not trace_files:
-        raise HTTPException(status_code=404, detail="No trace files found")
-    stage_file = load_trace(trace_files[-1])
-    local_model = build_from_stage_file(stage_file)
-    local_model.platform_id = local_model.platform_id or platform_id
-    local_model.story_id = local_model.story_id or story_id
 
-    trace_id = stage_file.get("langfuse_trace_id")
+    The execution is the run's row for *repeat_index*: its own Langfuse
+    trace and its own stage file. A stage file that cannot be tied to the
+    row (older rows recorded none) is used only with a note saying so, and
+    never overlaid onto that row's Langfuse trace.
+    """
+    sm = _story_metric(load_results_raw(run_id), platform_id, story_id, repeat_index)
+    stage_file, matched = _load_run_trace(sm, platform_id, story_id, repeat_index)
+    trace_id = (sm or {}).get("langfuse_trace_id") or (stage_file or {}).get("langfuse_trace_id")
+    if stage_file is None and not trace_id:
+        raise HTTPException(status_code=404, detail="No trace files found")
+
+    local_model = None
+    if stage_file is not None:
+        local_model = build_from_stage_file(stage_file)
+        local_model.platform_id = local_model.platform_id or platform_id
+        local_model.story_id = local_model.story_id or story_id
+        if not matched:
+            local_model.notes.append(
+                "This run's own trace file is not on disk; using the newest file for this "
+                "platform and story, which may come from another run."
+            )
+
     model = None
     if source in ("auto", "langfuse") and trace_id:
         detail = await langfuse_fetch_trace(trace_id)
         if detail is not None:
             model = build_from_langfuse(detail, platform_id=platform_id, story_id=story_id)
-            local_by_key = {s.key: s for s in local_model.stages}
-            for stage in model.stages:
-                local_stage = local_by_key.get(stage.key)
-                if local_stage is not None:
-                    stage.success = local_stage.success
-                    stage.error = stage.error or local_stage.error
-                    stage.reported_cost_usd = local_stage.reported_cost_usd
+            if local_model is not None and matched:
+                local_by_key = {s.key: s for s in local_model.stages}
+                for stage in model.stages:
+                    local_stage = local_by_key.get(stage.key)
+                    if local_stage is not None:
+                        stage.success = local_stage.success
+                        stage.error = stage.error or local_stage.error
+                        stage.reported_cost_usd = local_stage.reported_cost_usd
+            else:
+                model.notes.append(
+                    "No local trace file for this run: stage pass/fail and cost are unavailable."
+                )
         elif source == "langfuse":
             raise HTTPException(status_code=404, detail="Langfuse trace unavailable")
-        else:
+        elif local_model is not None:
             local_model.notes.append("Langfuse trace unavailable; built from the local stage file.")
+        else:
+            raise HTTPException(status_code=404, detail="Langfuse trace unavailable and no local trace file")
     elif source == "langfuse":
         raise HTTPException(status_code=404, detail="Run has no Langfuse trace id")
 
     if model is None:
+        if local_model is None:
+            raise HTTPException(status_code=404, detail="Run has no local trace file")
         model = local_model
     payload = model.to_dict()
     payload["langfuse_trace_id"] = trace_id
+    payload["trace_matched"] = matched
     return payload
 
 
@@ -1328,6 +1350,36 @@ def _trace_files_for_repeat(files: list[Path], repeat: int) -> list[Path]:
         return int(m.group(1)) if m else 0
 
     return [f for f in files if file_repeat(f) == repeat]
+
+
+def _story_metric(data: dict, platform_id: str, story_id: str, repeat: int) -> dict | None:
+    """The run's row for one repeat of a platform/story pair (legacy NULL repeat = 0)."""
+    for sm in data.get("platforms", {}).get(platform_id, {}).get("story_metrics", []):
+        if sm.get("story_id") == story_id and (sm.get("repeat_index") or 0) == repeat:
+            return sm
+    return None
+
+
+def _load_run_trace(
+    story_metric: dict | None, platform_id: str, story_id: str, repeat: int
+) -> tuple[dict | None, bool]:
+    """Load the trace file of this execution; ``(trace, matched)``.
+
+    Prefers the file the execution row recorded. Older rows did not record
+    one, so the pair's newest file for the repeat is used instead, and it
+    only counts as matched when its Langfuse trace id is the row's own.
+    Otherwise it may come from any run, and callers must say so.
+    """
+    if story_metric is not None:
+        own = own_trace_file(story_metric, platform_id, story_id)
+        if own is not None:
+            return load_trace(own), True
+    files = _trace_files_for_repeat(list_trace_files(platform_id, story_id), repeat)
+    if not files:
+        return None, False
+    raw = load_trace(files[-1])
+    row_tid = (story_metric or {}).get("langfuse_trace_id")
+    return raw, bool(row_tid) and raw.get("langfuse_trace_id") == row_tid
 
 
 def _story_repeat_indices(run_id: str | None, platform_id: str, story_id: str) -> list[int]:
@@ -1505,12 +1557,11 @@ async def story_detail(story_id: str, run_id: str | None = None):
                     row[f"{dim}_score"] = sm.get(f"{dim}_score", None)
                 rows.append(row)
 
-    # Trace availability
+    # Trace availability: the run's own (first-repeat) trace per platform
     traces = {}
     for pid in pids:
-        files = list_trace_files(pid, story_id)
-        if files:
-            trace = load_trace(files[-1])
+        trace, _ = _load_run_trace(_story_metric(data, pid, story_id, 0), pid, story_id, 0)
+        if trace is not None:
             traces[pid] = _sanitize_trace(trace)
 
     return {"story_id": story_id, "platforms": rows, "traces": traces}

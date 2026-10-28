@@ -230,3 +230,32 @@ def test_story_availability_counts_repeats_and_trace_only_pairs():
     # Trace on disk but no row in this run.
     assert out["q"]["US-002"]["repeats"] == 0
     assert out["q"]["US-002"]["has_trace"] is True
+
+
+def test_own_trace_file_resolves_foreign_paths_and_execution_ids(tmp_path, monkeypatch):
+    from desmet.dashboard import data
+
+    monkeypatch.setattr(data, "LOGS_DIR", tmp_path)
+    pair = tmp_path / "p" / "US-001"
+    pair.mkdir(parents=True)
+    (pair / "p_US-001_r0_stages.json").write_text("{}", encoding="utf-8")
+    (pair / "exec-7_stages.json").write_text("{}", encoding="utf-8")
+
+    # Absolute path written inside a container: found by file name.
+    sm = {"trace_path": "/app/results/logs/p/US-001/p_US-001_r0_stages.json"}
+    assert data.own_trace_file(sm, "p", "US-001") == pair / "p_US-001_r0_stages.json"
+    # No recorded path: found by the runner's execution-id file name.
+    assert data.own_trace_file({"execution_id": "exec-7"}, "p", "US-001") == pair / "exec-7_stages.json"
+    assert data.own_trace_file({"execution_id": "missing"}, "p", "US-001") is None
+
+
+def test_story_availability_reports_unmatched_traces(tmp_path, monkeypatch):
+    from desmet.dashboard import data
+
+    monkeypatch.setattr(data, "LOGS_DIR", tmp_path)
+    rows = {"platforms": {"p": {"story_metrics": [{"story_id": "US-001", "execution_id": "gone"}]}}}
+
+    out = data.get_story_availability(rows, {("p", "US-001")})
+
+    assert out["p"]["US-001"]["has_trace"] is True
+    assert out["p"]["US-001"]["trace_matched"] is False

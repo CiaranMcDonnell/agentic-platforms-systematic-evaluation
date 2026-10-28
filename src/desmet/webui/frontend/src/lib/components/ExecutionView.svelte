@@ -14,11 +14,14 @@
     platformId,
     storyId,
     langfuseTraceId = null,
+    repeatIndex = 0,
     availability = null,
   }: {
     platformId: string;
     storyId: string;
     langfuseTraceId?: string | null;
+    /** Repeat of the primary run; compared platforms show their first repeat. */
+    repeatIndex?: number;
     /** platform → story → run summary; lets the compare menu say what exists. */
     availability?: Record<string, Record<string, StoryAvailability>> | null;
   } = $props();
@@ -101,7 +104,7 @@
     selectedTurnId = null;
     selectedTurn = null;
     try {
-      model = await fetchExecutionModel(platformId, storyId, source);
+      model = await fetchExecutionModel(platformId, storyId, source, repeatIndex);
     } catch (e: any) {
       error = e?.status === 404 ? 'No trace data found for this run.' : `Failed to load execution model: ${e?.message ?? e}`;
     } finally {
@@ -138,6 +141,7 @@
     if (platformId && storyId) {
       // Reading `source` here re-runs the load when the selector changes.
       void source;
+      void repeatIndex;
       load();
     }
   });
@@ -289,7 +293,7 @@
   </div>
 
   {#if view === 'raw'}
-    <AgentGraph {platformId} {storyId} {langfuseTraceId} />
+    <AgentGraph {platformId} {storyId} {langfuseTraceId} {repeatIndex} />
   {:else if loading}
     <div class="status">Loading execution model…</div>
   {:else if error}
