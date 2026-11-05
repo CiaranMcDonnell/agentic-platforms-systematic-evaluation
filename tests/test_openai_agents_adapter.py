@@ -259,9 +259,17 @@ def _usage_responses(n):
     ]
 
 
-async def _run_with_fake_runner(monkeypatch, tmp_path, structured):
+async def _fire_hooks(hooks, responses):
+    """Mimic the SDK: RunHooks see every LLM call as it ends."""
+    for resp in responses:
+        await hooks.on_llm_start(None, None, None, [])
+        await hooks.on_llm_end(None, None, resp)
+
+
+async def _run_with_fake_runner(monkeypatch, tmp_path, structured, executor=None, out=None):
     """Run _run_agent with Runner.run faked: the structured planner behaves as
-    *structured* says, the free-text planner and the executor make 1 call."""
+    *structured* says, the free-text planner makes 1 call, and the executor
+    makes 1 call unless *executor(hooks)* is given."""
     from types import SimpleNamespace
 
     pytest.importorskip("agents")
@@ -280,8 +288,16 @@ async def _run_with_fake_runner(monkeypatch, tmp_path, structured):
     async def fake_run(agent, input=None, max_turns=None, **kw):
         if agent.output_type is not None:
             return structured()
-        text = "1. step" if agent.name.endswith("_planner") else "done"
-        return SimpleNamespace(new_items=[], raw_responses=_usage_responses(1), final_output=text)
+        if agent.name.endswith("_planner"):
+            return SimpleNamespace(
+                new_items=[], raw_responses=_usage_responses(1), final_output="1. step",
+            )
+        hooks = kw["hooks"]
+        if executor is not None:
+            return await executor(hooks)
+        resp = _usage_responses(1)
+        await _fire_hooks(hooks, resp)
+        return SimpleNamespace(new_items=[], raw_responses=resp, final_output="done")
 
     monkeypatch.setattr(agents.Runner, "run", staticmethod(fake_run))
     adapter = OpenAIAgentsAdapter()
@@ -300,10 +316,13 @@ async def _run_with_fake_runner(monkeypatch, tmp_path, structured):
             messages=False, iterations=False,
         ),
     )
-    await adapter._run_agent(
+    if out is not None:
+        out.append(collector.trace)
+    _, success = await adapter._run_agent(
         "requirements", "p", None, [], collector, context, policy,
         ProgressReporter(callback=None, collector=collector),
     )
+    collector.trace.metadata["_test_success"] = success
     return collector.trace
 
 
@@ -337,3 +356,73 @@ async def test_structured_planner_without_plan_calls_are_recorded(monkeypatch, t
 
     trace = await _run_with_fake_runner(monkeypatch, tmp_path, structured)
     assert llm_calls_used(trace) == 3
+
+
+def _structured_ok():
+    from types import SimpleNamespace
+
+    from desmet.adapters._shared.planning import ImplementationPlan
+
+    return SimpleNamespace(
+        new_items=[], raw_responses=_usage_responses(1),
+        final_output=ImplementationPlan(steps=["s"], files_to_create=[], files_to_modify=[]),
+    )
+
+
+async def test_executor_usage_recorded_once_via_hooks(monkeypatch, tmp_path):
+    """Executor usage comes from RunHooks; raw_responses must not add it again."""
+    from desmet.adapters._shared.budget import llm_calls_used
+
+    trace = await _run_with_fake_runner(monkeypatch, tmp_path, _structured_ok)
+    assert llm_calls_used(trace) == 2  # planner 1 + executor 1
+    assert trace.total_tokens_input == 20
+
+
+async def test_model_behavior_error_keeps_tokens_and_retries(monkeypatch, tmp_path):
+    """A ModelBehaviorError mid-run (e.g. hallucinated tool name) ends the
+    attempt, not the stage, and the calls made before it stay counted."""
+    from types import SimpleNamespace
+
+    pytest.importorskip("agents")
+
+    from agents.exceptions import ModelBehaviorError
+
+    from desmet.adapters._shared.budget import llm_calls_used
+
+    calls = {"n": 0}
+
+    async def executor(hooks):
+        calls["n"] += 1
+        resp = _usage_responses(2)
+        await _fire_hooks(hooks, resp)
+        if calls["n"] == 1:
+            exc = ModelBehaviorError("Tool not_a_tool not found")
+            exc.run_data = SimpleNamespace(new_items=[], raw_responses=resp)
+            raise exc
+        return SimpleNamespace(new_items=[], raw_responses=resp, final_output="done")
+
+    trace = await _run_with_fake_runner(monkeypatch, tmp_path, _structured_ok, executor)
+    assert calls["n"] == 1  # max_retries=0 in the harness: one attempt
+    assert llm_calls_used(trace) == 3  # planner 1 + executor 2 before the error
+    assert any("ModelBehaviorError" in e for e in trace.errors)
+
+
+async def test_api_error_mid_run_keeps_recorded_tokens(monkeypatch, tmp_path):
+    """A transport error has no run_data; the calls before it must already be
+    in the trace (recorded by hooks), not lost with the exception."""
+    openai = pytest.importorskip("openai")
+    pytest.importorskip("agents")
+
+    from desmet.adapters._shared.budget import llm_calls_used
+
+    import httpx
+
+    async def executor(hooks):
+        await _fire_hooks(hooks, _usage_responses(3))
+        raise openai.APIConnectionError(request=httpx.Request("POST", "http://x"))
+
+    out: list = []
+    with pytest.raises(openai.APIConnectionError):
+        await _run_with_fake_runner(monkeypatch, tmp_path, _structured_ok, executor, out)
+    assert llm_calls_used(out[0]) == 4  # planner 1 + executor 3 before the error
+    assert out[0].total_tokens_input == 40

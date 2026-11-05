@@ -57,6 +57,34 @@ def _conversation(run) -> list:
 # ── Data models ───────────────────────────────────────────────────────────────
 
 
+
+def _build_run_hooks(collector: ObservationCollector, progress: ProgressReporter) -> Any:
+    """RunHooks that record each LLM call's usage and duration as it ends
+    and emit tool progress as each tool starts (so timeout lower bounds and
+    the live log see OpenAI runs like the streaming adapters)."""
+    from agents import RunHooks
+
+    class _UsageHooks(RunHooks):
+        def __init__(self) -> None:
+            self._t0: float | None = None
+
+        async def on_llm_start(self, context, agent, system_prompt, input_items) -> None:
+            self._t0 = time.monotonic()
+
+        async def on_llm_end(self, context, agent, response) -> None:
+            duration_ms = 0.0
+            if self._t0 is not None:
+                duration_ms = (time.monotonic() - self._t0) * 1000
+                self._t0 = None
+            collector.record_llm_response(
+                raw_usage=getattr(response, "usage", None), duration_ms=duration_ms,
+            )
+
+        async def on_tool_start(self, context, agent, tool) -> None:
+            progress.tool_call(getattr(tool, "name", "tool"), {})
+
+    return _UsageHooks()
+
 @dataclass
 class OpenAIRunContext:
     """Adapter-local context passed through RunContextWrapper."""
@@ -200,7 +228,11 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
         workspace passes validation at the end of the run.
         """
         from agents import Agent, ModelSettings, Runner
-        from agents.exceptions import MaxTurnsExceeded, OutputGuardrailTripwireTriggered
+        from agents.exceptions import (
+            AgentsException,
+            MaxTurnsExceeded,
+            OutputGuardrailTripwireTriggered,
+        )
 
         planner_persona = get_sub_persona("planner")
         executor_persona = get_stage_persona(stage_name)
@@ -315,6 +347,12 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
             model_settings=ModelSettings(temperature=context.temperature),
         )
 
+        # Executor/reviewer runs record usage, durations and tool progress
+        # per call as they happen, so a run that dies mid-way (API error,
+        # ModelBehaviorError) keeps the tokens it spent, as the streaming
+        # adapters do. _extract_trace then skips usage for these runs.
+        run_hooks = _build_run_hooks(collector, progress)
+
         # ── Step 3: Retry loop ─────────────────────────────────────────────
         # Shared per-stage LLM-call budget (budget.py).  One turn is one LLM
         # call, so each attempt's max_turns is whatever the planner and
@@ -348,22 +386,16 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
                         }
                     ]
 
-                tool_time_before = sum(tc.duration_ms for tc in collector.trace.tool_calls)
-                run_t0 = time.monotonic()
-                result = await Runner.run(executor_agent, input=input_msg, max_turns=max_turns)
+                result = await Runner.run(
+                    executor_agent, input=input_msg, max_turns=max_turns, hooks=run_hooks,
+                )
                 last_run = result
-                run_duration_ms = (time.monotonic() - run_t0) * 1000
 
                 iters, tool_call_count = self._extract_trace(
                     collector, result, progress=progress,
-                    tool_call_count=tool_call_count,
+                    tool_call_count=tool_call_count, live_hooks=True,
                 )
                 total_iterations += iters
-
-                tool_time_after = sum(tc.duration_ms for tc in collector.trace.tool_calls)
-                tool_time_in_run = tool_time_after - tool_time_before
-                llm_time_estimate = max(0.0, run_duration_ms - tool_time_in_run)
-                collector.record_llm_response(raw_usage=None, duration_ms=llm_time_estimate)
 
                 # Reaching here means Runner.run() completed without
                 # OutputGuardrailTripwireTriggered.  The guardrail only
@@ -392,7 +424,7 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
                     last_run = exc.run_data
                     iters, tool_call_count = self._extract_trace(
                         collector, exc.run_data, progress=progress,
-                        tool_call_count=tool_call_count,
+                        tool_call_count=tool_call_count, live_hooks=True,
                     )
                     total_iterations += iters
                 total_iterations += 1
@@ -407,7 +439,7 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
                     last_run = exc.run_data
                     iters, tool_call_count = self._extract_trace(
                         collector, exc.run_data, progress=progress,
-                        tool_call_count=tool_call_count,
+                        tool_call_count=tool_call_count, live_hooks=True,
                     )
                     total_iterations += iters
                 else:
@@ -417,6 +449,24 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
                 )
                 mark_budget_exhausted(collector.trace)
                 break
+
+            except AgentsException as exc:
+                # Any other SDK error (e.g. ModelBehaviorError on a
+                # hallucinated tool name) ends this attempt, not the stage:
+                # keep its items, record the error, and retry with the
+                # validator's feedback like a failed validation.
+                collector.trace.errors.append(f"{type(exc).__name__}: {exc}")
+                if exc.run_data is not None:
+                    last_run = exc.run_data
+                    iters, tool_call_count = self._extract_trace(
+                        collector, exc.run_data, progress=progress,
+                        tool_call_count=tool_call_count, live_hooks=True,
+                    )
+                    total_iterations += iters
+                total_iterations += 1
+                _, last_feedback = policy.validate()
+                progress.validation_failed(attempt + 1, policy.total_attempts(), last_feedback)
+                continue
 
         collector.mark_iterations(total_iterations)
 
@@ -436,8 +486,13 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
         *,
         progress: ProgressReporter,
         tool_call_count: int = 0,
+        live_hooks: bool = False,
     ) -> tuple[int, int]:
         """Extract messages, tool calls, and usage from a RunResult.
+
+        With *live_hooks* the run was made with ``_build_run_hooks``, which
+        already recorded usage and emitted tool progress per call; only
+        messages and tool-call records are taken from the result then.
 
         Returns ``(new_items_count, updated_tool_call_count)``.
         """
@@ -456,7 +511,8 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
                 call = item.raw_item
                 args = call.arguments if isinstance(call.arguments, dict) else {"raw": call.arguments}
                 collector.record_tool_execution(name=call.name, args=args, result="")
-                progress.tool_call(call.name, call.arguments)
+                if not live_hooks:
+                    progress.tool_call(call.name, call.arguments)
             elif isinstance(item, ToolCallOutputItem):
                 collector.record_message(
                     "tool", str(item.output),
@@ -467,8 +523,9 @@ class OpenAIAgentsAdapter(ToolAgentAdapter):
                 )
 
         # Token usage from raw_responses
-        for resp in result.raw_responses:
-            collector.record_llm_response(raw_usage=getattr(resp, "usage", None))
+        if not live_hooks:
+            for resp in result.raw_responses:
+                collector.record_llm_response(raw_usage=getattr(resp, "usage", None))
 
         # Record final output
         if getattr(result, "final_output", None):
