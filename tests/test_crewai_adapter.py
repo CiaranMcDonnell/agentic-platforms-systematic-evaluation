@@ -273,6 +273,16 @@ class TestCrewAIAdapterStructure:
         from desmet.adapters._shared.retry import RetryPolicy
         assert RetryPolicy().max_retries == 3
 
+    def test_agents_disable_crewai_task_retry(self):
+        """CrewAI's Agent.max_retry_limit (default 2) re-runs a whole task on
+        any error, a retry layer no other adapter has. Every Agent must set 0."""
+        import inspect
+
+        from desmet.adapters.multiagent.crewai import CrewAIAdapter
+
+        src = inspect.getsource(CrewAIAdapter._build_crew)
+        assert src.count("Agent(") == src.count("max_retry_limit=0") == 3
+
     def test_has_build_crew(self, adapter):
         """_build_crew is the crew construction helper."""
         assert hasattr(adapter, "_build_crew")

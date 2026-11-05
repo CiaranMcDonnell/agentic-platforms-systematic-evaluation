@@ -469,6 +469,7 @@ class CrewAIAdapter(ToolAgentAdapter):
             llm=llm,
             tools=executor_tools,
             max_iter=executor_budget,
+            max_retry_limit=0,  # no hidden task re-runs; the shared 4-attempt loop is the only retry
         )
 
         # ── Reviewer — Code Reviewer ─────────────────────────────────────
@@ -482,6 +483,7 @@ class CrewAIAdapter(ToolAgentAdapter):
             llm=llm,
             tools=reviewer_tools,
             max_iter=reviewer_budget,
+            max_retry_limit=0,
         )
 
         agents: list = []
@@ -502,6 +504,7 @@ class CrewAIAdapter(ToolAgentAdapter):
                 # could write files and run commands.
                 tools=[],
                 max_iter=planner_budget,
+                max_retry_limit=0,
             )
             analyse_task = Task(
                 description=(
