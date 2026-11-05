@@ -206,13 +206,19 @@ class TestGetAdapter:
             adapter = get_adapter(pid)
             assert isinstance(adapter, VisualPlatformAdapter)
 
-    def test_stub_initialize_raises(self):
+    def test_google_adk_initialize(self):
+        """ADK is a real adapter (no longer a stub): initialize succeeds when
+        the SDK is installed and raises RuntimeError when it is missing."""
         import asyncio
+        import importlib.util
 
-        pytest.importorskip("google.adk", reason="google.adk not installed")
         adapter = get_adapter("google_adk")
-        with pytest.raises((NotImplementedError, RuntimeError)):
+        if importlib.util.find_spec("google.adk") is None:
+            with pytest.raises(RuntimeError, match="Google ADK"):
+                asyncio.run(adapter.initialize())
+        else:
             asyncio.run(adapter.initialize())
+            assert adapter._initialized is True
 
     def test_agent_framework_initialize_raises_without_package(self):
         import asyncio

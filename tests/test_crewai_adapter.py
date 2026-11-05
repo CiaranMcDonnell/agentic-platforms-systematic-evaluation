@@ -534,7 +534,10 @@ def test_event_handlers_register_per_instance():
     assert "_event_handlers_registered" in a2.__dict__
 
     # Behavioral check — requires crewai.events to construct and emit a
-    # real event through the shared event bus.
+    # real event through the shared event bus.  google-adk[extensions] pulls
+    # in an older crewai (1.6) whose event bus differs; test the version the
+    # crewai extra pins.
+    pytest.importorskip("crewai", minversion="1.12.2")
     pytest.importorskip("crewai.events")
     from unittest.mock import MagicMock
 

@@ -506,7 +506,10 @@ class TestCreateToolsCallable:
 class TestCreateToolsLangchain:
     @pytest.fixture(autouse=True)
     def _require_langchain(self):
+        # create_tools imports langchain.tools; langchain_core alone (pulled
+        # in by google-adk[extensions]) is not enough.
         pytest.importorskip("langchain_core", reason="langchain_core not installed")
+        pytest.importorskip("langchain", reason="langchain not installed")
 
     @pytest.fixture
     def lc_tools(self, workspace):
