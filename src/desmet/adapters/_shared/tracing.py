@@ -105,7 +105,13 @@ def record_usage(
     elif model and (input_tokens or output_tokens):
         from desmet.cost_calculator import estimate_cost
 
-        trace.total_cost_usd += estimate_cost(model, input_tokens, output_tokens)
+        cost = estimate_cost(model, input_tokens, output_tokens)
+        if cost <= 0:
+            # Pricing fetch failed or the model id did not resolve: this
+            # call's cost is unknown, not free. Flag it so a $0 total is
+            # never read as a real figure.
+            trace.metadata["cost_unknown"] = True
+        trace.total_cost_usd += cost
 
 
 def record_tool_call(
@@ -337,6 +343,8 @@ def compute_framework_metrics(
     }
     if calls_unknown:
         metrics["usage_fallback"] = 1.0
+    if trace.metadata.get("cost_unknown"):
+        metrics["cost_unknown"] = 1.0
     return metrics
 
 

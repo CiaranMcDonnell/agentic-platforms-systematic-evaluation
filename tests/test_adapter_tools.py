@@ -464,6 +464,29 @@ class TestCreateToolsCallable:
         assert "real.py" in result
         assert ".desmet" not in result
 
+    def test_read_file_and_list_directory_hide_harness_files(self, workspace):
+        (workspace / ".desmet-baseline-files.json").write_text('["a.py"]')
+        (workspace / ".desmet_acceptance").mkdir()
+        (workspace / ".desmet_acceptance" / "test_ac.py").write_text("x = 1\n")
+        read_file, list_dir = create_tools(workspace, ["read_file", "list_directory"])
+        assert "File not found" in read_file(path=".desmet-baseline-files.json")
+        assert "File not found" in read_file(path=".desmet_acceptance/test_ac.py")
+        listing = list_dir(path=".")
+        assert ".desmet" not in listing
+        assert "hello.py" in listing
+
+    def test_read_file_truncates_long_files(self, workspace):
+        """One rendered SVG or lockfile must not bloat every later prompt."""
+        from desmet.adapters._shared.tools import _READ_MAX_CHARS
+
+        (workspace / "big.svg").write_text("x" * (_READ_MAX_CHARS + 5000))
+        read_file = create_tools(workspace, ["read_file"])[0]
+        result = read_file(path="big.svg")
+        assert result.startswith("x" * 100)
+        assert len(result) < _READ_MAX_CHARS + 200
+        assert "truncated" in result
+        assert read_file(path="hello.py") == "print('hello')"
+
     def test_execute_shell_runs_command(self, workspace):
         tools = create_tools(workspace, ["execute_shell"])
         shell = tools[0]

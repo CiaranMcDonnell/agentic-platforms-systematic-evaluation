@@ -850,6 +850,11 @@ class EvaluationRunner:
                     for sname, sr in stage_results.items():
                         if (sr.framework_metrics or {}).get("budget_exhausted"):
                             agg[f"budget_exhausted_{sname}"] = 1.0
+                    # Stages whose cost could not be priced (cost_usd is a
+                    # lower bound when this is non-zero).
+                    cost_unknown = sum(fm.get("cost_unknown") or 0 for fm in all_fm)
+                    if cost_unknown:
+                        agg["cost_unknown_stages"] = cost_unknown
                     result.framework_metrics = agg
                     # Auto-compute the three trace-derivable rubric
                     # dimensions.  The other two (pipeline_completeness,

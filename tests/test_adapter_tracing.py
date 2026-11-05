@@ -862,3 +862,27 @@ class TestIterationsAreLlmCalls:
         assert res.tokens_input == 10
         assert res.framework_metrics["llm_calls"] is None
         assert res.framework_metrics["usage_fallback"] == 1.0
+
+
+def test_unpriced_tokens_flag_cost_unknown(monkeypatch):
+    """A $0 estimate for real tokens means pricing failed, not a free call."""
+    from desmet.adapters._shared.tracing import compute_framework_metrics, record_usage
+    from desmet.harness.trace import AgentTrace
+
+    monkeypatch.setattr("desmet.cost_calculator.estimate_cost", lambda *a, **k: 0.0)
+    trace = AgentTrace()
+    record_usage(trace, input_tokens=100, output_tokens=10, model="vendor/unpriced")
+    assert trace.metadata["cost_unknown"] is True
+    assert compute_framework_metrics(trace, 10)["cost_unknown"] == 1.0
+
+
+def test_priced_tokens_do_not_flag_cost_unknown(monkeypatch):
+    from desmet.adapters._shared.tracing import compute_framework_metrics, record_usage
+    from desmet.harness.trace import AgentTrace
+
+    monkeypatch.setattr("desmet.cost_calculator.estimate_cost", lambda *a, **k: 0.002)
+    trace = AgentTrace()
+    record_usage(trace, input_tokens=100, output_tokens=10, model="z-ai/glm-5.3")
+    assert "cost_unknown" not in trace.metadata
+    assert "cost_unknown" not in compute_framework_metrics(trace, 10)
+    assert trace.total_cost_usd == 0.002

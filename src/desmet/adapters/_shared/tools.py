@@ -461,6 +461,22 @@ def _check_write_stage(stage: str | None, path: str) -> str | None:
 
 _MAX_READ_SIZE = 5_242_880  # 5 MB
 
+#: Longest content read_file returns.  Every tool result stays in the
+#: conversation and is re-sent on each later call, so one rendered SVG or
+#: lockfile (100k+ chars) would bloat all remaining prompts, the mechanism
+#: behind the 2026-10-28 search_code blow-up.  Baseline source files are
+#: all under 3k chars, so this only cuts generated/minified files.
+_READ_MAX_CHARS = 20_000
+
+
+def _is_harness_path(workspace: Path, full_path: Path) -> bool:
+    """True if *full_path* is (inside) one of the harness's .desmet* files."""
+    try:
+        rel = full_path.resolve().relative_to(workspace.resolve())
+    except ValueError:
+        return False
+    return any(part.startswith(_HARNESS_FILE_PREFIX) for part in rel.parts)
+
 
 def _read_file(workspace: Path, path: str) -> str:
     """Read a file inside the workspace."""
@@ -471,13 +487,20 @@ def _read_file(workspace: Path, path: str) -> str:
         full_path = _safe_resolve(workspace, path)
     except ValueError as exc:
         return f"Error: {exc}"
-    if not full_path.exists():
+    if not full_path.exists() or _is_harness_path(workspace, full_path):
         return f"File not found: {path}"
     if full_path.is_dir():
         return f"Error: path is a directory, not a file: {path}"
     if full_path.stat().st_size > _MAX_READ_SIZE:
         return f"Error: file too large ({full_path.stat().st_size} bytes, limit {_MAX_READ_SIZE})"
-    return full_path.read_text(encoding="utf-8")
+    text = full_path.read_text(encoding="utf-8")
+    if len(text) > _READ_MAX_CHARS:
+        return (
+            text[:_READ_MAX_CHARS]
+            + f"\n...(truncated: showing {_READ_MAX_CHARS:,} of {len(text):,} chars;"
+            " use search_code or execute_shell to inspect the rest)"
+        )
+    return text
 
 
 def _strip_markdown_fences(content: str) -> str:
@@ -530,7 +553,11 @@ def _list_directory(workspace: Path, path: str = ".") -> str:
     except ValueError as exc:
         return f"Error: {exc}"
     if full_path.exists() and full_path.is_dir():
-        entries = sorted(str(f.relative_to(workspace.resolve())) for f in full_path.iterdir())
+        entries = sorted(
+            str(f.relative_to(workspace.resolve()))
+            for f in full_path.iterdir()
+            if not f.name.startswith(_HARNESS_FILE_PREFIX)
+        )
         return "\n".join(entries)
     return f"Directory not found: {path}"
 
