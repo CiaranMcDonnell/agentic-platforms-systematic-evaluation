@@ -78,14 +78,33 @@ def _build_usage_middleware(collector: ObservationCollector, budget: int | None 
                 mark_budget_exhausted(collector.trace)
                 raise MiddlewareTermination("LLM-call budget exhausted")
             t0 = time.monotonic()
+
+            def _record(response: Any) -> None:
+                usage = (
+                    getattr(response, "usage_details", None)
+                    or getattr(response, "usage", None)
+                )
+                collector.record_llm_response(
+                    raw_usage=usage,
+                    duration_ms=(time.monotonic() - t0) * 1000,
+                )
+
+            if getattr(context, "stream", False):
+                # Workflow participants (executor, reviewer) run with
+                # stream=True. call_next() then returns an unconsumed
+                # ResponseStream with no usage yet; the pipeline attaches
+                # these hooks to it and runs them on the finalised
+                # ChatResponse, which carries usage_details.
+                def _on_final(response: Any) -> Any:
+                    _record(response)
+                    return response
+
+                context.stream_result_hooks.append(_on_final)
+                await call_next()
+                return
+
             await call_next()
-            duration_ms = (time.monotonic() - t0) * 1000
-            response = getattr(context, "result", None)
-            usage = (
-                getattr(response, "usage_details", None)
-                or getattr(response, "usage", None)
-            )
-            collector.record_llm_response(raw_usage=usage, duration_ms=duration_ms)
+            _record(getattr(context, "result", None))
 
     return _UsageTrackingMiddleware()
 

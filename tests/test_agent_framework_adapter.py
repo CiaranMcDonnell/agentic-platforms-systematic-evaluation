@@ -190,6 +190,35 @@ class TestUsageTrackingMiddleware:
         assert isinstance(mw, ChatMiddleware)
         assert callable(getattr(mw, "process", None))
 
+    def test_streaming_call_recorded_from_final_response(self):
+        """Participants run with stream=True: usage must be read from the
+        finalised response via stream_result_hooks, not from the
+        unconsumed stream that call_next() leaves on context.result."""
+        pytest.importorskip("agent_framework")
+        import asyncio
+        from types import SimpleNamespace
+
+        from desmet.adapters.multiagent.agent_framework import _build_usage_middleware
+
+        trace = AgentTrace()
+        collector = ObservationCollector(trace)
+        mw = _build_usage_middleware(collector)
+        ctx = SimpleNamespace(stream=True, stream_result_hooks=[], result=None)
+
+        async def call_next():
+            ctx.result = object()  # stands in for an unconsumed ResponseStream
+
+        asyncio.run(mw.process(ctx, call_next))
+        assert trace.metadata.get("llm_calls", 0) == 0  # nothing yet: stream not consumed
+        assert len(ctx.stream_result_hooks) == 1
+
+        final = SimpleNamespace(
+            usage_details={"input_token_count": 100, "output_token_count": 20},
+        )
+        assert ctx.stream_result_hooks[0](final) is final
+        assert trace.total_tokens_input == 100
+        assert trace.total_tokens_output == 20
+
 
 class TestRegistryIntegration:
     def test_agent_framework_in_implemented_platforms(self):
