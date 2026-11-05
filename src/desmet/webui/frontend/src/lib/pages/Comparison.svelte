@@ -4,6 +4,8 @@
   import FrameworkMetricsTable from '../components/comparison/FrameworkMetricsTable.svelte';
   import EfficiencyBreakdown from '../components/comparison/EfficiencyBreakdown.svelte';
   import StoryComparisonPanel from '../components/comparison/StoryComparisonPanel.svelte';
+  import SpreadPanel from '../components/comparison/SpreadPanel.svelte';
+  import CriteriaPanel from '../components/comparison/CriteriaPanel.svelte';
   import { selectedResultsRunId } from '../stores';
 
   let currentRunId = $state<string | null>(null);
@@ -16,6 +18,16 @@
   <!-- Verdict: rankings + completion -->
   <div style="margin-bottom: 28px;">
     <VerdictBand runId={currentRunId} />
+  </div>
+
+  <!-- Correctness from the hidden acceptance tests -->
+  <div style="margin-bottom: 28px;">
+    <CriteriaPanel runId={currentRunId} />
+  </div>
+
+  <!-- Spread over repeats, and platform x model across runs -->
+  <div style="margin-bottom: 28px;">
+    <SpreadPanel runId={currentRunId} />
   </div>
 
   <!-- Subjective DESMET scores: rubric matrix + radar -->

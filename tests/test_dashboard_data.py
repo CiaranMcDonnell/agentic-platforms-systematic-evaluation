@@ -259,3 +259,52 @@ def test_story_availability_reports_unmatched_traces(tmp_path, monkeypatch):
 
     assert out["p"]["US-001"]["has_trace"] is True
     assert out["p"]["US-001"]["trace_matched"] is False
+
+
+def test_passed_uses_stages_passed_and_falls_back_to_status():
+    import pandas as pd
+    from desmet.dashboard.data import _passed
+
+    g = pd.DataFrame({
+        "status": ["completed", "completed", "completed", "failed"],
+        "stages_passed": [True, False, None, None],
+    })
+    assert _passed(g).tolist() == [True, False, True, False]
+    assert _passed(g.drop(columns="stages_passed")).tolist() == [True, True, True, False]
+
+
+def test_stage_call_counts_unknown_when_a_stage_timed_out():
+    import pandas as pd
+    from desmet.dashboard.data import _stage_call_counts
+
+    stages = pd.DataFrame({
+        "execution_id": ["a", "a", "b", "b"],
+        "iterations": [10, 5, 4, None],
+        "tokens_input": [1000, 500, 400, 9000],
+    })
+    out = _stage_call_counts(stages).set_index("execution_id")
+    assert out.loc["a", "llm_calls"] == 15
+    assert out.loc["a", "prompt_tokens_per_call"] == 100
+    assert pd.isna(out.loc["b", "llm_calls"])
+    # The timed-out stage's tokens are left out of the per-call ratio.
+    assert out.loc["b", "prompt_tokens_per_call"] == 100
+
+
+def test_criteria_rates_skip_executions_without_results():
+    import pandas as pd
+    from desmet.dashboard.data import get_criteria_rates
+
+    df = pd.DataFrame({
+        "platform_id": ["crewai", "crewai", "crewai", "langgraph"],
+        "criteria_results": ['{"AC-1": true, "AC-2": false}', '{"AC-1": true, "AC-2": true}', None, None],
+    })
+    assert get_criteria_rates(df) == {"crewai": {"AC-1": (2, 2), "AC-2": (1, 2)}}
+
+
+def test_pick_story_defaults_to_most_common():
+    import pandas as pd
+    from desmet.dashboard.data import pick_story
+
+    df = pd.DataFrame({"story_id": ["US-001", "US-001", "US-010"]})
+    assert pick_story(df, None) == "US-001"
+    assert pick_story(df, "US-010") == "US-010"

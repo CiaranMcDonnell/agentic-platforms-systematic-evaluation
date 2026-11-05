@@ -43,12 +43,17 @@ from desmet.dashboard.charts import (
     bar_efficiency_breakdown,
     bar_platform_rankings,
     bar_story_comparison,
+    heatmap_criteria,
     radar_dimensions,
+    spread_by_platform,
 )
 from desmet.dashboard.data import (
     CATEGORY_COLOURS,
     SCORING_DIMENSIONS,
     SCORING_RUBRIC,
+    SPREAD_METRICS,
+    get_criteria_rates,
+    get_execution_frame,
     get_dimension_scores_df,
     get_platform_colour,
     get_platform_colours,
@@ -59,6 +64,7 @@ from desmet.dashboard.data import (
     get_story_availability,
     get_story_metrics_df,
     is_story_scored,
+    pick_story,
     list_trace_files,
     list_traced_pairs,
     load_results_raw,
@@ -1094,6 +1100,56 @@ async def chart_dimension(dimension: str, run_id: str | None = None):
     if dim_df.empty:
         return {"chart": None}
     return {"chart": bar_dimension_comparison(dim_df, dimension)}
+
+
+def _chart_run_ids(run_ids: str, run_id: str | None) -> list[str]:
+    """Runs a chart covers: the comma-separated *run_ids*, else *run_id*,
+    else the latest run."""
+    ids = [r.strip() for r in run_ids.split(",") if r.strip()]
+    if ids:
+        return ids
+    latest = run_id or _get_result_store().latest_run_id()
+    return [latest] if latest else []
+
+
+@app.get("/api/dashboard/charts/spread")
+async def chart_spread(
+    metric: str = "tokens_total",
+    run_ids: str = "",
+    run_id: str | None = None,
+    story_id: str | None = None,
+    log: bool = False,
+):
+    """Median, range and each repeat of a metric per platform; one series
+    per run (labelled by model) when several runs are given."""
+    if metric not in SPREAD_METRICS:
+        raise HTTPException(status_code=400, detail=f"metric must be one of {sorted(SPREAD_METRICS)}")
+    df = get_execution_frame(_chart_run_ids(run_ids, run_id))
+    story = pick_story(df, story_id)
+    df = df[df["story_id"] == story] if story else df
+    if df.empty or df[metric].isna().all():
+        return {"chart": None, "story_id": story}
+    # Label each run by its model; two runs of one model are told apart.
+    models = df.groupby("run_id")["model"].first().fillna("unknown model")
+    dup = models.duplicated(keep=False)
+    labels = {rid: f"{m} ({rid[:6]})" if dup[rid] else m for rid, m in models.items()}
+    df = df.assign(series=df["run_id"].map(labels))
+    title = f"{SPREAD_METRICS[metric]} per platform · {story}"
+    return {
+        "chart": spread_by_platform(df, metric, SPREAD_METRICS[metric], log=log, title=title),
+        "story_id": story,
+    }
+
+
+@app.get("/api/dashboard/charts/criteria")
+async def chart_criteria(run_id: str | None = None, story_id: str | None = None):
+    """Hidden acceptance criteria pass rate per platform over repeats."""
+    df = get_execution_frame(_chart_run_ids("", run_id))
+    story = pick_story(df, story_id)
+    rates = get_criteria_rates(df[df["story_id"] == story] if story else df)
+    if not rates:
+        return {"chart": None, "story_id": story}
+    return {"chart": heatmap_criteria(rates, title=f"Hidden acceptance criteria · {story}"), "story_id": story}
 
 
 @app.get("/api/dashboard/framework-metrics")

@@ -220,8 +220,8 @@ def load_results_raw(run_id: str | None = None) -> dict[str, Any]:
             "platform_id": str(pid),
             "platform_name": str(pid),
             "stories_total": len(group),
-            "stories_completed": int((group["status"] == "completed").sum()),
-            "stories_failed": int((group["status"] != "completed").sum()),
+            "stories_completed": int(_passed(group).sum()),
+            "stories_failed": int((~_passed(group)).sum()),
             "overall_score": float(group["overall_score"].mean()) if group["overall_score"].notna().any() else 0.0,
             "story_metrics": story_metrics,
             "dimension_scores": dimension_scores,
@@ -235,6 +235,20 @@ def load_results_raw(run_id: str | None = None) -> dict[str, Any]:
         "run_id": target_id,
         "platforms": platforms,
     }
+
+
+def _passed(group: pd.DataFrame) -> pd.Series:
+    """Whether each execution passed every stage.
+
+    ``status`` is "completed" whenever the harness finished the execution,
+    whatever its stages did, so it is only the fallback for rows recorded
+    before ``stages_passed`` existed.
+    """
+    status_ok = group["status"] == "completed"
+    if "stages_passed" not in group.columns:
+        return status_ok
+    passed = group["stages_passed"].astype("boolean")
+    return passed.fillna(status_ok).astype(bool)
 
 
 def save_results(data: dict[str, Any]) -> None:
@@ -546,3 +560,102 @@ def load_trace(trace_path: Path) -> dict[str, Any]:
     """Load a single trace file and return its contents as a dict."""
     with open(trace_path, encoding="utf-8") as fh:
         return json.load(fh)
+
+
+# ---------------------------------------------------------------------------
+# Repeats and cross-run comparison
+# ---------------------------------------------------------------------------
+
+#: Per-execution measures the spread chart can plot: column -> axis label.
+SPREAD_METRICS: dict[str, str] = {
+    "tokens_total": "Tokens",
+    "cost_usd": "Cost (USD)",
+    "wall_clock_seconds": "Wall clock (s)",
+    "llm_calls": "LLM calls",
+    "prompt_tokens_per_call": "Prompt tokens per LLM call",
+}
+
+
+def _stage_call_counts(stages: pd.DataFrame) -> pd.DataFrame:
+    """Per execution: LLM calls (None if any stage's count is unknown) and
+    prompt tokens per call over the stages whose count is known."""
+    rows = []
+    for eid, g in stages.groupby("execution_id"):
+        calls = pd.to_numeric(g["iterations"], errors="coerce")
+        known = calls.notna() & (calls > 0)
+        tokens = pd.to_numeric(g["tokens_input"], errors="coerce")
+        rows.append({
+            "execution_id": eid,
+            "llm_calls": None if calls.isna().any() else float(calls.sum()),
+            "prompt_tokens_per_call": (
+                float(tokens[known].sum() / calls[known].sum()) if known.any() else None
+            ),
+        })
+    return pd.DataFrame(rows, columns=["execution_id", "llm_calls", "prompt_tokens_per_call"])
+
+
+def get_execution_frame(run_ids: list[str]) -> pd.DataFrame:
+    """One row per execution across *run_ids*, with each run's model and the
+    measures in SPREAD_METRICS (NaN = unknown, never 0).
+
+    Runs recorded before per-stage rows existed fall back to the
+    execution's own iteration count, which is its LLM-call count.
+    """
+    store = _get_store()
+    frames = []
+    for rid in run_ids:
+        ex = store.get_executions(rid)
+        if ex.empty:
+            continue
+        run = store.get_run(rid)
+        ex = ex.assign(model=run.iloc[0]["model"] if len(run) else None)
+        calls = _stage_call_counts(store.get_stage_executions(rid))
+        ex = ex.merge(calls, on="execution_id", how="left")
+        no_stages = ~ex["execution_id"].isin(calls["execution_id"])
+        legacy_calls = pd.to_numeric(ex["iterations"], errors="coerce")
+        ex.loc[no_stages, "llm_calls"] = legacy_calls[no_stages]
+        ex.loc[no_stages, "prompt_tokens_per_call"] = (
+            pd.to_numeric(ex["tokens_input"], errors="coerce") / legacy_calls.where(legacy_calls > 0)
+        )[no_stages]
+        frames.append(ex)
+    if not frames:
+        return pd.DataFrame(columns=["run_id", "model", "platform_id", "story_id", *SPREAD_METRICS])
+    df = pd.concat(frames, ignore_index=True)
+    df["tokens_total"] = (
+        pd.to_numeric(df["tokens_input"], errors="coerce")
+        + pd.to_numeric(df["tokens_output"], errors="coerce")
+    )
+    for col in SPREAD_METRICS:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df["platform_name"] = df["platform_id"].map(get_platform_name)
+    return df
+
+
+def pick_story(df: pd.DataFrame, story_id: str | None) -> str | None:
+    """The story to chart: *story_id* if given, else the most common one.
+
+    Repeats of different stories are never pooled into one spread.
+    """
+    if story_id or df.empty:
+        return story_id
+    return str(df["story_id"].value_counts().idxmax())
+
+
+def get_criteria_rates(df: pd.DataFrame) -> dict[str, dict[str, tuple[int, int]]]:
+    """``{platform_id: {criterion: (met, executions)}}`` from criteria_results.
+
+    Executions without acceptance results are left out, not counted as fails.
+    """
+    out: dict[str, dict[str, tuple[int, int]]] = {}
+    if "criteria_results" not in df.columns:
+        return out
+    for pid, g in df.groupby("platform_id"):
+        results = [json.loads(r) for r in g["criteria_results"] if isinstance(r, str) and r]
+        if not results:
+            continue
+        crits = sorted({k for r in results for k in r})
+        out[str(pid)] = {
+            c: (sum(1 for r in results if r.get(c) is True), sum(1 for r in results if c in r))
+            for c in crits
+        }
+    return out

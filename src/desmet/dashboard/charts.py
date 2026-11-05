@@ -358,62 +358,154 @@ def bar_efficiency_breakdown(
 
 
 def heatmap_criteria(
-    criteria_data: dict[str, dict[str, bool | None]],
-    title: str = "Acceptance Criteria",
+    rates: dict[str, dict[str, tuple[int, int]]],
+    title: str = "Hidden Acceptance Criteria",
 ) -> dict[str, Any]:
-    """Heatmap showing pass/fail/N-A for every platform-criterion pair."""
-    platform_ids = list(criteria_data.keys())
-    platform_names = [get_platform_name(pid) for pid in platform_ids]
+    """Pass rate over repeats for every platform x criterion; each cell is
+    labelled met/executions.  Input from ``data.get_criteria_rates``."""
+    platform_ids = sorted(rates)
+    all_criteria = sorted({c for crit in rates.values() for c in crit})
 
-    all_criteria: list[str] = []
-    for crit_dict in criteria_data.values():
-        for cid in crit_dict:
-            if cid not in all_criteria:
-                all_criteria.append(cid)
-
-    criteria_labels = [c.replace("_", " ").title() for c in all_criteria]
-
-    # ECharts heatmap data: [x_index, y_index, value]
+    # ECharts heatmap data: [x_index, y_index, value]; per-item labels and
+    # tooltips are plain strings (options must stay JSON).
     data = []
     for xi, pid in enumerate(platform_ids):
         for yi, cid in enumerate(all_criteria):
-            val = criteria_data[pid].get(cid)
-            if val is True:
-                data.append([xi, yi, 1])
-            elif val is False:
-                data.append([xi, yi, 0])
-            else:
-                data.append([xi, yi, 0.5])
+            if cid not in rates[pid]:
+                continue
+            met, n = rates[pid][cid]
+            data.append(dict(
+                value=[xi, yi, round(met / n, 3) if n else 0],
+                label=dict(formatter=f"{met}/{n}", color="#0a0a0a" if n and met / n >= 0.6 else "#ffffff"),
+                tooltip=dict(formatter=f"{get_platform_name(pid)} · {cid}<br/>{met} of {n} executions met it"),
+            ))
 
     opt = _base_option(title)
-    opt["tooltip"] = {
-        **_TOOLTIP_DEFAULTS,
-        "trigger": "item",
-    }
-    opt["grid"] = dict(left="30%", right=20, top=45, bottom=30)
+    opt["tooltip"] = {**_TOOLTIP_DEFAULTS, "trigger": "item"}
+    opt["grid"] = dict(left=90, right=20, top=45, bottom=60)
     opt["xAxis"] = dict(
         type="category",
-        data=platform_names,
-        splitArea=dict(show=True),
-        axisLabel=dict(color=_AXIS_TEXT, fontFamily=_FONT, fontSize=11, rotate=30),
+        data=[get_platform_name(pid) for pid in platform_ids],
+        axisLabel=dict(color=_AXIS_TEXT, fontFamily=_FONT, fontSize=11, interval=0, rotate=20),
     )
     opt["yAxis"] = dict(
         type="category",
-        data=criteria_labels,
+        data=all_criteria,
+        inverse=True,
         axisLabel=dict(color=_AXIS_TEXT, fontFamily=_FONT, fontSize=11),
     )
+    # One hue, dark (none met) to light (all met) on the dark surface.
     opt["visualMap"] = dict(
-        min=0, max=1,
-        show=False,
-        inRange=dict(color=["#ef4444", "#4b5563", "#22c55e"]),
+        min=0, max=1, show=False,
+        inRange=dict(color=["#1f2937", "#184f95", "#2a78d6", "#86b6ef"]),
     )
     opt["series"] = [dict(
         type="heatmap",
         data=data,
-        label=dict(show=True, color="white", fontSize=11),
+        label=dict(show=True, color="#ffffff", fontFamily=_FONT, fontSize=11),
         itemStyle=dict(borderWidth=2, borderColor="#0a0a0a"),
     )]
+    return opt
 
+
+# Model / run series: categorical slots tuned for the dark surface, in fixed
+# order, each with its own marker so identity is never colour alone.
+_SERIES_COLOURS = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"]
+_SERIES_SYMBOLS = ["circle", "rect", "diamond", "triangle", "roundRect", "pin", "arrow", "circle"]
+
+
+def _fmt(v: float) -> str:
+    if abs(v) >= 1000:
+        return f"{v:,.0f}"
+    if abs(v) >= 1:
+        return f"{v:,.2f}"
+    return f"{v:.4f}"
+
+
+def spread_by_platform(
+    df: pd.DataFrame,
+    metric: str,
+    metric_label: str,
+    series_col: str = "series",
+    log: bool = False,
+    title: str = "",
+) -> dict[str, Any]:
+    """Median, range and every repeat of *metric* per platform, one series
+    per value of *series_col* (a run or model).
+
+    Averages hide a 2x outlier among three repeats; this shows each repeat.
+    Unknown values (NaN) are left out and the tooltip says how many repeats
+    the median covers.
+    """
+    platform_ids = sorted(df["platform_id"].unique())
+    names = [get_platform_name(p) for p in platform_ids]
+    series_keys = list(dict.fromkeys(df[series_col]))
+    m = len(series_keys)
+    width = min(0.6, 0.18 * m)
+
+    series: list[dict[str, Any]] = []
+    for j, key in enumerate(series_keys[: len(_SERIES_COLOURS)]):
+        colour = _SERIES_COLOURS[j]
+        symbol = _SERIES_SYMBOLS[j]
+        offset = (j - (m - 1) / 2) * (width / max(m - 1, 1)) if m > 1 else 0.0
+        ranges: list[Any] = []
+        repeats: list[dict[str, Any]] = []
+        medians: list[dict[str, Any]] = []
+        for i, pid in enumerate(platform_ids):
+            sub = df[(df[series_col] == key) & (df["platform_id"] == pid)]
+            vals = [float(v) for v in sub[metric] if pd.notna(v) and (not log or v > 0)]
+            if not vals:
+                continue
+            x = i + offset
+            med = float(pd.Series(vals).median())
+            ranges += [[x, min(vals)], [x, max(vals)], "-"]
+            for r, v in zip(sub["repeat_index"], sub[metric]):
+                if pd.notna(v) and (not log or v > 0):
+                    repeats.append(dict(
+                        value=[x, float(v)],
+                        tooltip=dict(formatter=f"{key} · {names[i]}<br/>repeat {int(r or 0) + 1}: {_fmt(float(v))}"),
+                    ))
+            medians.append(dict(
+                value=[x, med],
+                tooltip=dict(formatter=(
+                    f"{key} · {names[i]}<br/>median {_fmt(med)}"
+                    f" (range {_fmt(min(vals))}–{_fmt(max(vals))}, {len(vals)} of {len(sub)} repeats known)"
+                )),
+            ))
+        # Same name on all three series so the legend toggles them together.
+        series += [
+            dict(type="line", name=key, xAxisIndex=1, data=ranges, symbol="none", silent=True,
+                 itemStyle=dict(color=colour), lineStyle=dict(color=colour, width=2),
+                 tooltip=dict(show=False), connectNulls=False),
+            dict(type="scatter", name=key, xAxisIndex=1, data=repeats, symbol="emptyCircle",
+                 symbolSize=7, itemStyle=dict(color=colour)),
+            dict(type="scatter", name=key, xAxisIndex=1, data=medians, symbol=symbol,
+                 symbolSize=12, itemStyle=dict(color=colour, borderColor="#0a0a0a", borderWidth=1.5), z=3),
+        ]
+
+    opt = _base_option(title)
+    opt["tooltip"] = {**_TOOLTIP_DEFAULTS, "trigger": "item"}
+    opt["legend"] = {**_LEGEND_DEFAULTS, "data": [
+        dict(name=k, icon=_SERIES_SYMBOLS[j]) for j, k in enumerate(series_keys[: len(_SERIES_COLOURS)])
+    ]}
+    opt["grid"] = dict(left=80, right=20, top=45, bottom=60)
+    # A category axis for the labels and a hidden value axis on the same
+    # span for the offset points: category i sits at value i.
+    opt["xAxis"] = [
+        {**_axis_defaults(), "type": "category", "data": names,
+         "axisLabel": {**_axis_defaults()["axisLabel"], "interval": 0}},
+        {"type": "value", "min": -0.5, "max": len(names) - 0.5, "show": False},
+    ]
+    opt["yAxis"] = {
+        **_axis_defaults(),
+        "type": "log" if log else "value",
+        # Keep the axis at the plot edge, not at x = 0 of the hidden axis.
+        "axisLine": {**_axis_defaults()["axisLine"], "onZero": False},
+        "name": metric_label + (" (log)" if log else ""),
+        "nameLocation": "middle",
+        "nameGap": 60,
+    }
+    opt["series"] = series
     return opt
 
 
