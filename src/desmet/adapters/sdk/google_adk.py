@@ -165,7 +165,16 @@ class GoogleADKAdapter(ToolAgentAdapter):
             Provider.ANTHROPIC: "anthropic",
         }
         prefix = prefix_map.get(cfg.provider, "openai")
-        return LiteLlm(model=f"{prefix}/{cfg.model}")
+        # LiteLLM drops GenerateContentConfig.http_options, so the per-call
+        # timeout must go to LiteLlm itself (forwarded to acompletion);
+        # otherwise litellm's 600 s default applies. num_retries pins
+        # LiteLLM-level retries to the same value as the other adapters'
+        # SDK clients, whatever the litellm version's default.
+        return LiteLlm(
+            model=f"{prefix}/{cfg.model}",
+            timeout=cfg.timeout_seconds,
+            num_retries=cfg.max_retries,
+        )
 
     async def initialize(self) -> None:
         try:
@@ -386,6 +395,11 @@ class GoogleADKAdapter(ToolAgentAdapter):
                                 text,
                                 metadata={"agent": "planner"},
                             )
+                    # Count the fallback call like the structured path does:
+                    # tokens, cost and the shared LLM-call budget.
+                    usage = getattr(event, "usage_metadata", None)
+                    if usage:
+                        collector.record_llm_response(raw_usage=usage)
 
                 duration_ms = (time.monotonic() - t0) * 1000
                 collector.record_llm_response(raw_usage=None, duration_ms=duration_ms)

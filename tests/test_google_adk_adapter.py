@@ -139,6 +139,20 @@ class TestGoogleADKAdapterStructure:
         result = adapter._resolve_model_id(cfg)
         assert getattr(result, "model", None) == "openrouter/anthropic/claude-sonnet-4"
 
+    def test_litellm_gets_call_timeout_and_retries(self):
+        """LiteLLM ignores GenerateContentConfig.http_options, so the per-call
+        timeout and retry count must be passed to LiteLlm (else 600 s default)."""
+        pytest.importorskip("google.adk.models.lite_llm")
+        from desmet.adapters.sdk.google_adk import GoogleADKAdapter
+        from desmet.llm_config import LLMConfig, Provider
+        cfg = LLMConfig(
+            model="z-ai/glm-5.3", temperature=0.0, provider=Provider.OPENROUTER,
+            api_key="test", timeout_seconds=120.0, max_retries=0,
+        )
+        result = GoogleADKAdapter()._resolve_model_id(cfg)
+        assert result._additional_args["timeout"] == 120.0
+        assert result._additional_args["num_retries"] == 0
+
 
 class TestObservabilityMetadata:
     def test_observability_reports_replay(self):
@@ -294,3 +308,42 @@ async def test_planner_spent_budget_skips_the_loop(monkeypatch, tmp_path):
     assert runs == []
     assert budget_exhausted(collector.trace)
     assert success is False
+
+
+async def test_freetext_planner_fallback_records_usage(monkeypatch):
+    """When the structured planner fails, the free-text fallback's paid call
+    must be counted (tokens + shared LLM-call budget), like the structured one."""
+    pytest.importorskip("google.adk")
+    from types import SimpleNamespace
+
+    import google.adk.runners
+
+    from desmet.adapters._shared.observation import ObservationCollector
+    from desmet.adapters._shared.retry import ProgressReporter
+    from desmet.adapters.sdk.google_adk import GoogleADKAdapter
+    from desmet.harness.trace import AgentTrace
+
+    class FakeRunner:
+        def __init__(self, *, app_name, **kw):
+            self.app_name = app_name
+
+        async def run_async(self, **kw):
+            if self.app_name == "desmet_planner":
+                raise ValueError("structured output not supported")
+            yield SimpleNamespace(
+                content=SimpleNamespace(parts=[SimpleNamespace(text="1. write app.py")]),
+                usage_metadata={"prompt_token_count": 50, "candidates_token_count": 7},
+            )
+
+    monkeypatch.setattr(google.adk.runners, "Runner", FakeRunner)
+    adapter = GoogleADKAdapter(config={"model": "gemini-2.5-flash"})
+    adapter._model_id = "gemini-2.5-flash"
+    collector = ObservationCollector(AgentTrace())
+    plan = await adapter._run_planner(
+        "codegen", "p", collector, ProgressReporter(callback=None, collector=collector),
+    )
+    trace = collector.trace
+    assert trace.metadata["plan_source"] == "freetext"
+    assert plan.steps
+    assert trace.total_tokens_input == 50 and trace.total_tokens_output == 7
+    assert trace.metadata["llm_calls"] == 1
