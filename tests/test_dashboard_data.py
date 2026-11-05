@@ -202,3 +202,109 @@ def test_framework_metrics_none_when_no_cost_data():
     metrics = resp.json()["platforms"][0]["metrics"]
     assert metrics["cost_usd"] is None
     assert metrics["total_tokens"] is None
+
+
+def test_story_availability_counts_repeats_and_trace_only_pairs():
+    from desmet.dashboard.data import get_story_availability
+
+    data = {
+        "platforms": {
+            "p": {
+                "story_metrics": [
+                    {"story_id": "US-001", "success": True, "scored": True, "wall_clock_seconds": 10,
+                     "tokens_input": 100, "tokens_output": 50, "api_cost_usd": 0.2},
+                    {"story_id": "US-001", "success": False, "scored": False, "wall_clock_seconds": 30,
+                     "tokens_input": 300, "tokens_output": 150, "api_cost_usd": None},
+                ]
+            }
+        }
+    }
+    out = get_story_availability(data, {("p", "US-001"), ("q", "US-002")})
+
+    a = out["p"]["US-001"]
+    assert (a["repeats"], a["passed"], a["scored"]) == (2, 1, 1)
+    assert a["wall_clock_seconds"] == 20
+    assert a["tokens"] == 300
+    assert a["cost_usd"] == 0.2
+    assert a["has_trace"] is True
+    # Trace on disk but no row in this run.
+    assert out["q"]["US-002"]["repeats"] == 0
+    assert out["q"]["US-002"]["has_trace"] is True
+
+
+def test_own_trace_file_resolves_foreign_paths_and_execution_ids(tmp_path, monkeypatch):
+    from desmet.dashboard import data
+
+    monkeypatch.setattr(data, "LOGS_DIR", tmp_path)
+    pair = tmp_path / "p" / "US-001"
+    pair.mkdir(parents=True)
+    (pair / "p_US-001_r0_stages.json").write_text("{}", encoding="utf-8")
+    (pair / "exec-7_stages.json").write_text("{}", encoding="utf-8")
+
+    # Absolute path written inside a container: found by file name.
+    sm = {"trace_path": "/app/results/logs/p/US-001/p_US-001_r0_stages.json"}
+    assert data.own_trace_file(sm, "p", "US-001") == pair / "p_US-001_r0_stages.json"
+    # No recorded path: found by the runner's execution-id file name.
+    assert data.own_trace_file({"execution_id": "exec-7"}, "p", "US-001") == pair / "exec-7_stages.json"
+    assert data.own_trace_file({"execution_id": "missing"}, "p", "US-001") is None
+
+
+def test_story_availability_reports_unmatched_traces(tmp_path, monkeypatch):
+    from desmet.dashboard import data
+
+    monkeypatch.setattr(data, "LOGS_DIR", tmp_path)
+    rows = {"platforms": {"p": {"story_metrics": [{"story_id": "US-001", "execution_id": "gone"}]}}}
+
+    out = data.get_story_availability(rows, {("p", "US-001")})
+
+    assert out["p"]["US-001"]["has_trace"] is True
+    assert out["p"]["US-001"]["trace_matched"] is False
+
+
+def test_passed_uses_stages_passed_and_falls_back_to_status():
+    import pandas as pd
+    from desmet.dashboard.data import _passed
+
+    g = pd.DataFrame({
+        "status": ["completed", "completed", "completed", "failed"],
+        "stages_passed": [True, False, None, None],
+    })
+    assert _passed(g).tolist() == [True, False, True, False]
+    assert _passed(g.drop(columns="stages_passed")).tolist() == [True, True, True, False]
+
+
+def test_stage_call_counts_unknown_when_a_stage_timed_out():
+    import pandas as pd
+    from desmet.dashboard.data import _stage_call_counts
+
+    stages = pd.DataFrame({
+        "execution_id": ["a", "a", "b", "b"],
+        "iterations": [10, 5, 4, None],
+        "tokens_input": [1000, 500, 400, 9000],
+    })
+    out = _stage_call_counts(stages).set_index("execution_id")
+    assert out.loc["a", "llm_calls"] == 15
+    assert out.loc["a", "prompt_tokens_per_call"] == 100
+    assert pd.isna(out.loc["b", "llm_calls"])
+    # The timed-out stage's tokens are left out of the per-call ratio.
+    assert out.loc["b", "prompt_tokens_per_call"] == 100
+
+
+def test_criteria_rates_skip_executions_without_results():
+    import pandas as pd
+    from desmet.dashboard.data import get_criteria_rates
+
+    df = pd.DataFrame({
+        "platform_id": ["crewai", "crewai", "crewai", "langgraph"],
+        "criteria_results": ['{"AC-1": true, "AC-2": false}', '{"AC-1": true, "AC-2": true}', None, None],
+    })
+    assert get_criteria_rates(df) == {"crewai": {"AC-1": (2, 2), "AC-2": (1, 2)}}
+
+
+def test_pick_story_defaults_to_most_common():
+    import pandas as pd
+    from desmet.dashboard.data import pick_story
+
+    df = pd.DataFrame({"story_id": ["US-001", "US-001", "US-010"]})
+    assert pick_story(df, None) == "US-001"
+    assert pick_story(df, "US-010") == "US-010"

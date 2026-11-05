@@ -162,6 +162,7 @@ class TestFlowiseStageExecution:
                 "desmet.adapters._shared.visual_base.audit_workspace",
                 return_value=[],
             ),
+            patch("desmet.adapters._shared.visual_base.RetryPolicy.validate", return_value=(True, "ok")),
             patch(
                 "desmet.adapters.visual.flowise_templates.build_chatflow",
                 return_value={"nodes": [], "edges": []},

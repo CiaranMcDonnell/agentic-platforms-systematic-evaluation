@@ -1,16 +1,17 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { get } from 'svelte/store';
-  import { scoringTarget } from '../stores';
+  import { scoringTarget, selectedResultsRunId } from '../stores';
   import {
     fetchRubric, fetchStoryScore, submitScore,
-    fetchLangSmithStatus,
+    fetchLangSmithStatus, fetchAvailability,
   } from '../api';
-  import type { ScoringRubric, StoryScoreData } from '../api';
+  import type { AvailabilityData, ScoringRubric, StoryScoreData } from '../api';
   import { store } from '../data.svelte';
   import TraceViewer from '../components/TraceViewer.svelte';
   import LangSmithTraceViewer from '../components/LangSmithTraceViewer.svelte';
-  import AgentGraph from '../components/AgentGraph.svelte';
+  import ExecutionView from '../components/ExecutionView.svelte';
+  import ScoringPicker from '../components/ScoringPicker.svelte';
 
   let rubric = $state<ScoringRubric | null>(null);
 
@@ -22,8 +23,32 @@
   let saving = $state(false);
   let saveMsg = $state('');
   let loadingScore = $state(false);
+  let selectedRepeat = $state<number | null>(null);
   let activeTab = $state<'langfuse' | 'langsmith' | 'graph'>('langfuse');
   let langsmithAvailable = $state<boolean | null>(null);
+  let availability = $state<AvailabilityData | null>(null);
+
+  // Which platform/story pairs have a run (or at least a trace), so the
+  // picker can say so before anything is picked.
+  async function loadAvailability() {
+    try {
+      availability = await fetchAvailability();
+    } catch {
+      availability = null;
+    }
+  }
+
+  $effect(() => {
+    void $selectedResultsRunId;
+    loadAvailability();
+  });
+
+  function pickTarget(platformId: string, storyId: string) {
+    if (platformId === selectedPlatform && storyId === selectedStory) return;
+    selectedPlatform = platformId;
+    selectedStory = storyId;
+    onTargetChange();
+  }
 
   onMount(async () => {
     const rub = await fetchRubric();
@@ -45,12 +70,30 @@
     }
   });
 
+  // Platform/story change: forget the repeat and load the story's first one.
+  function onTargetChange() {
+    selectedRepeat = null;
+    return loadScore();
+  }
+
+  let loadSeq = 0;
+
   async function loadScore() {
     if (!selectedPlatform || !selectedStory) return;
+    const seq = ++loadSeq;
     saveMsg = '';
     loadingScore = true;
+    // Drop the old form so evidence/scores can never be saved onto another repeat.
     scoreData = null;
-    scoreData = await fetchStoryScore(selectedPlatform, selectedStory);
+    let data = await fetchStoryScore(selectedPlatform, selectedStory, selectedRepeat);
+    const repeats = data?.repeat_indices ?? [];
+    if (selectedRepeat === null && repeats.length > 1) {
+      // Repeats are scored one at a time; default to the first that exists.
+      selectedRepeat = repeats[0];
+      if (repeats[0] !== 0) data = await fetchStoryScore(selectedPlatform, selectedStory, selectedRepeat);
+    }
+    if (seq !== loadSeq) return;  // superseded by a newer selection
+    scoreData = data;
     loadingScore = false;
     // Lazy-check LangSmith only when relevant (langgraph + has run ID)
     if (selectedPlatform === 'langgraph' && scoreData?.langsmith_run_id && langsmithAvailable === null) {
@@ -82,8 +125,10 @@
         story_id: selectedStory,
         scores,
         notes,
+        ...(selectedRepeat !== null ? { repeat_index: selectedRepeat } : {}),
       });
       saveMsg = 'Saved';
+      loadAvailability();
     } catch {
       saveMsg = 'Error saving';
     }
@@ -138,29 +183,26 @@
 <div>
   <h1 style="margin-bottom: 28px;">Scoring</h1>
 
-  <!-- Selectors -->
-  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 28px;">
-    <div>
-      <label class="label" for="score-platform">Platform</label>
-      <select id="score-platform" class="input" bind:value={selectedPlatform} onchange={loadScore}>
-        <option value="">Select platform…</option>
-        {#each store.platforms as p}
-          <option value={p.id}>{p.name}</option>
-        {/each}
-      </select>
-    </div>
-    <div>
-      <label class="label" for="score-story">Story</label>
-      <select id="score-story" class="input" bind:value={selectedStory} onchange={loadScore}>
-        <option value="">Select story…</option>
-        {#each store.stories as s}
-          <option value={s.id}>{s.title}</option>
-        {/each}
-      </select>
-    </div>
-  </div>
+  <ScoringPicker
+    platforms={store.platforms}
+    stories={store.stories}
+    availability={availability?.platforms ?? null}
+    {selectedPlatform}
+    {selectedStory}
+    onselect={pickTarget}
+  />
 
   {#if scoreData && rubric}
+    {#if (scoreData.repeat_indices?.length ?? 0) > 1}
+      <div style="margin-bottom: 28px; max-width: 240px;">
+        <label class="label" for="score-repeat">Repeat</label>
+        <select id="score-repeat" class="input" bind:value={selectedRepeat} onchange={loadScore}>
+          {#each scoreData.repeat_indices ?? [] as r}
+            <option value={r}>Repeat {r + 1}</option>
+          {/each}
+        </select>
+      </div>
+    {/if}
     <!-- Execution Evidence -->
     <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 28px;">
       <div class="card">
@@ -260,7 +302,7 @@
         <div class="trace-tabs">
           {#if hasLangfuseData}
             <button class="trace-tab" class:active={activeTab === 'langfuse'}
-              onclick={() => activeTab = 'langfuse'}>Langfuse Trace</button>
+              onclick={() => activeTab = 'langfuse'}>{scoreData.langfuse_trace_id ? 'Langfuse Trace' : 'Local Trace'}</button>
           {/if}
           {#if showLangSmithTab}
             <button class="trace-tab" class:active={activeTab === 'langsmith'}
@@ -270,9 +312,16 @@
             onclick={() => activeTab = 'graph'}>Agent Graph</button>
         </div>
       </div>
+      {#if scoreData.trace && scoreData.trace_matched === false}
+        <div class="trace-warn">
+          This run's own trace file is not on disk, so local trace data here is the newest file for
+          this platform and story and may come from another run.
+          {#if scoreData.langfuse_trace_id}The Langfuse trace is this run's own.{/if}
+        </div>
+      {/if}
 
       {#if activeTab === 'graph'}
-        <AgentGraph platformId={selectedPlatform} storyId={selectedStory} langfuseTraceId={scoreData.langfuse_trace_id} />
+        <ExecutionView platformId={selectedPlatform} storyId={selectedStory} langfuseTraceId={scoreData.langfuse_trace_id} repeatIndex={selectedRepeat ?? 0} availability={availability?.platforms ?? null} />
       {:else if showLangSmithTab && activeTab === 'langsmith'}
         <LangSmithTraceViewer runId={scoreData.langsmith_run_id!} />
       {:else if scoreData.langfuse_trace_id}
@@ -334,6 +383,16 @@
   .score-level.active { border-color: var(--text-0); background: var(--bg-2); }
   .score-level-num { font-family: var(--mono); font-size: 12px; font-weight: 700; color: var(--text-0); }
   .score-level-desc { font-size: 10px; color: var(--text-2); line-height: 1.3; }
+  .trace-warn {
+    margin-bottom: 12px;
+    padding: 8px 12px;
+    font-size: 12px;
+    color: var(--yellow);
+    background: color-mix(in srgb, var(--yellow) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--yellow) 35%, transparent);
+    border-radius: 6px;
+  }
+
   .trace-tabs {
     display: flex;
     gap: 4px;

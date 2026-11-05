@@ -173,21 +173,28 @@ def load_results_raw(run_id: str | None = None) -> dict[str, Any]:
         for _, row in group.iterrows():
             sm: dict[str, Any] = {
                 "story_id": row["story_id"],
+                "repeat_index": _repeat_index(row),
+                # Pin the execution to its own trace file and Langfuse trace,
+                # so views never pick up another run's logs for the pair.
+                "execution_id": _opt_str(row, "execution_id"),
+                "trace_path": _opt_str(row, "trace_path"),
+                "langfuse_trace_id": _opt_str(row, "langfuse_trace_id"),
                 "success": row["status"] == "completed",
                 "wall_clock_seconds": row["wall_clock_seconds"],
-                "iterations": int(row["iterations"] or 0),
+                # NULL = unknown (timed-out stage), not 0.
+                "iterations": None if pd.isna(row["iterations"]) else int(row["iterations"]),
                 "tool_calls": int(row["tool_calls"] or 0),
                 "tokens_input": int(row["tokens_input"] or 0),
                 "tokens_output": int(row["tokens_output"] or 0),
                 "api_cost_usd": row["cost_usd"],
-                "pipeline_completeness_score": row["rubric_pipeline_completeness"],
-                "tool_integration_score": row["rubric_tool_integration"],
-                "error_recovery_score": row["rubric_error_recovery"],
-                "trace_quality_score": row["rubric_trace_quality"],
-                "time_efficiency_score": row["rubric_time_efficiency"],
-                "autonomy_score": row["rubric_autonomy"],
+                "pipeline_completeness_score": _rubric(row, "pipeline_completeness"),
+                "tool_integration_score": _rubric(row, "tool_integration"),
+                "error_recovery_score": _rubric(row, "error_recovery"),
+                "trace_quality_score": _rubric(row, "trace_quality"),
+                "time_efficiency_score": _rubric(row, "time_efficiency"),
+                "autonomy_score": _rubric(row, "autonomy"),
                 "scored": any(
-                    row.get(f"rubric_{d}") not in (None, 0.0)
+                    _rubric(row, d) not in (None, 0.0)
                     for d in ["pipeline_completeness", "tool_integration",
                               "error_recovery", "trace_quality",
                               "time_efficiency", "autonomy"]
@@ -213,8 +220,8 @@ def load_results_raw(run_id: str | None = None) -> dict[str, Any]:
             "platform_id": str(pid),
             "platform_name": str(pid),
             "stories_total": len(group),
-            "stories_completed": int((group["status"] == "completed").sum()),
-            "stories_failed": int((group["status"] != "completed").sum()),
+            "stories_completed": int(_passed(group).sum()),
+            "stories_failed": int((~_passed(group)).sum()),
             "overall_score": float(group["overall_score"].mean()) if group["overall_score"].notna().any() else 0.0,
             "story_metrics": story_metrics,
             "dimension_scores": dimension_scores,
@@ -228,6 +235,20 @@ def load_results_raw(run_id: str | None = None) -> dict[str, Any]:
         "run_id": target_id,
         "platforms": platforms,
     }
+
+
+def _passed(group: pd.DataFrame) -> pd.Series:
+    """Whether each execution passed every stage.
+
+    ``status`` is "completed" whenever the harness finished the execution,
+    whatever its stages did, so it is only the fallback for rows recorded
+    before ``stages_passed`` existed.
+    """
+    status_ok = group["status"] == "completed"
+    if "stages_passed" not in group.columns:
+        return status_ok
+    passed = group["stages_passed"].astype("boolean")
+    return passed.fillna(status_ok).astype(bool)
 
 
 def save_results(data: dict[str, Any]) -> None:
@@ -344,8 +365,12 @@ def update_story_scores(
     story_id: str,
     scores: Mapping[str, float],
     notes: dict[str, str],
+    repeat_index: int | None = None,
 ) -> dict[str, Any]:
     """Mutate *data* in-place: write dimension scores for a story.
+
+    Only the record for *repeat_index* is written (records without a
+    ``repeat_index`` count as repeat 0; ``None`` means 0).
 
     For each key in *scores* (e.g. ``"correctness"``), sets
     ``sm["correctness_score"] = value``.  Also stores *notes* under
@@ -356,13 +381,33 @@ def update_story_scores(
     platforms = data.get("platforms", {})
     pdata = platforms.get(platform_id, {})
     for sm in pdata.get("story_metrics", []):
-        if sm.get("story_id") == story_id:
+        if sm.get("story_id") == story_id and (sm.get("repeat_index") or 0) == (repeat_index or 0):
             for dim, value in scores.items():
                 sm[f"{dim}_score"] = value
             sm["scoring_notes"] = dict(notes)
             sm["scored"] = True
             break
     return data
+
+
+def _repeat_index(row: Any) -> int:
+    """Repeat index from an executions row; legacy NULL/NaN counts as 0."""
+    val = row.get("repeat_index")
+    return 0 if val is None or pd.isna(val) else int(val)
+
+
+def _opt_str(row: Any, col: str) -> str | None:
+    """String column from an executions row; NULL/NaN/empty means absent."""
+    val = row.get(col)
+    if val is None or pd.isna(val) or not str(val):
+        return None
+    return str(val)
+
+
+def _rubric(row: Any, dim: str) -> float | None:
+    """Rubric value from an executions row; NULL/NaN means unscored."""
+    val = row.get(f"rubric_{dim}")
+    return None if val is None or pd.isna(val) else float(val)
 
 
 def is_story_scored(story_metrics: dict[str, Any]) -> bool:
@@ -409,9 +454,71 @@ def get_rubric_dim_averages(
     return result
 
 
+def get_story_availability(
+    data: dict[str, Any],
+    traced: set[tuple[str, str]],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Per platform and story: what the run holds and whether a trace exists.
+
+    ``traced`` is the set of ``(platform_id, story_id)`` pairs with trace
+    files on disk; a pair can have a trace without a row in this run (an
+    earlier run's logs) and vice versa. Returns
+    ``{platform_id: {story_id: summary}}`` where summary counts repeats,
+    passes and scored repeats and averages time, tokens and cost.
+    """
+    out: dict[str, dict[str, dict[str, Any]]] = {}
+    for pid, pdata in data.get("platforms", {}).items():
+        by_story: dict[str, list[dict[str, Any]]] = {}
+        for sm in pdata.get("story_metrics", []):
+            by_story.setdefault(str(sm["story_id"]), []).append(sm)
+        for sid, rows in by_story.items():
+            n = len(rows)
+            costs = [float(r["api_cost_usd"]) for r in rows if r.get("api_cost_usd") is not None and not pd.isna(r["api_cost_usd"])]
+            out.setdefault(str(pid), {})[sid] = {
+                "repeats": n,
+                "passed": sum(1 for r in rows if r.get("success")),
+                "scored": sum(1 for r in rows if is_story_scored(r)),
+                "wall_clock_seconds": sum(float(r.get("wall_clock_seconds") or 0) for r in rows) / n,
+                "tokens": sum(int(r.get("tokens_input") or 0) + int(r.get("tokens_output") or 0) for r in rows) / n,
+                "cost_usd": sum(costs) / len(costs) if costs else None,
+                "has_trace": (str(pid), sid) in traced,
+                # Every repeat's own trace file is on disk; otherwise the
+                # views fall back to the pair's newest file from any run.
+                "trace_matched": all(own_trace_file(r, str(pid), sid) for r in rows),
+            }
+    for pid, sid in traced:
+        out.setdefault(pid, {}).setdefault(
+            sid,
+            {
+                "repeats": 0,
+                "passed": 0,
+                "scored": 0,
+                "wall_clock_seconds": None,
+                "tokens": None,
+                "cost_usd": None,
+                "has_trace": True,
+                "trace_matched": False,
+            },
+        )
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Trace loading
 # ---------------------------------------------------------------------------
+
+
+def list_traced_pairs() -> set[tuple[str, str]]:
+    """Every ``(platform_id, story_id)`` with trace files under the logs dir."""
+    if not LOGS_DIR.is_dir():
+        return set()
+    return {
+        (p.name, s.name)
+        for p in LOGS_DIR.iterdir()
+        if p.is_dir()
+        for s in p.iterdir()
+        if s.is_dir() and (any(s.glob("*_stages.json")) or any(s.glob("*_trace.json")))
+    }
 
 
 def list_trace_files(platform_id: str, story_id: str) -> list[Path]:
@@ -429,7 +536,126 @@ def list_trace_files(platform_id: str, story_id: str) -> list[Path]:
     return files
 
 
+def own_trace_file(story_metric: dict[str, Any], platform_id: str, story_id: str) -> Path | None:
+    """The trace file an execution row recorded, if it is still on disk.
+
+    ``trace_path`` is written by whichever process ran the story, so it may
+    be relative, or absolute inside a container; when it does not resolve
+    as written, the same file name is looked up in the pair's logs folder.
+    """
+    pair_dir = LOGS_DIR / platform_id / story_id
+    candidates: list[Path] = []
+    raw = story_metric.get("trace_path")
+    if raw:
+        path = Path(str(raw))
+        candidates += [path] if path.is_absolute() else [REPO_ROOT / path, LOGS_DIR / path]
+        candidates.append(pair_dir / path.name)
+    # The runner names the file after the execution, so that finds it too.
+    if story_metric.get("execution_id"):
+        candidates.append(pair_dir / f"{story_metric['execution_id']}_stages.json")
+    return next((c for c in candidates if c.is_file()), None)
+
+
 def load_trace(trace_path: Path) -> dict[str, Any]:
     """Load a single trace file and return its contents as a dict."""
     with open(trace_path, encoding="utf-8") as fh:
         return json.load(fh)
+
+
+# ---------------------------------------------------------------------------
+# Repeats and cross-run comparison
+# ---------------------------------------------------------------------------
+
+#: Per-execution measures the spread chart can plot: column -> axis label.
+SPREAD_METRICS: dict[str, str] = {
+    "tokens_total": "Tokens",
+    "cost_usd": "Cost (USD)",
+    "wall_clock_seconds": "Wall clock (s)",
+    "llm_calls": "LLM calls",
+    "prompt_tokens_per_call": "Prompt tokens per LLM call",
+}
+
+
+def _stage_call_counts(stages: pd.DataFrame) -> pd.DataFrame:
+    """Per execution: LLM calls (None if any stage's count is unknown) and
+    prompt tokens per call over the stages whose count is known."""
+    rows = []
+    for eid, g in stages.groupby("execution_id"):
+        calls = pd.to_numeric(g["iterations"], errors="coerce")
+        known = calls.notna() & (calls > 0)
+        tokens = pd.to_numeric(g["tokens_input"], errors="coerce")
+        rows.append({
+            "execution_id": eid,
+            "llm_calls": None if calls.isna().any() else float(calls.sum()),
+            "prompt_tokens_per_call": (
+                float(tokens[known].sum() / calls[known].sum()) if known.any() else None
+            ),
+        })
+    return pd.DataFrame(rows, columns=["execution_id", "llm_calls", "prompt_tokens_per_call"])
+
+
+def get_execution_frame(run_ids: list[str]) -> pd.DataFrame:
+    """One row per execution across *run_ids*, with each run's model and the
+    measures in SPREAD_METRICS (NaN = unknown, never 0).
+
+    Runs recorded before per-stage rows existed fall back to the
+    execution's own iteration count, which is its LLM-call count.
+    """
+    store = _get_store()
+    frames = []
+    for rid in run_ids:
+        ex = store.get_executions(rid)
+        if ex.empty:
+            continue
+        run = store.get_run(rid)
+        ex = ex.assign(model=run.iloc[0]["model"] if len(run) else None)
+        calls = _stage_call_counts(store.get_stage_executions(rid))
+        ex = ex.merge(calls, on="execution_id", how="left")
+        no_stages = ~ex["execution_id"].isin(calls["execution_id"])
+        legacy_calls = pd.to_numeric(ex["iterations"], errors="coerce")
+        ex.loc[no_stages, "llm_calls"] = legacy_calls[no_stages]
+        ex.loc[no_stages, "prompt_tokens_per_call"] = (
+            pd.to_numeric(ex["tokens_input"], errors="coerce") / legacy_calls.where(legacy_calls > 0)
+        )[no_stages]
+        frames.append(ex)
+    if not frames:
+        return pd.DataFrame(columns=["run_id", "model", "platform_id", "story_id", *SPREAD_METRICS])
+    df = pd.concat(frames, ignore_index=True)
+    df["tokens_total"] = (
+        pd.to_numeric(df["tokens_input"], errors="coerce")
+        + pd.to_numeric(df["tokens_output"], errors="coerce")
+    )
+    for col in SPREAD_METRICS:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df["platform_name"] = df["platform_id"].map(get_platform_name)
+    return df
+
+
+def pick_story(df: pd.DataFrame, story_id: str | None) -> str | None:
+    """The story to chart: *story_id* if given, else the most common one.
+
+    Repeats of different stories are never pooled into one spread.
+    """
+    if story_id or df.empty:
+        return story_id
+    return str(df["story_id"].value_counts().idxmax())
+
+
+def get_criteria_rates(df: pd.DataFrame) -> dict[str, dict[str, tuple[int, int]]]:
+    """``{platform_id: {criterion: (met, executions)}}`` from criteria_results.
+
+    Executions without acceptance results are left out, not counted as fails.
+    """
+    out: dict[str, dict[str, tuple[int, int]]] = {}
+    if "criteria_results" not in df.columns:
+        return out
+    for pid, g in df.groupby("platform_id"):
+        results = [json.loads(r) for r in g["criteria_results"] if isinstance(r, str) and r]
+        if not results:
+            continue
+        crits = sorted({k for r in results for k in r})
+        out[str(pid)] = {
+            c: (sum(1 for r in results if r.get(c) is True), sum(1 for r in results if c in r))
+            for c in crits
+        }
+    return out

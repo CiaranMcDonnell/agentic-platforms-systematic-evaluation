@@ -12,7 +12,7 @@ from typing import Any
 import duckdb
 import pandas as pd
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 7
 
 _CREATE_SQL = """\
 CREATE TABLE IF NOT EXISTS store_meta (
@@ -27,7 +27,16 @@ CREATE TABLE IF NOT EXISTS runs (
     temperature     FLOAT,
     platforms_filter VARCHAR[],
     stories_filter  VARCHAR[],
-    note            VARCHAR
+    note            VARCHAR,
+    git_sha         VARCHAR,
+    git_dirty       BOOLEAN,
+    provider        VARCHAR,
+    deploy_mode     VARCHAR,
+    execution_mode  VARCHAR,
+    stage_timeout_seconds INTEGER,
+    prompts_sha256  VARCHAR,
+    image_digests   VARCHAR,
+    pricing_snapshot VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS executions (
@@ -63,9 +72,50 @@ CREATE TABLE IF NOT EXISTS executions (
     repeat_index            INTEGER DEFAULT 0,
     resource_peak_memory_bytes  BIGINT,
     resource_avg_cpu_percent    FLOAT,
-    resource_net_tx_bytes       BIGINT
+    resource_net_tx_bytes       BIGINT,
+    stages_passed       BOOLEAN,
+    tests_run           INTEGER,
+    tests_passed        INTEGER,
+    tests_failed        INTEGER,
+    pytest_exit_code    INTEGER,
+    artifact_path       VARCHAR,
+    criteria_results    VARCHAR,
+    deploy_healthy      BOOLEAN,
+    execution_mode      VARCHAR,
+    reported_tests_run    INTEGER,
+    reported_tests_passed INTEGER,
+    reported_tests_failed INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS stage_executions (
+    execution_id    VARCHAR NOT NULL,
+    run_id          VARCHAR NOT NULL,
+    stage_name      VARCHAR NOT NULL,
+    success         BOOLEAN,
+    error_message   VARCHAR,
+    wall_clock_seconds DOUBLE,
+    iterations      INTEGER,
+    tool_calls      INTEGER,
+    tokens_input    BIGINT,
+    tokens_output   BIGINT,
+    cost_usd        DOUBLE,
+    human_interventions INTEGER,
+    timed_out       BOOLEAN,
+    PRIMARY KEY (execution_id, stage_name)
 );
 """
+
+_MANIFEST_COLUMNS = (
+    "git_sha",
+    "git_dirty",
+    "provider",
+    "deploy_mode",
+    "execution_mode",
+    "stage_timeout_seconds",
+    "prompts_sha256",
+    "image_digests",
+    "pricing_snapshot",
+)
 
 
 class ResultStore:
@@ -101,6 +151,65 @@ class ResultStore:
                     "ALTER TABLE executions ADD COLUMN IF NOT EXISTS resource_net_tx_bytes BIGINT",
                 ]:
                     self._conn.execute(col_sql)
+            if current < 3:
+                # NULL on legacy rows: stage outcomes weren't persisted.
+                self._conn.execute(
+                    "ALTER TABLE executions ADD COLUMN IF NOT EXISTS stages_passed BOOLEAN"
+                )
+            if current < 4:
+                # NULL on legacy rows: workspaces weren't verified.
+                for col_sql in [
+                    "ALTER TABLE executions ADD COLUMN IF NOT EXISTS tests_run INTEGER",
+                    "ALTER TABLE executions ADD COLUMN IF NOT EXISTS tests_passed INTEGER",
+                    "ALTER TABLE executions ADD COLUMN IF NOT EXISTS tests_failed INTEGER",
+                    "ALTER TABLE executions ADD COLUMN IF NOT EXISTS pytest_exit_code INTEGER",
+                    "ALTER TABLE executions ADD COLUMN IF NOT EXISTS artifact_path VARCHAR",
+                ]:
+                    self._conn.execute(col_sql)
+            if current < 5:
+                # JSON {criterion_id: met}; NULL when no acceptance tests ran.
+                self._conn.execute(
+                    "ALTER TABLE executions ADD COLUMN IF NOT EXISTS criteria_results VARCHAR"
+                )
+                self._conn.execute(
+                    "ALTER TABLE executions ADD COLUMN IF NOT EXISTS deploy_healthy BOOLEAN"
+                )
+            if current < 6:
+                # NULL on legacy rows: run manifest, execution mode and
+                # per-stage rows weren't recorded.
+                for col in (
+                    "git_sha VARCHAR",
+                    "git_dirty BOOLEAN",
+                    "provider VARCHAR",
+                    "deploy_mode VARCHAR",
+                    "execution_mode VARCHAR",
+                    "stage_timeout_seconds INTEGER",
+                    "prompts_sha256 VARCHAR",
+                    "image_digests VARCHAR",
+                    "pricing_snapshot VARCHAR",
+                ):
+                    self._conn.execute(f"ALTER TABLE runs ADD COLUMN IF NOT EXISTS {col}")
+                for col in (
+                    "execution_mode VARCHAR",
+                    "reported_tests_run INTEGER",
+                    "reported_tests_passed INTEGER",
+                    "reported_tests_failed INTEGER",
+                ):
+                    self._conn.execute(f"ALTER TABLE executions ADD COLUMN IF NOT EXISTS {col}")
+                self._conn.execute(
+                    "CREATE TABLE IF NOT EXISTS stage_executions ("
+                    "execution_id VARCHAR NOT NULL, run_id VARCHAR NOT NULL,"
+                    " stage_name VARCHAR NOT NULL, success BOOLEAN, error_message VARCHAR,"
+                    " wall_clock_seconds DOUBLE, iterations INTEGER, tool_calls INTEGER,"
+                    " tokens_input BIGINT, tokens_output BIGINT, cost_usd DOUBLE,"
+                    " human_interventions INTEGER,"
+                    " PRIMARY KEY (execution_id, stage_name))"
+                )
+            if current < 7:
+                # NULL on legacy rows: stage timeouts weren't recorded.
+                self._conn.execute(
+                    "ALTER TABLE stage_executions ADD COLUMN IF NOT EXISTS timed_out BOOLEAN"
+                )
             self._conn.execute("UPDATE store_meta SET version = ?", [_SCHEMA_VERSION])
 
     # ------------------------------------------------------------------
@@ -131,6 +240,17 @@ class ResultStore:
         now = datetime.now(timezone.utc)
         self._conn.execute("UPDATE runs SET finished_at = ? WHERE run_id = ?", [now, run_id])
 
+    def update_run_manifest(self, run_id: str, manifest: dict[str, Any]) -> None:
+        """Set run manifest columns; unknown keys are ignored, dict/list values stored as JSON."""
+        items = [(k, v) for k, v in manifest.items() if k in _MANIFEST_COLUMNS]
+        if not items:
+            return
+        values = [json.dumps(v) if isinstance(v, (dict, list)) else v for _, v in items]
+        assignments = ", ".join(f"{k} = ?" for k, _ in items)
+        self._conn.execute(
+            f"UPDATE runs SET {assignments} WHERE run_id = ?", [*values, run_id]
+        )
+
     def save_execution(
         self,
         run_id: str,
@@ -139,6 +259,7 @@ class ResultStore:
     ) -> None:
         """Insert one platform×story execution row."""
         fm_json = json.dumps(result.framework_metrics) if result.framework_metrics else None
+        scored = getattr(metrics, "scored_dimensions", set())
         self._conn.execute(
             "INSERT INTO executions ("
             "  execution_id, run_id, platform_id, story_id, status,"
@@ -150,8 +271,12 @@ class ResultStore:
             "  rubric_time_efficiency, rubric_autonomy,"
             "  framework_metrics, trace_path, langfuse_trace_id, langsmith_run_id,"
             "  repeat_index, resource_peak_memory_bytes,"
-            "  resource_avg_cpu_percent, resource_net_tx_bytes"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  resource_avg_cpu_percent, resource_net_tx_bytes, stages_passed,"
+            "  tests_run, tests_passed, tests_failed, pytest_exit_code, artifact_path,"
+            "  criteria_results, deploy_healthy, execution_mode,"
+            "  reported_tests_run, reported_tests_passed, reported_tests_failed"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
+            " ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 result.execution_id,
                 run_id,
@@ -167,12 +292,19 @@ class ResultStore:
                 result.tokens_output,
                 result.api_cost_usd,
                 result.human_interventions,
-                metrics.pipeline_completeness_score,
-                metrics.tool_integration_score,
-                metrics.error_recovery_score,
-                metrics.trace_quality_score,
-                metrics.time_efficiency_score,
-                metrics.autonomy_score,
+                *(
+                    # NULL marks "not scored yet" so it can't be mistaken
+                    # for a genuine 0 when scores are recomputed later.
+                    getattr(metrics, f"{dim}_score") if dim in scored else None
+                    for dim in (
+                        "pipeline_completeness",
+                        "tool_integration",
+                        "error_recovery",
+                        "trace_quality",
+                        "time_efficiency",
+                        "autonomy",
+                    )
+                ),
                 fm_json,
                 result.trace_file,
                 result.langfuse_trace_id,
@@ -181,8 +313,45 @@ class ResultStore:
                 (result.resource_metrics or {}).get("peak_memory_bytes"),
                 (result.resource_metrics or {}).get("avg_cpu_percent"),
                 (result.resource_metrics or {}).get("net_tx_total_bytes"),
+                result.success,
+                # Only meaningful once verification ran; NULL otherwise.
+                result.tests_run if result.artifact_path else None,
+                result.tests_passed if result.artifact_path else None,
+                result.tests_failed if result.artifact_path else None,
+                result.pytest_exit_code,
+                result.artifact_path,
+                json.dumps(result.criteria_results) if result.criteria_results else None,
+                result.deploy_healthy,
+                result.execution_mode,
+                result.reported_tests_run,
+                result.reported_tests_passed,
+                result.reported_tests_failed,
             ],
         )
+        if isinstance(result.raw_result, dict):
+            for stage_name, stage in result.raw_result.items():
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO stage_executions ("
+                    "  execution_id, run_id, stage_name, success, error_message,"
+                    "  wall_clock_seconds, iterations, tool_calls, tokens_input,"
+                    "  tokens_output, cost_usd, human_interventions, timed_out"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        result.execution_id,
+                        run_id,
+                        stage_name,
+                        stage.success,
+                        stage.error_message,
+                        stage.wall_clock_seconds,
+                        stage.iterations,
+                        stage.tool_calls_count,
+                        stage.tokens_input,
+                        stage.tokens_output,
+                        stage.cost_usd,
+                        stage.human_interventions,
+                        bool((stage.framework_metrics or {}).get("timed_out")),
+                    ],
+                )
 
     # ------------------------------------------------------------------
     # Read path
@@ -199,6 +368,13 @@ class ResultStore:
         """All executions for a run as a DataFrame."""
         return self._conn.execute(
             "SELECT * FROM executions WHERE run_id = ? ORDER BY platform_id, story_id",
+            [run_id],
+        ).df()
+
+    def get_stage_executions(self, run_id: str) -> pd.DataFrame:
+        """Per-stage rows for every execution in a run."""
+        return self._conn.execute(
+            "SELECT * FROM stage_executions WHERE run_id = ? ORDER BY execution_id, stage_name",
             [run_id],
         ).df()
 
@@ -258,12 +434,15 @@ class ResultStore:
         platform_id: str,
         story_id: str,
         scores: dict[str, float],
+        *,
+        repeat_index: int | None = None,
     ) -> bool:
         """Update rubric score columns on the execution matching a platform/story.
 
         *scores* keys are dimension names (e.g. ``"pipeline_completeness"``),
-        automatically prefixed with ``rubric_``.  Returns True if a row was
-        updated.
+        automatically prefixed with ``rubric_``.  When *repeat_index* is given
+        only that repeat is updated; otherwise every repeat of the story is.
+        Returns True if a row was updated.
         """
         valid_dims = {
             "pipeline_completeness",
@@ -278,12 +457,25 @@ class ResultStore:
             return False
         set_clause = ", ".join(f"{col} = ?" for col in updates)
         values = list(updates.values()) + [run_id, platform_id, story_id]
+        where = "run_id = ? AND platform_id = ? AND story_id = ?"
+        if repeat_index is not None:
+            where += " AND repeat_index = ?"
+            values.append(repeat_index)
         result = self._conn.execute(
-            f"UPDATE executions SET {set_clause} "
-            f"WHERE run_id = ? AND platform_id = ? AND story_id = ?",
+            f"UPDATE executions SET {set_clause} WHERE {where}",
             values,
         )
-        return result.rowcount > 0
+        # DuckDB reports updated rows via the result's count row; rowcount is -1.
+        return (result.fetchone() or (0,))[0] > 0
+
+    def repeat_indices(self, run_id: str, platform_id: str, story_id: str) -> list[int]:
+        """Return the sorted repeat indices stored for a platform/story in a run."""
+        rows = self._conn.execute(
+            "SELECT DISTINCT COALESCE(repeat_index, 0) FROM executions "
+            "WHERE run_id = ? AND platform_id = ? AND story_id = ? ORDER BY 1",
+            [run_id, platform_id, story_id],
+        ).fetchall()
+        return [int(r[0]) for r in rows]
 
     def update_platform_scores(
         self,
@@ -334,7 +526,9 @@ class ResultStore:
                     "story_id": row["story_id"],
                     "success": row["status"] == "completed",
                     "wall_clock_seconds": row["wall_clock_seconds"],
-                    "iterations": int(row["iterations"] or 0),
+                    "iterations": None
+                    if pd.isna(row["iterations"])
+                    else int(row["iterations"]),
                     "tool_calls": int(row["tool_calls"] or 0),
                     "tokens_input": int(row["tokens_input"] or 0),
                     "tokens_output": int(row["tokens_output"] or 0),

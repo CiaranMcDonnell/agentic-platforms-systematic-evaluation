@@ -10,6 +10,12 @@ import logging
 import time
 from typing import Any
 
+from desmet.adapters._shared.budget import (
+    budget_exhausted,
+    mark_budget_exhausted,
+    mark_usage_fallback,
+    remaining_llm_calls,
+)
 from desmet.adapters._shared.base import ToolAgentAdapter
 from desmet.adapters._shared.observation import ObservationCollector
 from desmet.adapters._shared.planning import ImplementationPlan, format_plan_text, parse_plan_text
@@ -26,22 +32,18 @@ from desmet.llm_config import get_config as get_llm_config
 _log = logging.getLogger(__name__)
 
 
-def _compute_iter_budget(max_iterations: int, *, retry: bool = False) -> tuple[int, int, int]:
-    """Compute per-agent max_iter from total budget.
+def _event_agent_role(event: Any) -> str | None:
+    """Return the persona role ("QA Engineer", ...) that produced *event*.
 
-    First attempt: 20%/60%/20% (planner/executor/reviewer).
-    Retry: 0%/80%/20% (no planner, more executor budget).
-
-    Returns (planner, executor, reviewer).
+    CrewAI event payloads expose the owning agent either as ``agent_role``
+    or through ``from_agent.role`` depending on the event type and version.
     """
-    if retry:
-        reviewer = max(1, int(max_iterations * 0.2))
-        executor = max(1, max_iterations - reviewer)
-        return 0, executor, reviewer
-    planner = max(1, int(max_iterations * 0.2))
-    reviewer = max(1, int(max_iterations * 0.2))
-    executor = max(1, max_iterations - planner - reviewer)
-    return planner, executor, reviewer
+    role = getattr(event, "agent_role", None)
+    if role:
+        return str(role)
+    from_agent = getattr(event, "from_agent", None)
+    role = getattr(from_agent, "role", None) if from_agent is not None else None
+    return str(role) if role else None
 
 
 class CrewAIAdapter(ToolAgentAdapter):
@@ -257,13 +259,7 @@ class CrewAIAdapter(ToolAgentAdapter):
                 col.trace.total_iterations = self._llm_call_count
 
                 # Record LLM response text as a message in the trace
-                resp_text = str(event.response) if event.response else ""
-                if resp_text:
-                    col.record_message(
-                        "assistant",
-                        resp_text[:2000],
-                        metadata={"step": self._llm_call_count},
-                    )
+                self._record_llm_response_message(event)
 
                 # Heartbeat every 5 iterations
                 progress = self._current_progress
@@ -287,6 +283,14 @@ class CrewAIAdapter(ToolAgentAdapter):
                     args,
                     str(event.output or ""),
                 )
+                # A tool-role message tagged with the owning agent lets the
+                # execution model attribute the call to an agent turn (the
+                # ToolCall record itself has no owner field).
+                tool_meta: dict[str, Any] = {"tool_name": event.tool_name}
+                role = _event_agent_role(event)
+                if role:
+                    tool_meta["agent_role"] = role
+                col.record_message("tool", str(event.output or "")[:500], metadata=tool_meta)
                 progress = self._current_progress
                 if progress:
                     progress.tool_call(event.tool_name, event.tool_args)
@@ -299,18 +303,18 @@ class CrewAIAdapter(ToolAgentAdapter):
                 if col is None:
                     return
                 output_str = str(event.output) if event.output else ""
-                col.record_message(
-                    "assistant",
-                    output_str,
-                    metadata={"event": "task_complete"},
-                )
+                agent_name = ""
+                task = getattr(event, "task", None)
+                if task:
+                    agent = getattr(task, "agent", None)
+                    if agent:
+                        agent_name = getattr(agent, "role", "") or ""
+                task_meta: dict[str, Any] = {"event": "task_complete"}
+                if agent_name:
+                    task_meta["agent_role"] = agent_name
+                col.record_message("assistant", output_str, metadata=task_meta)
                 progress = self._current_progress
                 if progress:
-                    agent_name = ""
-                    if event.task:
-                        agent = getattr(event.task, "agent", None)
-                        if agent:
-                            agent_name = getattr(agent, "role", "") or ""
                     progress.agent_status(agent_name or "agent", "task complete")
 
         except ImportError:
@@ -319,6 +323,20 @@ class CrewAIAdapter(ToolAgentAdapter):
         # guard doesn't repeatedly retry (and so tests don't need crewai
         # installed to verify registration was attempted on this instance).
         self._event_handlers_registered = True
+
+    def _record_llm_response_message(self, event: Any) -> None:
+        """Record an LLM response as an assistant message tagged with its agent."""
+        col = self._current_collector
+        if col is None:
+            return
+        resp_text = str(event.response) if getattr(event, "response", None) else ""
+        if not resp_text:
+            return
+        metadata: dict[str, Any] = {"step": self._llm_call_count}
+        role = _event_agent_role(event)
+        if role:
+            metadata["agent_role"] = role
+        col.record_message("assistant", resp_text[:2000], metadata=metadata)
 
     def _create_llm(self, context: StageContext):
         """Build a CrewAI LLM from centralised config + stage context overrides.
@@ -410,23 +428,17 @@ class CrewAIAdapter(ToolAgentAdapter):
         from crewai import Agent, Crew, Process, Task
 
         is_retry = retry_attempt > 0
-        planner_budget, executor_budget, reviewer_budget = _compute_iter_budget(
-            context.max_iterations,
-            retry=is_retry,
-        )
-        time_budget = context.time_budget_seconds or 0
-
-        # Time split — executor gets the bulk of the budget (80%) because
-        # it does the real work.  Planner and reviewer cap at 10% each.
-        # This avoids a previous bug where the iteration ratio (60% for
-        # the executor) starved CrewAI of time vs other frameworks that
-        # give the main agent the full budget.
-        def _time_share(fraction: float) -> int | None:
-            return int(time_budget * fraction) if time_budget else None
-
-        planner_time = _time_share(0.10)
-        executor_time = _time_share(0.80)
-        reviewer_time = _time_share(0.10)
+        # Each agent may use the whole stage budget; the shared per-stage
+        # LLM-call cap (before_llm_call hook in _run_agent, budget.py) is
+        # what binds.  Splitting it per agent (previously 20/60/20) gave
+        # CrewAI a different budget shape from every other adapter.
+        planner_budget = executor_budget = reviewer_budget = context.max_iterations
+        # No per-agent wall-clock caps.  CrewAI was the only adapter that
+        # split the story budget across its agents (planner/reviewer got
+        # 10% = 45s on US-001), so slower models failed its planner while
+        # other frameworks' planners ran unbounded.  The harness now applies
+        # the same per-stage cap to every platform
+        # (the runner's per-stage timeout, from the story budget).
 
         def _make_backstory(persona_backstory: str) -> str:
             if system_msg:
@@ -457,7 +469,6 @@ class CrewAIAdapter(ToolAgentAdapter):
             llm=llm,
             tools=executor_tools,
             max_iter=executor_budget,
-            max_execution_time=executor_time,
         )
 
         # ── Reviewer — Code Reviewer ─────────────────────────────────────
@@ -471,7 +482,6 @@ class CrewAIAdapter(ToolAgentAdapter):
             llm=llm,
             tools=reviewer_tools,
             max_iter=reviewer_budget,
-            max_execution_time=reviewer_time,
         )
 
         agents: list = []
@@ -487,9 +497,11 @@ class CrewAIAdapter(ToolAgentAdapter):
                 verbose=False,
                 allow_delegation=False,
                 llm=llm,
-                tools=tools,
+                # No tools: every other adapter's planner is a single
+                # tool-less LLM call; with the full set CrewAI's planner
+                # could write files and run commands.
+                tools=[],
                 max_iter=planner_budget,
-                max_execution_time=planner_time,
             )
             analyse_task = Task(
                 description=(
@@ -589,8 +601,6 @@ class CrewAIAdapter(ToolAgentAdapter):
         the run — exhausting the retry budget without a passing validator
         returns success=False.
         """
-        import asyncio
-
         # Reset per-stage counters FIRST — before any llm_calls_before
         # snapshot or trace assignment.  Without this, _llm_call_count
         # accumulates across every stage and story on the same adapter
@@ -607,6 +617,41 @@ class CrewAIAdapter(ToolAgentAdapter):
 
         collector.record_message("user", prompt)
 
+        try:
+            from crewai.hooks import (
+                register_before_llm_call_hook,
+                unregister_before_llm_call_hook,
+            )
+        except ImportError:  # host-side unit tests mock the crew
+            return await self._run_attempts(
+                stage_name, prompt, system_msg, tools, llm, context,
+                collector, policy, progress, model_name,
+            )
+
+        def _enforce_budget(_ctx) -> bool | None:
+            # Shared per-stage LLM-call budget (budget.py).  Returning False
+            # blocks the call; CrewAI then aborts the crew with ValueError.
+            if remaining_llm_calls(collector.trace, context.max_iterations) <= 0:
+                mark_budget_exhausted(collector.trace)
+                return False
+            return None
+
+        register_before_llm_call_hook(_enforce_budget)
+        try:
+            return await self._run_attempts(
+                stage_name, prompt, system_msg, tools, llm, context,
+                collector, policy, progress, model_name,
+            )
+        finally:
+            unregister_before_llm_call_hook(_enforce_budget)
+
+    async def _run_attempts(
+        self, stage_name, prompt, system_msg, tools, llm, context,
+        collector, policy, progress, model_name,
+    ) -> tuple[int, bool]:
+        """The validate-and-retry loop of ``_run_agent``, under the budget hook."""
+        import asyncio
+
         total_iterations = 0
         # Tracks whether ANY attempt produced a workspace that passes
         # validation.  Once True, exhausting the iteration budget on a
@@ -619,6 +664,9 @@ class CrewAIAdapter(ToolAgentAdapter):
         structured_plan: ImplementationPlan | None = None
 
         for attempt in range(policy.total_attempts()):
+            if remaining_llm_calls(collector.trace, context.max_iterations) <= 0:
+                mark_budget_exhausted(collector.trace)
+                break
             crew = self._build_crew(
                 stage_name,
                 prompt,
@@ -638,6 +686,13 @@ class CrewAIAdapter(ToolAgentAdapter):
             self._current_progress = progress
             try:
                 result = await asyncio.to_thread(crew.kickoff)
+            except ValueError as exc:
+                if not budget_exhausted(collector.trace):
+                    raise
+                # Blocked by the budget hook mid-crew: no result, but the
+                # workspace may already pass — validate below.
+                _log.info("CrewAI stage stopped: LLM-call budget exhausted (%s)", exc)
+                result = None
             finally:
                 # Clear bridge references regardless of success/failure so
                 # that event handlers from a later (failed) run don't leak
@@ -654,13 +709,23 @@ class CrewAIAdapter(ToolAgentAdapter):
                     except Exception:
                         pass
                     self._current_llm_obs = None
+            if result is None:
+                break
             collector.record_message("assistant", str(result))
 
             # ── Fallback: use result.token_usage if event bus recorded nothing ─
+            # The tokens are real, but they are the whole crew's aggregate:
+            # the per-call budget hook never fired, so the stage's LLM-call
+            # count is unknown rather than one.
             if collector.usage_count == usage_before:
                 usage = getattr(result, "token_usage", None)
                 if usage is not None:
                     collector.record_llm_response(raw_usage=usage, model=model_name)
+                    mark_usage_fallback(collector.trace)
+                    _log.warning(
+                        "CrewAI event bus recorded no per-call usage; recorded the crew's "
+                        "aggregate token_usage instead (LLM-call count unknown)"
+                    )
 
             total_iterations += self._llm_call_count - llm_calls_before
 
@@ -722,9 +787,6 @@ class CrewAIAdapter(ToolAgentAdapter):
 
             # ── Validation failed — prepare retry or exit ────────────────
             progress.validation_failed(attempt + 1, policy.total_attempts(), feedback)
-
-            if total_iterations >= context.max_iterations:
-                break
 
         collector.mark_iterations(total_iterations)
 

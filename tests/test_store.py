@@ -31,7 +31,7 @@ class TestSchema:
     def test_schema_version(self, store: ResultStore):
         version = store._conn.execute("SELECT version FROM store_meta").fetchone()
         assert version is not None
-        assert version[0] == 2
+        assert version[0] == 7
 
 
 class TestRunLifecycle:
@@ -235,3 +235,299 @@ class TestExport:
         df = pd.read_csv(out)
         assert len(df) == 1
         assert df.iloc[0]["platform_id"] == "langgraph"
+
+
+class TestRecomputeUsesStageOutcome:
+    def _save(self, store: ResultStore, run_id: str, stage_success: bool) -> None:
+        from desmet.harness.metrics import StoryMetrics
+        from desmet.harness.results import StageResult
+        from desmet.harness.story import StoryResult, StoryStatus
+
+        result = StoryResult(
+            story_id="US-001",
+            platform_id="p",
+            execution_id=f"e-{stage_success}",
+            status=StoryStatus.COMPLETED,
+        )
+        result.raw_result = {
+            "codegen": StageResult(platform_id="p", stage_name="codegen", success=stage_success)
+        }
+        store.save_execution(run_id, result, StoryMetrics.from_story_result(result))
+
+    @pytest.mark.parametrize("stage_success", [True, False])
+    def test_recompute_respects_failed_stages(self, store: ResultStore, stage_success: bool):
+        from desmet.harness.metrics import recompute_platform_likert_from_store
+
+        run_id = store.create_run()
+        self._save(store, run_id, stage_success)
+        assert bool(store.get_executions(run_id)["stages_passed"].iloc[0]) is stage_success
+
+        scores = recompute_platform_likert_from_store(store, run_id, "p", {"US-001": 600})
+        # Unscored pipeline rubric -> completion ratio alone: 1.0 -> 5, 0.0 -> 1
+        assert scores["score_pipeline_completeness"] == (5.0 if stage_success else 1.0)
+
+
+_V5_CREATE_SQL = """\nCREATE TABLE IF NOT EXISTS store_meta (
+    version INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS runs (
+    run_id          VARCHAR PRIMARY KEY,
+    started_at      TIMESTAMP NOT NULL,
+    finished_at     TIMESTAMP,
+    model           VARCHAR,
+    temperature     FLOAT,
+    platforms_filter VARCHAR[],
+    stories_filter  VARCHAR[],
+    note            VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS executions (
+    execution_id    VARCHAR PRIMARY KEY,
+    run_id          VARCHAR NOT NULL REFERENCES runs(run_id),
+    platform_id     VARCHAR NOT NULL,
+    story_id        VARCHAR NOT NULL,
+    status          VARCHAR NOT NULL,
+    started_at      TIMESTAMP,
+    finished_at     TIMESTAMP,
+    wall_clock_seconds  DOUBLE,
+    iterations          INTEGER,
+    tool_calls          INTEGER,
+    tokens_input        BIGINT,
+    tokens_output       BIGINT,
+    cost_usd            DOUBLE,
+    human_interventions INTEGER,
+    score_pipeline_completeness DOUBLE,
+    score_efficiency            DOUBLE,
+    score_orchestration         DOUBLE,
+    score_autonomy              DOUBLE,
+    overall_score               DOUBLE,
+    rubric_pipeline_completeness DOUBLE,
+    rubric_tool_integration      DOUBLE,
+    rubric_error_recovery        DOUBLE,
+    rubric_trace_quality         DOUBLE,
+    rubric_time_efficiency       DOUBLE,
+    rubric_autonomy              DOUBLE,
+    framework_metrics   VARCHAR,
+    trace_path          VARCHAR,
+    langfuse_trace_id   VARCHAR,
+    langsmith_run_id    VARCHAR,
+    repeat_index            INTEGER DEFAULT 0,
+    resource_peak_memory_bytes  BIGINT,
+    resource_avg_cpu_percent    FLOAT,
+    resource_net_tx_bytes       BIGINT,
+    stages_passed       BOOLEAN,
+    tests_run           INTEGER,
+    tests_passed        INTEGER,
+    tests_failed        INTEGER,
+    pytest_exit_code    INTEGER,
+    artifact_path       VARCHAR,
+    criteria_results    VARCHAR,
+    deploy_healthy      BOOLEAN
+);
+"""
+
+
+class TestSchemaV6:
+    def test_v5_db_migrates_to_v6(self, tmp_path: Path):
+        db = tmp_path / "d.duckdb"
+        conn = duckdb.connect(str(db))
+        conn.execute(_V5_CREATE_SQL)
+        conn.execute("INSERT INTO store_meta VALUES (5)")
+        conn.execute("INSERT INTO runs (run_id, started_at) VALUES ('r1', now())")
+        conn.execute(
+            "INSERT INTO executions (execution_id, run_id, platform_id, story_id, status) "
+            "VALUES ('e1', 'r1', 'p', 'US-001', 'completed')"
+        )
+        conn.close()
+
+        store = ResultStore(db)
+        assert store._conn.execute("SELECT version FROM store_meta").fetchone()[0] == 7
+        df = store.get_executions("r1")
+        assert pd.isna(df.loc[0, "execution_mode"])
+        assert pd.isna(df.loc[0, "reported_tests_run"])
+        assert store.get_stage_executions("r1").empty
+        assert pd.isna(store.get_run("r1").iloc[0]["git_sha"])
+        store.close()
+
+    def test_save_execution_writes_stage_rows_and_new_fields(self, store: ResultStore):
+        from desmet.harness.metrics import StoryMetrics
+        from desmet.harness.results import RequirementsResult, StageResult
+        from desmet.harness.story import StoryResult, StoryStatus
+
+        run_id = store.create_run()
+        result = StoryResult(
+            story_id="US-001",
+            platform_id="p",
+            execution_id="e1",
+            status=StoryStatus.COMPLETED,
+            execution_mode="container",
+            repeat_index=2,
+            reported_tests_run=5,
+            reported_tests_passed=4,
+            reported_tests_failed=1,
+        )
+        result.raw_result = {
+            "requirements": RequirementsResult(
+                platform_id="p", stage_name="requirements", success=True, iterations=3
+            ),
+            "codegen": StageResult(
+                platform_id="p", stage_name="codegen", success=False, error_message="boom"
+            ),
+        }
+        store.save_execution(
+            run_id, result, StoryMetrics.from_story_result(result, time_budget_seconds=600)
+        )
+        row = store.get_executions(run_id).iloc[0]
+        assert row["repeat_index"] == 2 and row["execution_mode"] == "container"
+        assert row["reported_tests_passed"] == 4
+        stages = store.get_stage_executions(run_id).set_index("stage_name")
+        assert bool(stages.loc["requirements", "success"]) is True
+        assert stages.loc["requirements", "iterations"] == 3
+        assert stages.loc["codegen", "error_message"] == "boom"
+
+    def test_non_dict_raw_result_writes_no_stage_rows(self, store: ResultStore):
+        from desmet.harness.metrics import StoryMetrics
+        from desmet.harness.story import StoryResult, StoryStatus
+
+        run_id = store.create_run()
+        result = StoryResult(
+            story_id="US-001", platform_id="p", execution_id="e1", status=StoryStatus.COMPLETED
+        )
+        result.raw_result = "dry-run"
+        store.save_execution(run_id, result, StoryMetrics.from_story_result(result))
+        assert store.get_stage_executions(run_id).empty
+
+    def test_update_run_manifest_ignores_unknown_keys(self, store: ResultStore):
+        run_id = store.create_run()
+        store.update_run_manifest(
+            run_id, {"git_sha": "abc", "image_digests": {"p": "sha256:1"}, "bogus": 1}
+        )
+        run = store.get_run(run_id).iloc[0]
+        assert run["git_sha"] == "abc"
+        assert json_mod.loads(run["image_digests"]) == {"p": "sha256:1"}
+
+
+class TestRepeatScopedRubric:
+    def _save_repeat(self, store, run_id, repeat_index):
+        from desmet.harness.metrics import StoryMetrics
+        from desmet.harness.story import StoryResult, StoryStatus
+
+        result = StoryResult(
+            story_id="US-001",
+            platform_id="p",
+            execution_id=f"p_US-001_r{repeat_index}",
+            status=StoryStatus.COMPLETED,
+            start_time=datetime(2026, 3, 28, 9, 19, 0, tzinfo=timezone.utc),
+            end_time=datetime(2026, 3, 28, 9, 22, 0, tzinfo=timezone.utc),
+            wall_clock_seconds=10.0,
+            repeat_index=repeat_index,
+        )
+        store.save_execution(
+            run_id, result, StoryMetrics.from_story_result(result, time_budget_seconds=300.0)
+        )
+
+    def test_rubric_update_scoped_to_repeat(self, store: ResultStore):
+        run_id = store.create_run()
+        self._save_repeat(store, run_id, 0)
+        self._save_repeat(store, run_id, 1)
+
+        assert store.update_rubric_scores_by_story(
+            run_id, "p", "US-001", {"autonomy": 2.0}, repeat_index=1
+        )
+        df = store.get_executions(run_id).set_index("repeat_index")
+        assert pd.isna(df.loc[0, "rubric_autonomy"])
+        assert df.loc[1, "rubric_autonomy"] == 2.0
+
+    def test_repeat_indices(self, store: ResultStore):
+        run_id = store.create_run()
+        assert store.repeat_indices(run_id, "p", "US-001") == []
+        self._save_repeat(store, run_id, 1)
+        self._save_repeat(store, run_id, 0)
+        assert store.repeat_indices(run_id, "p", "US-001") == [0, 1]
+
+
+_V6_STAGE_SQL = (
+    "CREATE TABLE stage_executions ("
+    "execution_id VARCHAR NOT NULL, run_id VARCHAR NOT NULL,"
+    " stage_name VARCHAR NOT NULL, success BOOLEAN, error_message VARCHAR,"
+    " wall_clock_seconds DOUBLE, iterations INTEGER, tool_calls INTEGER,"
+    " tokens_input BIGINT, tokens_output BIGINT, cost_usd DOUBLE,"
+    " human_interventions INTEGER,"
+    " PRIMARY KEY (execution_id, stage_name))"
+)
+
+
+class TestSchemaV7:
+    def test_v6_stage_rows_get_null_timed_out(self, tmp_path: Path):
+        db = tmp_path / "d.duckdb"
+        conn = duckdb.connect(str(db))
+        conn.execute(_V5_CREATE_SQL)
+        conn.execute(_V6_STAGE_SQL)
+        conn.execute("INSERT INTO store_meta VALUES (6)")
+        conn.execute(
+            "INSERT INTO stage_executions (execution_id, run_id, stage_name, iterations) "
+            "VALUES ('e1', 'r1', 'codegen', 4)"
+        )
+        conn.close()
+
+        store = ResultStore(db)
+        assert store._conn.execute("SELECT version FROM store_meta").fetchone()[0] == 7
+        stages = store.get_stage_executions("r1")
+        assert pd.isna(stages.loc[0, "timed_out"])
+        assert stages.loc[0, "iterations"] == 4
+        store.close()
+
+    def _timed_out_result(self):
+        from desmet.harness.results import CodeResult, RequirementsResult
+        from desmet.harness.story import StoryResult, StoryStatus
+
+        result = StoryResult(
+            story_id="US-001", platform_id="p", execution_id="e1",
+            status=StoryStatus.COMPLETED, iterations=None,
+        )
+        result.raw_result = {
+            "requirements": RequirementsResult(
+                platform_id="p", stage_name="requirements", success=True, iterations=3,
+                framework_metrics={"llm_calls": 3.0, "budget_exhausted": 0.0},
+            ),
+            "codegen": CodeResult(
+                platform_id="p", stage_name="codegen", success=False, iterations=None,
+                error_message="Stage timed out after 60s", tokens_input=500,
+                framework_metrics={
+                    "timed_out": 1.0, "llm_calls": None, "budget_exhausted": 0.0,
+                },
+            ),
+        }
+        return result
+
+    def test_timed_out_stage_stores_unknown_iterations(self, store: ResultStore):
+        from desmet.harness.metrics import StoryMetrics
+
+        run_id = store.create_run()
+        result = self._timed_out_result()
+        store.save_execution(run_id, result, StoryMetrics.from_story_result(result))
+
+        assert pd.isna(store.get_executions(run_id).iloc[0]["iterations"])
+        stages = store.get_stage_executions(run_id).set_index("stage_name")
+        assert pd.isna(stages.loc["codegen", "iterations"])
+        assert bool(stages.loc["codegen", "timed_out"]) is True
+        assert stages.loc["codegen", "tokens_input"] == 500
+        assert bool(stages.loc["requirements", "timed_out"]) is False
+        assert stages.loc["requirements", "iterations"] == 3
+
+    def test_recompute_and_export_tolerate_unknown_iterations(
+        self, store: ResultStore, tmp_path: Path
+    ):
+        from desmet.harness.metrics import StoryMetrics, recompute_platform_likert_from_store
+
+        run_id = store.create_run()
+        result = self._timed_out_result()
+        store.save_execution(run_id, result, StoryMetrics.from_story_result(result))
+
+        scores = recompute_platform_likert_from_store(store, run_id, "p", {"US-001": 600})
+        assert "overall_score" in scores
+        out = store.export_run_json(run_id, tmp_path / "r.json")
+        exported = json_mod.loads(out.read_text())
+        sm = exported["platforms"]["p"]["story_metrics"][0]
+        assert sm["iterations"] is None

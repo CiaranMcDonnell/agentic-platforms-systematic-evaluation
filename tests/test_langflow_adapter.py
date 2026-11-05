@@ -145,6 +145,7 @@ class TestLangFlowStageExecution:
                 "desmet.adapters._shared.visual_base.audit_workspace",
                 return_value=[],
             ),
+            patch("desmet.adapters._shared.visual_base.RetryPolicy.validate", return_value=(True, "ok")),
             patch(
                 "desmet.adapters.visual.langflow_templates.build_flow",
                 return_value={"nodes": [], "edges": []},

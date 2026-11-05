@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 from collections.abc import Callable, Generator
 from pathlib import Path
@@ -19,7 +20,7 @@ from typing import Any
 
 from desmet.harness.context import StageContext
 from desmet.harness.resource_monitor import ResourceMonitor
-from desmet.harness.results import StageResult
+from desmet.harness.results import StageResult, failed_stage_result
 from desmet.platforms_config import get_platform_field, get_platforms_config
 
 _log = logging.getLogger(__name__)
@@ -29,6 +30,17 @@ _IMAGE_TAG = "1.0"
 _BASE_IMAGE = f"desmet-eval-base:{_IMAGE_TAG}"
 
 _STAGE_NAMES = {"requirements", "codegen", "testing", "deploy"}
+
+# Workspace context file written by harness versions before the context
+# moved to stdin; removed from reused workspaces so agents cannot read it.
+LEGACY_CONTEXT_FILE = ".desmet-context.json"
+
+# Progress lines end with "(<elapsed>s, <cumulative> tokens)"; on timeout
+# the last value is the only token count we have for the killed stage.
+_PROGRESS_TOKENS_RE = re.compile(r"\(\s*\d+s,\s*([\d,]+) tokens\)")
+# Tool progress lines start "tool <n> — <name>"; the highest n seen is a
+# lower bound on the killed stage's tool calls.
+_PROGRESS_TOOL_RE = re.compile(r"^\s*tool (\d+) [—-] ")
 
 # Built from config/platforms.yaml — maps SDK platform IDs to their pip extra.
 # Visual platforms (no pip_extra) are excluded.
@@ -84,6 +96,21 @@ def has_image(platform_id: str) -> bool:
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
+
+
+def image_digest(platform_id: str) -> str | None:
+    """Return the image ID (content digest) for a platform, or None on failure."""
+    try:
+        result = subprocess.run(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", image_name(platform_id)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    out = result.stdout.strip()
+    return out if result.returncode == 0 and out else None
 
 
 def build_image(
@@ -338,6 +365,7 @@ def _ensure_container(
     platform_id: str,
     story_id: str,
     workspace: Path,
+    deploy_mode: str,
 ) -> str:
     """Start a persistent container for the platform+story.
 
@@ -393,14 +421,14 @@ def _ensure_container(
         "DESMET_MODEL",
         "DESMET_TEMPERATURE",
         "DESMET_PROVIDER",
-        "DESMET_DEPLOY_MODE",
         "DEPLOY_HOST",
         "DEPLOY_PORT",
         "DEPLOY_USER",
         "DEPLOY_REPO",
         "DEPLOY_BASE_PATH",
     ]
-    env_flags: list[str] = []
+    # Deploy mode travels with the stage context, not the process env.
+    env_flags: list[str] = ["-e", f"DESMET_DEPLOY_MODE={deploy_mode}"]
     for var in _PASSTHROUGH_VARS:
         val = os.environ.get(var)
         if val:
@@ -416,7 +444,6 @@ def _ensure_container(
     # /run/secrets/deploy_key, so the env var DEPLOY_KEY_PATH inside
     # the container is set to that fixed path regardless of where the
     # host file lives.
-    deploy_mode = os.environ.get("DESMET_DEPLOY_MODE", "remote")
     deploy_key_host = os.environ.get("DEPLOY_KEY_PATH", "")
     deploy_key_mount: list[str] = []
     if deploy_mode != "local" and deploy_key_host:
@@ -522,11 +549,52 @@ def _current_trace_propagation_env() -> list[str]:
         return []
 
 
+def _timed_out_result(
+    platform_id: str,
+    stage_name: str,
+    tokens_seen: int,
+    resource_summary: Any | None,
+    timeout_seconds: int,
+    tool_calls_seen: int = 0,
+) -> StageResult:
+    """Failed StageResult for a stage killed at ``timeout_seconds``.
+
+    The container's own result JSON is lost with the process, so tokens
+    come from the last progress line (input/output split unknown, recorded
+    as input) and cost is priced at the input rate — both lower bounds, as
+    is the tool-call count (highest tool number in the progress stream).
+    The progress line carries no call count, so iterations and llm_calls
+    are unknown (None, stored as NULL), not 0.
+    """
+    from desmet import llm_config
+    from desmet.cost_calculator import estimate_cost
+
+    model = llm_config.get_config().model
+    result = failed_stage_result(
+        platform_id,
+        stage_name,
+        f"Stage timed out after {timeout_seconds}s",
+        wall_clock_seconds=float(timeout_seconds),
+    )
+    result.iterations = None
+    result.tool_calls_count = tool_calls_seen
+    result.tokens_input = tokens_seen
+    result.cost_usd = (
+        estimate_cost(model, input_tokens=tokens_seen) if model and tokens_seen else 0.0
+    )
+    result.framework_metrics = {"timed_out": 1.0, "llm_calls": None, "budget_exhausted": 0.0}
+    if resource_summary is not None:
+        result.resource_metrics = resource_summary.to_dict()
+    return result
+
+
 async def run_stage_in_container(
     platform_id: str,
     stage_name: str,
     context: StageContext,
     progress_callback: Callable[[str], None] | None = None,
+    *,
+    timeout_seconds: int,
 ) -> StageResult:
     """Run an adapter stage inside a per-platform Docker container.
 
@@ -542,20 +610,27 @@ async def run_stage_in_container(
         build_image(platform_id, progress_callback)
 
     story_id = context.story.id
-    container = _ensure_container(platform_id, story_id, context.workspace)
+    container = _ensure_container(
+        platform_id, story_id, context.workspace, context.deploy_mode,
+    )
 
     monitor = ResourceMonitor(container, poll_interval=2.0)
     monitor.start()
 
-    # Write context JSON to workspace.
-    # The host workspace is mounted at /workspace inside the container,
-    # so rewrite the path so adapter tools resolve files correctly.
+    # Context JSON goes to the entrypoint over stdin, never to a file:
+    # a .desmet-context.json in /workspace (one line, ~0.5 MB of earlier
+    # stage outputs) was found by the agents' search_code / read_file and
+    # bloated their prompts by up to ~200k tokens.  The host workspace is
+    # mounted at /workspace, so rewrite the path for the adapter tools.
     ctx_data = context.to_dict()
     ctx_data["workspace"] = "/workspace"
     ctx_data.setdefault("metadata", {})["stage_name"] = stage_name
-    ctx_file = context.workspace / ".desmet-context.json"
-    with open(ctx_file, "w") as f:
-        json.dump(ctx_data, f)
+    ctx_bytes = json.dumps(ctx_data).encode("utf-8")
+    # Left behind by harness versions that wrote the context file.
+    try:
+        (context.workspace / LEGACY_CONTEXT_FILE).unlink(missing_ok=True)
+    except OSError:
+        pass
 
     # Run entrypoint via docker exec, streaming stderr.
     # Pass the host's current OTel span context as TRACEPARENT so that
@@ -567,32 +642,73 @@ async def run_stage_in_container(
     proc = await asyncio.create_subprocess_exec(
         "docker",
         "exec",
+        "-i",
         *trace_env_flags,
         container,
         "/app/.venv/bin/python",
         "-m",
         "desmet.harness.entrypoint",
-        "/workspace/.desmet-context.json",
+        "-",
+        stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=env,
     )
 
     # Stream stderr (progress) line by line
+    last_tokens = 0
+    last_tool = 0
+
     async def _stream_stderr():
+        nonlocal last_tokens, last_tool
         while True:
             line = await proc.stderr.readline()
             if not line:
                 break
             text = line.decode("utf-8", errors="replace").rstrip()
+            m = _PROGRESS_TOKENS_RE.search(text)
+            if m:
+                last_tokens = max(last_tokens, int(m.group(1).replace(",", "")))
+            t = _PROGRESS_TOOL_RE.match(text)
+            if t:
+                last_tool = max(last_tool, int(t.group(1)))
             if text and progress_callback:
                 progress_callback(text)
 
-    stderr_task = asyncio.create_task(_stream_stderr())
-    try:
-        stdout_data = await proc.stdout.read()
+    async def _collect() -> bytes:
+        try:
+            proc.stdin.write(ctx_bytes)
+            await proc.stdin.drain()
+            proc.stdin.close()
+        except (BrokenPipeError, ConnectionResetError):
+            # docker exec died before reading; its stderr/exit code
+            # reach the normal failed-result path below.
+            pass
+        out = await proc.stdout.read()
         await stderr_task
         await proc.wait()
+        return out
+
+    stderr_task = asyncio.create_task(_stream_stderr())
+    try:
+        stdout_data = await asyncio.wait_for(_collect(), timeout=timeout_seconds)
+    except asyncio.TimeoutError:
+        resource_summary = monitor.stop()
+        proc.kill()
+        await proc.wait()
+        stderr_task.cancel()
+        # Killing `docker exec` leaves the agent running inside the
+        # container; removing the container stops it.
+        stop_container(platform_id, story_id)
+        if progress_callback:
+            progress_callback(
+                f"  [{stage_name.upper()}] TIMEOUT after {timeout_seconds}s "
+                f"({last_tokens:,} tokens so far)"
+            )
+        return _timed_out_result(
+            platform_id, stage_name, last_tokens, resource_summary, timeout_seconds,
+            tool_calls_seen=last_tool,
+        )
     except asyncio.CancelledError:
         # Kill the docker exec process and stop the container
         monitor.stop()
@@ -600,20 +716,9 @@ async def run_stage_in_container(
         await proc.wait()
         stderr_task.cancel()
         stop_container(platform_id, story_id)
-        # Clean up context file before re-raising
-        try:
-            ctx_file.unlink(missing_ok=True)
-        except OSError:
-            pass
         raise
 
     resource_summary = monitor.stop()
-
-    # Clean up context file
-    try:
-        ctx_file.unlink(missing_ok=True)
-    except OSError:
-        pass
 
     # Parse result — extract the JSON object from stdout, ignoring any
     # stray output (library warnings, print statements) before/after it.

@@ -103,14 +103,10 @@ async def fetch_trace(trace_id: str) -> dict[str, Any] | None:
             tr.raise_for_status()
             trace_data = tr.json()
 
-            # Fetch observations (spans + generations)
-            obs_r = await client.get(
-                f"{host}/api/public/observations",
-                params={"traceId": trace_id, "limit": 100},
-                auth=(pk, sk),
-            )
-            obs_r.raise_for_status()
-            raw_obs = obs_r.json().get("data", [])
+            # Fetch observations (spans + generations). The API caps a page
+            # at 100 items and returns newest-first, so a single request on
+            # a real run drops the parents and leaves a forest of orphans.
+            raw_obs = await _fetch_all_observations(client, host, trace_id, (pk, sk))
 
         # Normalise observations
         obs_by_id: dict[str, dict] = {}
@@ -170,6 +166,35 @@ async def fetch_trace(trace_id: str) -> dict[str, Any] | None:
         import logging
         logging.getLogger(__name__).warning("fetch_trace failed: %s", exc)
         return None
+
+
+_OBS_PAGE_SIZE = 100
+_OBS_MAX_PAGES = 50  # 5 000 observations — far beyond any single story run
+
+
+async def _fetch_all_observations(
+    client: httpx.AsyncClient,
+    host: str,
+    trace_id: str,
+    auth: tuple[str, str],
+) -> list[dict[str, Any]]:
+    """Return every observation of *trace_id*, following ``meta.totalPages``."""
+    collected: list[dict[str, Any]] = []
+    page = 1
+    while page <= _OBS_MAX_PAGES:
+        r = await client.get(
+            f"{host}/api/public/observations",
+            params={"traceId": trace_id, "limit": _OBS_PAGE_SIZE, "page": page},
+            auth=auth,
+        )
+        r.raise_for_status()
+        body = r.json()
+        collected.extend(body.get("data", []))
+        total_pages = int((body.get("meta") or {}).get("totalPages") or 1)
+        if page >= total_pages:
+            break
+        page += 1
+    return collected
 
 
 def _latency_ms(obs: dict[str, Any]) -> float:

@@ -233,3 +233,49 @@ def test_maf_does_not_double_record_llm_duration():
         "End-of-run llm_time_estimate catch-up still present; middleware "
         "already records per-call durations, so this inflates total duration ~2x."
     )
+
+
+class _WorkflowBuilt(Exception):
+    """Raised by the stub MagenticBuilder once every stage Agent exists."""
+
+
+async def test_every_agent_gets_the_run_temperature(adapter, monkeypatch):
+    """Planner (both variants), executor, reviewer and manager must all be
+    built with the run temperature, not the provider default."""
+    import sys
+    import types
+    from unittest.mock import AsyncMock
+
+    agent_cls = MagicMock(name="Agent")
+    agent_cls.side_effect = lambda *a, **kw: MagicMock(
+        run=AsyncMock(return_value=MagicMock(text=""))
+    )
+
+    af = types.ModuleType("agent_framework")
+    af.Agent = agent_cls
+    af.AgentExecutorResponse = object
+    af.AgentResponseUpdate = object
+    af.Message = object
+    af.ChatMiddleware = object
+    af.MiddlewareTermination = Exception
+    orch = types.ModuleType("agent_framework.orchestrations")
+    orch.MagenticBuilder = MagicMock(side_effect=_WorkflowBuilt)
+    monkeypatch.setitem(sys.modules, "agent_framework", af)
+    monkeypatch.setitem(sys.modules, "agent_framework.orchestrations", orch)
+
+    adapter._client = MagicMock()
+    context = MagicMock(temperature=0.37, max_iterations=10)
+
+    with pytest.raises(_WorkflowBuilt):
+        await adapter._run_agent(
+            "codegen", "build it", None, [], MagicMock(), context,
+            MagicMock(), MagicMock(),
+        )
+
+    names = [c.kwargs["name"] for c in agent_cls.call_args_list]
+    # structured planner, free-text planner (empty text -> fallback), then the team
+    assert [n.rsplit("_", 1)[1] for n in names] == [
+        "planner", "planner", "executor", "reviewer", "manager",
+    ]
+    for call in agent_cls.call_args_list:
+        assert call.kwargs["default_options"] == {"temperature": 0.37}

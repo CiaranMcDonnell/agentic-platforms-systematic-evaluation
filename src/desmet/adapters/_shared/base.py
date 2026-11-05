@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
+from desmet.adapters._shared.budget import llm_calls_used, usage_fallback
 from desmet.adapters._shared.observation import ObservationCollector, ObservationRequirements
 from desmet.adapters._shared.prompts import (
     build_codegen_prompt,
@@ -30,7 +31,7 @@ from desmet.adapters._shared.tracing import (
     finish_trace,
     start_trace,
 )
-from desmet.adapters._shared.validation import audit_workspace
+from desmet.adapters._shared.validation import audit_workspace, snapshot_workspace
 from desmet.harness.adapter import BasePlatformAdapter
 from desmet.harness.context import StageContext
 from desmet.harness.results import (
@@ -102,6 +103,7 @@ class ToolAgentAdapter(BasePlatformAdapter):
 
         reset_loop_tracker()
         trace = start_trace()
+        workspace_before = snapshot_workspace(str(context.workspace))
         try:
             if stage_name == "codegen":
                 prior = context.get_prior_result("requirements")
@@ -131,7 +133,7 @@ class ToolAgentAdapter(BasePlatformAdapter):
                 callback=context.progress_callback,
                 collector=collector,
             )
-            iterations, success = await self._run_agent(
+            native_iterations, success = await self._run_agent(
                 stage_name,
                 prompt,
                 system_msg,
@@ -141,6 +143,14 @@ class ToolAgentAdapter(BasePlatformAdapter):
                 policy,
                 progress,
             )
+            # One unit for every code adapter: LLM calls (the same counter
+            # that drives the per-stage budget).  Adapters mark their own
+            # loop count on the collector; replace it so iteration_ratio
+            # shares the unit.  The native count is kept as a metric.
+            # Unknown (None) when usage arrived only as an aggregate.
+            iterations = None if usage_fallback(trace) else llm_calls_used(trace)
+            if iterations is not None:
+                collector.mark_iterations(iterations - trace.total_iterations)
             warnings = collector.seal()
             if warnings:
                 log = logging.getLogger(f"desmet.adapters.{self.platform_info.id}")
@@ -152,6 +162,7 @@ class ToolAgentAdapter(BasePlatformAdapter):
                         w,
                     )
             fm = compute_framework_metrics(trace, context.max_iterations)
+            fm["native_iterations"] = native_iterations
 
             # Post-stage scope audit
             baseline_files = set(context.metadata.get("baseline_files", []))
@@ -178,12 +189,21 @@ class ToolAgentAdapter(BasePlatformAdapter):
                 success=success,
                 iterations=iterations,
                 framework_metrics=fm,
+                workspace_changed=(
+                    snapshot_workspace(str(context.workspace)) != workspace_before
+                ),
             )
         except Exception as e:
             finish_trace(trace, error=str(e))
-            # Use real trace data for iterations — don't discard it on error.
-            # Fall back to tool_calls count if mark_iterations was never called.
-            iterations = trace.total_iterations or len(trace.tool_calls)
+            # Same unit as the success path: LLM calls recorded before the
+            # failure.  Don't discard real trace data on error.
+            iterations = None if usage_fallback(trace) else llm_calls_used(trace)
+            if iterations is not None:
+                trace.total_iterations = iterations
+            # Keep llm_calls / budget flags in the execution aggregate;
+            # the adapter raised, so it never reported a native count.
+            fm = compute_framework_metrics(trace, context.max_iterations)
+            fm["native_iterations"] = None
             return build_stage_result(
                 result_cls,
                 self.platform_info.id,
@@ -192,6 +212,7 @@ class ToolAgentAdapter(BasePlatformAdapter):
                 success=False,
                 iterations=iterations,
                 error_message=str(e),
+                framework_metrics=fm,
             )
 
     # ── Concrete SDLC stage methods ──────────────────────────────────────

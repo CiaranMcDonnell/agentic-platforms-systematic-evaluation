@@ -42,7 +42,9 @@ class StageResult:
 
     # Timing & resource usage
     wall_clock_seconds: float = 0.0
-    iterations: int = 0
+    # LLM calls; None when unknown (stage killed on timeout, or usage only
+    # available as an aggregate) — stored as NULL, never a fabricated 0.
+    iterations: int | None = 0
     tool_calls_count: int = 0
     tokens_input: int = 0
     tokens_output: int = 0
@@ -141,6 +143,11 @@ class StageResult:
 
         valid_fields = {f.name for f in dataclasses.fields(target_cls)}
         filtered = {k: v for k, v in data.items() if k in valid_fields}
+        if target_cls is RequirementsResult:
+            filtered["uml_diagrams"] = [
+                UMLDiagram(**d) if isinstance(d, dict) else d
+                for d in filtered.get("uml_diagrams", [])
+            ]
 
         return target_cls(
             trace=trace,
@@ -197,3 +204,26 @@ class DeployResult(StageResult):
     deployment_ready: bool = False
     build_log: str = ""
     dependency_issues: list[str] = field(default_factory=list)
+
+
+def failed_stage_result(
+    platform_id: str,
+    stage_name: str,
+    error: str,
+    wall_clock_seconds: float = 0.0,
+) -> StageResult:
+    """Failed result of the stage's own subclass, for a stage that raised or timed out."""
+    cls = {
+        "requirements": RequirementsResult,
+        "codegen": CodeResult,
+        "testing": TestResult,
+        "deploy": DeployResult,
+    }.get(stage_name, StageResult)
+    return cls(
+        platform_id=platform_id,
+        stage_name=stage_name,
+        success=False,
+        completed=False,
+        error_message=error,
+        wall_clock_seconds=wall_clock_seconds,
+    )

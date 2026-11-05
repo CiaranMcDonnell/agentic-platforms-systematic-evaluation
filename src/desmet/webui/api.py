@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import queue
+import re
 import shutil
 import subprocess
 import uuid
@@ -42,12 +43,17 @@ from desmet.dashboard.charts import (
     bar_efficiency_breakdown,
     bar_platform_rankings,
     bar_story_comparison,
+    heatmap_criteria,
     radar_dimensions,
+    spread_by_platform,
 )
 from desmet.dashboard.data import (
     CATEGORY_COLOURS,
     SCORING_DIMENSIONS,
     SCORING_RUBRIC,
+    SPREAD_METRICS,
+    get_criteria_rates,
+    get_execution_frame,
     get_dimension_scores_df,
     get_platform_colour,
     get_platform_colours,
@@ -55,14 +61,19 @@ from desmet.dashboard.data import (
     get_platform_summary_df,
     get_rubric_dim_averages,
     get_scoring_progress,
+    get_story_availability,
     get_story_metrics_df,
     is_story_scored,
+    pick_story,
     list_trace_files,
+    list_traced_pairs,
     load_results_raw,
     load_trace,
+    own_trace_file,
     save_results,
     update_story_scores,
 )
+from desmet.harness.execution_model import build_from_langfuse, build_from_stage_file
 from desmet.harness.graph import build_graph, build_timeline
 from desmet.harness.metrics import recompute_platform_likert_from_store
 from desmet.harness.store import ResultStore
@@ -252,7 +263,7 @@ class RunRequest(BaseModel):
     model: str | None = None
     results_dir: str | None = None
     repeats: int = 1
-    deploy_mode: str = "local"
+    deploy_mode: str = "remote"
 
 
 class DockerAction(BaseModel):
@@ -264,6 +275,7 @@ class ScoreSubmission(BaseModel):
     story_id: str
     scores: dict[str, float]
     notes: dict[str, str]
+    repeat_index: int | None = None
 
     @field_validator("scores")
     @classmethod
@@ -761,17 +773,25 @@ async def _execute_run(run: RunState, req: RunRequest):
         adapters = {}
         for pid in req.platforms:
             from desmet.harness.adapter import ContainerOnlyAdapter
-            from desmet.harness.container_runner import has_image, image_name
-            # Prefer container execution — avoids importing platform SDKs on the host
-            if has_image(pid):
+            from desmet.harness.container_runner import PLATFORM_EXTRA_MAP, has_image, image_name
+            if pid in PLATFORM_EXTRA_MAP:
+                # Code frameworks always run in their platform container:
+                # in-process they would execute LLM-generated shell
+                # commands on the host, and their results would not be
+                # comparable.  The runner (re)builds the image and fails
+                # this platform's stories if the build fails.
                 adapters[pid] = ContainerOnlyAdapter(pid)
-                await _broadcast_log(run.run_id, f"  {pid}: ready (image {image_name(pid)})")
+                state = "" if has_image(pid) else ", not built yet — building"
+                await _broadcast_log(
+                    run.run_id, f"  {pid}: container (image {image_name(pid)}{state})"
+                )
             else:
+                # Visual platforms drive their external service from the host.
                 try:
                     adapters[pid] = get_adapter(pid)
                     await _broadcast_log(run.run_id, f"  {pid}: ready")
                 except (KeyError, AdapterNotImplementedError, ImportError, ModuleNotFoundError):
-                    await _broadcast_log(run.run_id, f"  {pid}: FAILED — no Docker image found, run 'docker build' first")
+                    await _broadcast_log(run.run_id, f"  {pid}: FAILED — adapter not available")
 
         if not adapters:
             raise ValueError("No valid platform adapters found")
@@ -783,6 +803,10 @@ async def _execute_run(run: RunState, req: RunRequest):
         config = RunnerConfig(dry_run=req.dry_run, verbose=True, stage=resolved_stage)
         config.repeats = req.repeats
         config.deploy_mode = req.deploy_mode
+        for pid, a in adapters.items():
+            config.platform_execution_modes[pid] = (
+                "container" if isinstance(a, ContainerOnlyAdapter) else "in_process"
+            )
         if req.results_dir:
             config.results_dir = Path(req.results_dir)
             config.logs_dir = Path(req.results_dir) / "logs"
@@ -816,11 +840,10 @@ async def _execute_run(run: RunState, req: RunRequest):
             # so all platform executions share the same DuckDB run_id.
             # Otherwise the Scoring page (which loads "latest run") only
             # sees the last platform that ran.
-            shared_run_id = runner.store.create_run(
-                model=os.environ.get("DESMET_MODEL"),
-                temperature=float(os.environ.get("DESMET_TEMPERATURE", "0")),
+            shared_run_id = runner.create_run(
                 platforms_filter=list(adapters.keys()),
                 stories_filter=[story_id],
+                platform_ids=list(adapters.keys()),
             )
             try:
                 for pid in adapters:
@@ -1025,6 +1048,19 @@ async def chart_radar(run_id: str | None = None):
     return {"chart": radar_dimensions(dim_scores)}
 
 
+def _known_mean(df, col: str) -> float | None:
+    """Mean of *col*'s known values, rounded; None when the column is absent or
+    every value is unknown (e.g. iterations of timed-out stages) — NaN would
+    make the JSON response fail.
+    """
+    import pandas as pd
+
+    if col not in df.columns:
+        return None
+    vals = pd.to_numeric(df[col], errors="coerce").dropna()
+    return round(float(vals.mean()), 1) if not vals.empty else None
+
+
 @app.get("/api/dashboard/charts/efficiency")
 async def chart_efficiency(run_id: str | None = None):
     """ECharts option for efficiency breakdown."""
@@ -1064,6 +1100,56 @@ async def chart_dimension(dimension: str, run_id: str | None = None):
     if dim_df.empty:
         return {"chart": None}
     return {"chart": bar_dimension_comparison(dim_df, dimension)}
+
+
+def _chart_run_ids(run_ids: str, run_id: str | None) -> list[str]:
+    """Runs a chart covers: the comma-separated *run_ids*, else *run_id*,
+    else the latest run."""
+    ids = [r.strip() for r in run_ids.split(",") if r.strip()]
+    if ids:
+        return ids
+    latest = run_id or _get_result_store().latest_run_id()
+    return [latest] if latest else []
+
+
+@app.get("/api/dashboard/charts/spread")
+async def chart_spread(
+    metric: str = "tokens_total",
+    run_ids: str = "",
+    run_id: str | None = None,
+    story_id: str | None = None,
+    log: bool = False,
+):
+    """Median, range and each repeat of a metric per platform; one series
+    per run (labelled by model) when several runs are given."""
+    if metric not in SPREAD_METRICS:
+        raise HTTPException(status_code=400, detail=f"metric must be one of {sorted(SPREAD_METRICS)}")
+    df = get_execution_frame(_chart_run_ids(run_ids, run_id))
+    story = pick_story(df, story_id)
+    df = df[df["story_id"] == story] if story else df
+    if df.empty or df[metric].isna().all():
+        return {"chart": None, "story_id": story}
+    # Label each run by its model; two runs of one model are told apart.
+    models = df.groupby("run_id")["model"].first().fillna("unknown model")
+    dup = models.duplicated(keep=False)
+    labels = {rid: f"{m} ({rid[:6]})" if dup[rid] else m for rid, m in models.items()}
+    df = df.assign(series=df["run_id"].map(labels))
+    title = f"{SPREAD_METRICS[metric]} per platform · {story}"
+    return {
+        "chart": spread_by_platform(df, metric, SPREAD_METRICS[metric], log=log, title=title),
+        "story_id": story,
+    }
+
+
+@app.get("/api/dashboard/charts/criteria")
+async def chart_criteria(run_id: str | None = None, story_id: str | None = None):
+    """Hidden acceptance criteria pass rate per platform over repeats."""
+    df = get_execution_frame(_chart_run_ids("", run_id))
+    story = pick_story(df, story_id)
+    rates = get_criteria_rates(df[df["story_id"] == story] if story else df)
+    if not rates:
+        return {"chart": None, "story_id": story}
+    return {"chart": heatmap_criteria(rates, title=f"Hidden acceptance criteria · {story}"), "story_id": story}
 
 
 @app.get("/api/dashboard/framework-metrics")
@@ -1133,17 +1219,20 @@ async def get_rubric():
 
 
 @app.get("/api/dashboard/scoring/{platform_id}/{story_id}")
-async def get_story_score(platform_id: str, story_id: str, run_id: str | None = None):
-    """Get current scores and trace info for a platform/story pair."""
-    data = load_results_raw(run_id)
-    pdata = data.get("platforms", {}).get(platform_id, {})
-    metrics = pdata.get("story_metrics", [])
+async def get_story_score(
+    platform_id: str,
+    story_id: str,
+    run_id: str | None = None,
+    repeat_index: int | None = None,
+):
+    """Get current scores and trace info for one repeat of a platform/story pair.
 
-    story_metric = None
-    for sm in metrics:
-        if sm.get("story_id") == story_id:
-            story_metric = sm
-            break
+    Metrics and rubric scores come from the execution row for *repeat_index*
+    (default 0; legacy rows without one count as 0).
+    """
+    repeat = repeat_index or 0
+    data = load_results_raw(run_id)
+    story_metric = _story_metric(data, platform_id, story_id, repeat)
 
     if not story_metric:
         return {"found": False}
@@ -1154,14 +1243,11 @@ async def get_story_score(platform_id: str, story_id: str, run_id: str | None = 
     for dim in SCORING_DIMENSIONS:
         scores[dim] = story_metric.get(f"{dim}_score", 0)
 
-    # Trace files
-    trace_files = list_trace_files(platform_id, story_id)
+    # This execution's own trace file (or a flagged fallback for old rows)
+    loaded, trace_matched = _load_run_trace(story_metric, platform_id, story_id, repeat)
     trace_data = None
-    langfuse_tid = None
-    raw_trace: dict = {}
-    if trace_files:
-        raw_trace = load_trace(trace_files[-1])  # most recent
-        langfuse_tid = raw_trace.get("langfuse_trace_id")
+    raw_trace: dict = loaded or {}
+    if loaded is not None:
         # Flatten stage messages into a top-level messages list
         messages: list[dict] = []
         for stage in (raw_trace.get("stages") or {}).values():
@@ -1171,9 +1257,8 @@ async def get_story_score(platform_id: str, story_id: str, run_id: str | None = 
         elif raw_trace.get("messages"):
             trace_data = raw_trace
 
-    # Also check story_metric for langfuse_trace_id
-    if not langfuse_tid:
-        langfuse_tid = story_metric.get("langfuse_trace_id")
+    # The row's own Langfuse id wins; the file's is only a fallback.
+    langfuse_tid = story_metric.get("langfuse_trace_id") or raw_trace.get("langfuse_trace_id")
 
     # Extract langsmith_run_id from stage data (LangGraph only)
     langsmith_run_id = (
@@ -1185,12 +1270,13 @@ async def get_story_score(platform_id: str, story_id: str, run_id: str | None = 
             ),
             None,
         )
-        if trace_files
+        if loaded is not None
         else None
     )
 
     return {
         "found": True,
+        "repeat_indices": _story_repeat_indices(run_id, platform_id, story_id),
         "scored": is_story_scored(story_metric),
         "scores": scores,
         "notes": notes,
@@ -1200,23 +1286,102 @@ async def get_story_score(platform_id: str, story_id: str, run_id: str | None = 
         "success": story_metric.get("success", False),
         "trace": _sanitize_trace(trace_data) if trace_data else None,
         "langfuse_trace_id": langfuse_tid,
+        # False when the local trace shown is the pair's newest file and
+        # cannot be tied to this execution (it may be another run's).
+        "trace_matched": trace_matched,
         "langsmith_run_id": langsmith_run_id,
         "framework_metrics": story_metric.get("framework_metrics") or None,
     }
 
 
 @app.get("/api/dashboard/graph/{platform_id}/{story_id}")
-async def get_agent_graph(platform_id: str, story_id: str):
+async def get_agent_graph(
+    platform_id: str, story_id: str, run_id: str | None = None, repeat_index: int = 0
+):
     """Build and return the agent communication graph and timeline for a run."""
-    trace_files = list_trace_files(platform_id, story_id)
-    if not trace_files:
+    sm = _story_metric(load_results_raw(run_id), platform_id, story_id, repeat_index)
+    raw_trace, _ = _load_run_trace(sm, platform_id, story_id, repeat_index)
+    if raw_trace is None:
         raise HTTPException(status_code=404, detail="No trace files found")
-    raw_trace = load_trace(trace_files[-1])
     graph = build_graph(raw_trace)
     timeline = build_timeline(raw_trace)
     result = graph.to_dict()
     result["timeline"] = [e.to_dict() for e in timeline]
     return result
+
+
+@app.get("/api/dashboard/execution/{platform_id}/{story_id}")
+async def get_execution_model(
+    platform_id: str,
+    story_id: str,
+    source: str = "auto",
+    run_id: str | None = None,
+    repeat_index: int = 0,
+):
+    """Return the canonical execution model (stages → agent turns → steps).
+
+    ``source`` is ``auto`` (Langfuse when the run has a trace id and the
+    server answers, otherwise the local stage file), ``langfuse`` or
+    ``local``. Whatever the source, stage success flags come from the local
+    file because Langfuse spans do not carry them; nor do they carry a
+    usable cost, so the harness-reported stage cost is overlaid too.
+
+    The execution is the run's row for *repeat_index*: its own Langfuse
+    trace and its own stage file. A stage file that cannot be tied to the
+    row (older rows recorded none) is used only with a note saying so, and
+    never overlaid onto that row's Langfuse trace.
+    """
+    sm = _story_metric(load_results_raw(run_id), platform_id, story_id, repeat_index)
+    stage_file, matched = _load_run_trace(sm, platform_id, story_id, repeat_index)
+    trace_id = (sm or {}).get("langfuse_trace_id") or (stage_file or {}).get("langfuse_trace_id")
+    if stage_file is None and not trace_id:
+        raise HTTPException(status_code=404, detail="No trace files found")
+
+    local_model = None
+    if stage_file is not None:
+        local_model = build_from_stage_file(stage_file)
+        local_model.platform_id = local_model.platform_id or platform_id
+        local_model.story_id = local_model.story_id or story_id
+        if not matched:
+            local_model.notes.append(
+                "This run's own trace file is not on disk; using the newest file for this "
+                "platform and story, which may come from another run."
+            )
+
+    model = None
+    if source in ("auto", "langfuse") and trace_id:
+        detail = await langfuse_fetch_trace(trace_id)
+        if detail is not None:
+            model = build_from_langfuse(detail, platform_id=platform_id, story_id=story_id)
+            if local_model is not None and matched:
+                local_by_key = {s.key: s for s in local_model.stages}
+                for stage in model.stages:
+                    local_stage = local_by_key.get(stage.key)
+                    if local_stage is not None:
+                        stage.success = local_stage.success
+                        stage.error = stage.error or local_stage.error
+                        stage.reported_cost_usd = local_stage.reported_cost_usd
+            else:
+                model.notes.append(
+                    "No local trace file for this run: stage pass/fail and cost are unavailable."
+                )
+        elif source == "langfuse":
+            raise HTTPException(status_code=404, detail="Langfuse trace unavailable")
+        elif local_model is not None:
+            local_model.notes.append("Langfuse trace unavailable; built from the local stage file.")
+        else:
+            raise HTTPException(status_code=404, detail="Langfuse trace unavailable and no local trace file")
+    elif source == "langfuse":
+        raise HTTPException(status_code=404, detail="Run has no Langfuse trace id")
+
+    if model is None:
+        if local_model is None:
+            raise HTTPException(status_code=404, detail="Run has no local trace file")
+        model = local_model
+    payload = model.to_dict()
+    payload["langfuse_trace_id"] = trace_id
+    payload["trace_matched"] = matched
+    return payload
 
 
 def _story_budgets() -> dict[str, float]:
@@ -1231,6 +1396,54 @@ def _story_budgets() -> dict[str, float]:
         return {}
 
 
+_REPEAT_TRACE_RE = re.compile(r"_r(\d+)_(?:stages|trace)\.json$")
+
+
+def _trace_files_for_repeat(files: list[Path], repeat: int) -> list[Path]:
+    """Keep the trace files of one repeat (``_r<N>`` suffix; repeat 0 has none)."""
+    def file_repeat(f: Path) -> int:
+        m = _REPEAT_TRACE_RE.search(f.name)
+        return int(m.group(1)) if m else 0
+
+    return [f for f in files if file_repeat(f) == repeat]
+
+
+def _story_metric(data: dict, platform_id: str, story_id: str, repeat: int) -> dict | None:
+    """The run's row for one repeat of a platform/story pair (legacy NULL repeat = 0)."""
+    for sm in data.get("platforms", {}).get(platform_id, {}).get("story_metrics", []):
+        if sm.get("story_id") == story_id and (sm.get("repeat_index") or 0) == repeat:
+            return sm
+    return None
+
+
+def _load_run_trace(
+    story_metric: dict | None, platform_id: str, story_id: str, repeat: int
+) -> tuple[dict | None, bool]:
+    """Load the trace file of this execution; ``(trace, matched)``.
+
+    Prefers the file the execution row recorded. Older rows did not record
+    one, so the pair's newest file for the repeat is used instead, and it
+    only counts as matched when its Langfuse trace id is the row's own.
+    Otherwise it may come from any run, and callers must say so.
+    """
+    if story_metric is not None:
+        own = own_trace_file(story_metric, platform_id, story_id)
+        if own is not None:
+            return load_trace(own), True
+    files = _trace_files_for_repeat(list_trace_files(platform_id, story_id), repeat)
+    if not files:
+        return None, False
+    raw = load_trace(files[-1])
+    row_tid = (story_metric or {}).get("langfuse_trace_id")
+    return raw, bool(row_tid) and raw.get("langfuse_trace_id") == row_tid
+
+
+def _story_repeat_indices(run_id: str | None, platform_id: str, story_id: str) -> list[int]:
+    store = _get_result_store()
+    target_run = run_id or store.latest_run_id()
+    return store.repeat_indices(target_run, platform_id, story_id) if target_run else []
+
+
 @app.post("/api/dashboard/scoring/submit")
 async def submit_score(submission: ScoreSubmission, run_id: str | None = None):
     """Submit rubric scores for a platform/story pair.
@@ -1239,6 +1452,18 @@ async def submit_score(submission: ScoreSubmission, run_id: str | None = None):
     Likert (1-5) dimension scores and ``overall_score`` for the platform
     so downstream exports stay in sync.
     """
+    store = _get_result_store()
+    target_run = run_id or store.latest_run_id()
+    if target_run and submission.repeat_index is None:
+        repeats = store.repeat_indices(
+            target_run, submission.platform_id, submission.story_id
+        )
+        if len(repeats) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail=f"repeat_index required: this story has {len(repeats)} repeats",
+            )
+
     data = load_results_raw(run_id)
     update_story_scores(
         data,
@@ -1246,11 +1471,10 @@ async def submit_score(submission: ScoreSubmission, run_id: str | None = None):
         submission.story_id,
         submission.scores,
         submission.notes,
+        submission.repeat_index,
     )
     save_results(data)
 
-    store = _get_result_store()
-    target_run = run_id or store.latest_run_id()
     recomputed: dict[str, float] = {}
     if target_run:
         store.update_rubric_scores_by_story(
@@ -1258,13 +1482,19 @@ async def submit_score(submission: ScoreSubmission, run_id: str | None = None):
             submission.platform_id,
             submission.story_id,
             submission.scores,
+            repeat_index=submission.repeat_index,
         )
-        recomputed = recompute_platform_likert_from_store(
-            store,
-            target_run,
-            submission.platform_id,
-            _story_budgets(),
-        )
+        try:
+            recomputed = recompute_platform_likert_from_store(
+                store,
+                target_run,
+                submission.platform_id,
+                _story_budgets(),
+            )
+        except KeyError as e:
+            raise HTTPException(
+                status_code=409, detail=f"No time budget known for story {e.args[0]}"
+            ) from e
 
     return {"success": True, "likert": recomputed}
 
@@ -1287,9 +1517,14 @@ async def recompute_scores(run_id: str | None = None):
 
     updated: dict[str, dict[str, float]] = {}
     for pid in platforms:
-        updated[pid] = recompute_platform_likert_from_store(
-            store, target_run, pid, budgets
-        )
+        try:
+            updated[pid] = recompute_platform_likert_from_store(
+                store, target_run, pid, budgets
+            )
+        except KeyError as e:
+            raise HTTPException(
+                status_code=409, detail=f"No time budget known for story {e.args[0]}"
+            ) from e
     return {"run_id": target_run, "platforms": updated}
 
 
@@ -1299,6 +1534,17 @@ async def scoring_progress(run_id: str | None = None):
     data = load_results_raw(run_id)
     progress = get_scoring_progress(data)
     return {"progress": {pid: {"scored": s, "total": t} for pid, (s, t) in progress.items()}}
+
+
+@app.get("/api/dashboard/scoring/availability")
+async def scoring_availability(run_id: str | None = None):
+    """Which platform/story pairs have results in the run and traces on disk.
+
+    Drives the Scoring page picker: each cell says whether the platform ran
+    the story, passed it and has been scored.
+    """
+    data = load_results_raw(run_id)
+    return {"run_id": data.get("run_id"), "platforms": get_story_availability(data, list_traced_pairs())}
 
 
 @app.get("/api/dashboard/scoring/matrix")
@@ -1367,12 +1613,11 @@ async def story_detail(story_id: str, run_id: str | None = None):
                     row[f"{dim}_score"] = sm.get(f"{dim}_score", None)
                 rows.append(row)
 
-    # Trace availability
+    # Trace availability: the run's own (first-repeat) trace per platform
     traces = {}
     for pid in pids:
-        files = list_trace_files(pid, story_id)
-        if files:
-            trace = load_trace(files[-1])
+        trace, _ = _load_run_trace(_story_metric(data, pid, story_id, 0), pid, story_id, 0)
+        if trace is not None:
             traces[pid] = _sanitize_trace(trace)
 
     return {"story_id": story_id, "platforms": rows, "traces": traces}
@@ -1411,15 +1656,9 @@ async def comparison_data(platforms: str = "", run_id: str | None = None):
         for pid in pids:
             pdf = metrics_df[metrics_df["platform_id"] == pid]
             efficiency[pid] = {
-                "avg_time": round(pdf["wall_clock_seconds"].mean(), 1)
-                if "wall_clock_seconds" in pdf.columns
-                else 0,
-                "avg_iterations": round(pdf["iterations"].mean(), 1)
-                if "iterations" in pdf.columns
-                else 0,
-                "avg_tool_calls": round(pdf["tool_calls"].mean(), 1)
-                if "tool_calls" in pdf.columns
-                else 0,
+                "avg_time": _known_mean(pdf, "wall_clock_seconds"),
+                "avg_iterations": _known_mean(pdf, "iterations"),
+                "avg_tool_calls": _known_mean(pdf, "tool_calls"),
             }
 
     # Category averages

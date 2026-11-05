@@ -116,13 +116,24 @@ async def _run(context: StageContext, stage_name: str) -> StageResult:
         await adapter.shutdown()
 
 
+def _load_context_data(context_path: str) -> dict:
+    """Read the stage context JSON from *context_path*, or stdin for ``-``.
+
+    The host pipes the context over stdin (``-``) so it never exists as a
+    file the agent's tools could find: in /workspace it was read back by
+    search_code/read_file and bloated agent prompts by up to ~200k tokens.
+    """
+    if context_path == "-":
+        return json.load(sys.stdin)
+    with open(Path(context_path)) as f:
+        return json.load(f)
+
+
 def run_entrypoint(context_path: str) -> None:
     """Main entrypoint: read context, run stage, write result."""
     import asyncio
 
-    path = Path(context_path)
-    with open(path) as f:
-        data = json.load(f)
+    data = _load_context_data(context_path)
 
     stage_name = data.get("metadata", {}).get("stage_name", "codegen")
     context = StageContext.from_dict(data)
@@ -164,6 +175,6 @@ def run_entrypoint(context_path: str) -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python -m desmet.harness.entrypoint <context_file>", file=sys.stderr)
+        print("Usage: python -m desmet.harness.entrypoint <context_file | ->", file=sys.stderr)
         sys.exit(2)
     run_entrypoint(sys.argv[1])

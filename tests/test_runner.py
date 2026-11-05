@@ -4,10 +4,16 @@ Verifies that _run_story executes four sequential stages (requirements,
 codegen, testing, deploy), accumulates artifacts on the StageContext,
 tolerates individual stage failures, and respects dry_run.
 """
+import asyncio
+import json
+import os
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pandas as pd
 import pytest
 
+from desmet.harness.adapter import ContainerOnlyAdapter
 from desmet.harness.context import StageContext
 from desmet.harness.results import (
     CodeResult,
@@ -73,9 +79,15 @@ def sample_story():
 
 
 @pytest.fixture
-def runner_setup(mock_adapter, sample_story, tmp_path):
+def runner_setup(mock_adapter, sample_story, tmp_path, monkeypatch):
     """Create an EvaluationRunner wired with a mock adapter, a disposable
     baseline directory, and a temp results/logs directory."""
+    # The run manifest snapshots pricing; never hit OpenRouter from tests.
+    monkeypatch.setattr("desmet.cost_calculator.get_pricing", lambda: {})
+    # Never SSH to a real deploy server from tests (.env may configure one).
+    monkeypatch.setattr(
+        "desmet.adapters._shared.tools.harness_teardown_deploy", lambda *a, **k: None
+    )
     baseline = tmp_path / "baseline"
     baseline.mkdir()
     (baseline / "README.md").write_text("baseline")
@@ -83,6 +95,8 @@ def runner_setup(mock_adapter, sample_story, tmp_path):
     config = RunnerConfig(
         results_dir=tmp_path / "results",
         logs_dir=tmp_path / "logs",
+        execution_mode="in_process",
+        verify_workspace=False,  # skip Docker verification and SSH health check
     )
     runner = EvaluationRunner(
         config=config,
@@ -96,6 +110,44 @@ def runner_setup(mock_adapter, sample_story, tmp_path):
 # ---------------------------------------------------------------------------
 # Test class
 # ---------------------------------------------------------------------------
+
+class TestRunManifest:
+    async def test_run_row_has_manifest(self, runner_setup, fake_containers):
+        runner, _ = runner_setup
+        runner.config.execution_mode = "container"
+        await runner.run_full_evaluation()
+        run = runner.store.get_run(runner._current_run_id).iloc[0]
+        assert run["execution_mode"] == "container"
+        assert json.loads(run["image_digests"]) == {"test_platform": fake_containers.digest}
+
+    async def test_shared_run_id_path_gets_manifest_and_resolved_model(
+        self, runner_setup, monkeypatch
+    ):
+        """Web single-story runs create the run via runner.create_run, then
+        pass run_id to run_single_story."""
+        monkeypatch.setenv("DESMET_MODEL", "gpt-manifest-test")
+        runner, _ = runner_setup
+        run_id = runner.create_run(
+            platforms_filter=["test_platform"],
+            stories_filter=["US-001"],
+            platform_ids=["test_platform"],
+        )
+        await runner.run_single_story("test_platform", "US-001", run_id=run_id)
+        run = runner.store.get_run(run_id).iloc[0]
+        assert run["model"] == "gpt-manifest-test"
+        assert run["execution_mode"] == "in_process"
+        assert run["deploy_mode"] == "remote"
+        assert len(run["prompts_sha256"]) == 64
+        assert run["provider"]
+
+    async def test_in_process_run_has_no_image_digests(self, runner_setup):
+        runner, _ = runner_setup
+        await runner.run_full_evaluation()
+        run = runner.store.get_run(runner._current_run_id).iloc[0]
+        assert run["execution_mode"] == "in_process"
+        assert pd.isna(run["image_digests"])
+        assert len(run["prompts_sha256"]) == 64
+
 
 class TestRunnerStageExecution:
     """Test that _run_story drives four stages sequentially."""
@@ -201,20 +253,62 @@ class TestRunnerStageExecution:
         result = runner.results["test_platform"]["US-001"]
         assert result.status == StoryStatus.COMPLETED
 
-    async def test_story_result_status_on_all_fail(self, runner_setup):
-        """When all stages fail, the story should still complete (stages are
-        non-blocking) but result should reflect partial failure."""
+    async def test_all_stages_raise_is_not_success(self, runner_setup):
         runner, adapter = runner_setup
-        adapter.generate_requirements.side_effect = Exception("fail")
-        adapter.generate_code.side_effect = Exception("fail")
-        adapter.generate_tests.side_effect = Exception("fail")
-        adapter.build_and_deploy.side_effect = Exception("fail")
-
+        for m in ("generate_requirements", "generate_code", "generate_tests", "build_and_deploy"):
+            getattr(adapter, m).side_effect = Exception("fail")
         await runner.run_full_evaluation()
+        r = runner.results["test_platform"]["US-001"]
+        assert r.status == StoryStatus.COMPLETED
+        assert r.success is False
+        assert set(r.raw_result) == {"requirements", "codegen", "testing", "deploy"}
+        assert r.raw_result["codegen"].error_message == "Exception: fail"
+        assert isinstance(r.raw_result["codegen"], CodeResult)
 
-        result = runner.results["test_platform"]["US-001"]
-        # Story still completes (stage failures are non-blocking)
-        assert result.status == StoryStatus.COMPLETED
+    async def test_post_stage_error_keeps_real_stage_result(self, runner_setup):
+        """A crash in the progress/metrics code after a stage returned must
+        not replace the paid stage result with a fabricated failure."""
+        runner, adapter = runner_setup
+        adapter.generate_code.return_value = CodeResult(
+            platform_id="test_platform", stage_name="codegen",
+            success=True, tokens_input=200, tokens_output=100,
+        )
+
+        def callback(msg):
+            if "[CODEGEN] PASSED" in msg:
+                raise RuntimeError("progress sink broke")
+
+        runner.progress_callback = callback
+        await runner.run_full_evaluation()
+        cg = runner.results["test_platform"]["US-001"].raw_result["codegen"]
+        assert cg.success is True
+        assert (cg.tokens_input, cg.tokens_output) == (200, 100)
+
+    async def test_single_stage_run_success_needs_only_that_stage(self, runner_setup):
+        runner, _ = runner_setup
+        runner.config.stage = "codegen"
+        await runner.run_full_evaluation()
+        r = runner.results["test_platform"]["US-001"]
+        assert r.expected_stages == ["codegen"] and r.success is True
+
+    async def test_in_process_stage_timeout(self, runner_setup):
+        runner, adapter = runner_setup
+        runner.config.stage_timeout_seconds = 1
+
+        async def slow(ctx):
+            await asyncio.sleep(5)
+
+        adapter.generate_code.side_effect = slow
+        await runner.run_full_evaluation()
+        cg = runner.results["test_platform"]["US-001"].raw_result["codegen"]
+        assert cg.success is False and cg.error_message == "Stage timed out after 1s"
+        assert cg.iterations is None
+        assert cg.framework_metrics["timed_out"] == 1.0
+        assert cg.framework_metrics["llm_calls"] is None
+        # One unknown stage count makes the execution totals unknown.
+        r = runner.results["test_platform"]["US-001"]
+        assert r.iterations is None
+        assert r.framework_metrics["llm_calls"] is None
 
     async def test_workspace_created(self, runner_setup, sample_story, tmp_path):
         """The runner should create a workspace directory from baseline."""
@@ -371,3 +465,227 @@ def test_save_stage_traces_includes_langsmith_run_id(tmp_path):
     assert trace_files, "No trace file written"
     data = json.loads(trace_files[0].read_text())
     assert data["stages"]["requirements"]["langsmith_run_id"] == "ls-run-abc"
+
+
+class TestExecutionMode:
+    """One explicit execution path per run; image built once per platform."""
+
+    async def test_build_failure_fails_platform_stories(self, runner_setup, fake_containers):
+        runner, adapter = runner_setup
+        runner.config.execution_mode = "container"
+        fake_containers.build_ok = False
+        progress: list[str] = []
+        runner.progress_callback = progress.append
+        await runner.run_full_evaluation()
+        r = runner.results["test_platform"]["US-001"]
+        assert r.status == StoryStatus.FAILED
+        assert "image build failed" in r.error_message.lower()
+        # Loud: the build failure reaches the run log, not just structlog.
+        assert any("[ERROR] Docker image build failed for test_platform" in m for m in progress)
+        assert r.execution_mode == "container"
+        assert fake_containers.run_stage_calls == []
+        adapter.generate_requirements.assert_not_called()
+
+    async def test_image_built_once_per_platform(self, runner_setup, fake_containers):
+        runner, _ = runner_setup
+        runner.config.execution_mode = "container"
+        runner.config.repeats = 3
+        await runner.run_full_evaluation()
+        assert fake_containers.build_calls == ["test_platform"]
+        assert len(fake_containers.run_stage_calls) == 3 * 4
+
+    async def test_container_mode_does_not_call_adapter_stages(self, runner_setup, fake_containers):
+        runner, adapter = runner_setup
+        runner.config.execution_mode = "container"
+        await runner.run_full_evaluation()
+        adapter.generate_code.assert_not_called()
+        assert runner.results["test_platform"]["US-001"].execution_mode == "container"
+
+    async def test_single_story_builds_once(self, runner_setup, fake_containers):
+        runner, _ = runner_setup
+        runner.config.execution_mode = "container"
+        runner.config.repeats = 2
+        await runner.run_single_story("test_platform", "US-001")
+        assert fake_containers.build_calls == ["test_platform"]
+
+    async def test_in_process_never_touches_docker(self, runner_setup, fake_containers):
+        runner, _ = runner_setup
+        await runner.run_full_evaluation()
+        assert fake_containers.build_calls == [] and fake_containers.run_stage_calls == []
+        assert fake_containers.stop_calls == []
+        assert runner.results["test_platform"]["US-001"].execution_mode == "in_process"
+
+    def test_in_process_rejects_container_only_adapter(self, tmp_path, sample_story):
+        with pytest.raises(ValueError):
+            EvaluationRunner(
+                RunnerConfig(
+                    results_dir=tmp_path,
+                    logs_dir=tmp_path / "l",
+                    execution_mode="in_process",
+                ),
+                {"p": ContainerOnlyAdapter("langgraph")},
+                [sample_story],
+                tmp_path,
+            )
+
+    async def test_mode_is_decided_per_platform(self, runner_setup, fake_containers, sample_story):
+        runner, adapter = runner_setup
+        runner.platforms["box"] = ContainerOnlyAdapter("langgraph")
+        runner.config.platform_execution_modes = {
+            "box": "container",
+            "test_platform": "in_process",
+        }
+        fake_containers.build_ok = False
+        await runner.run_full_evaluation()
+        ok = runner.results["test_platform"]["US-001"]
+        assert ok.status == StoryStatus.COMPLETED
+        assert ok.execution_mode == "in_process"
+        bad = runner.results["box"]["US-001"]
+        assert bad.status == StoryStatus.FAILED
+        assert bad.execution_mode == "container"
+        assert fake_containers.build_calls == ["box"]
+
+
+class TestDeployMode:
+    def test_deploy_mode_defaults_remote(self, sample_story, tmp_path):
+        assert RunnerConfig().deploy_mode == "remote"
+        ctx = StageContext(story=sample_story, workspace=tmp_path)
+        assert ctx.deploy_mode == "remote"
+        data = ctx.to_dict()
+        assert data["deploy_mode"] == "remote"
+        data["deploy_mode"] = "local"
+        assert StageContext.from_dict(data).deploy_mode == "local"
+
+    async def test_runner_leaves_env_untouched(self, runner_setup, monkeypatch):
+        monkeypatch.delenv("DESMET_DEPLOY_MODE", raising=False)
+        runner, _ = runner_setup
+        await runner.run_full_evaluation()
+        assert "DESMET_DEPLOY_MODE" not in os.environ
+
+    async def test_in_process_stage_sees_mode_only_during_call(
+        self, runner_setup, monkeypatch
+    ):
+        monkeypatch.delenv("DESMET_DEPLOY_MODE", raising=False)
+        runner, adapter = runner_setup
+        runner.config.deploy_mode = "local"
+        seen = []
+        result = adapter.build_and_deploy.return_value
+
+        async def spy(ctx):
+            seen.append((ctx.deploy_mode, os.environ.get("DESMET_DEPLOY_MODE")))
+            return result
+
+        adapter.build_and_deploy = spy
+        await runner.run_full_evaluation()
+        assert seen == [("local", "local")]
+        assert "DESMET_DEPLOY_MODE" not in os.environ
+
+
+class TestDeployHealth:
+    """deploy_healthy is True only when this execution's deploy stage passed
+    and its service answers; an earlier run's service can't stand in."""
+
+    @pytest.fixture
+    def deploy_env(self, runner_setup, monkeypatch):
+        runner, adapter = runner_setup
+        runner.config.verify_workspace = True
+        runner.config.deploy_mode = "remote"
+        calls: list = []
+        state = SimpleNamespace(teardown=True, healthy=True)
+
+        def teardown(platform_id, deploy_mode):
+            calls.append(("teardown", platform_id, deploy_mode))
+            return state.teardown
+
+        def health(*a, **k):
+            calls.append(("health",))
+            return state.healthy
+
+        deploy_result = adapter.build_and_deploy.return_value
+
+        async def deploy(ctx):
+            calls.append(("deploy",))
+            return deploy_result
+
+        adapter.build_and_deploy = deploy
+        monkeypatch.setattr("desmet.adapters._shared.tools.harness_teardown_deploy", teardown)
+        monkeypatch.setattr("desmet.adapters._shared.tools.harness_health_check", health)
+        monkeypatch.setattr(
+            "desmet.harness.verification.verify_execution",
+            lambda *a, **k: SimpleNamespace(
+                artifact_path="a.tar", tests_run=1, tests_passed=1,
+                tests_failed=0, pytest_exit_code=0, criteria_results={},
+            ),
+        )
+        return runner, deploy_result, calls, state
+
+    async def test_teardown_runs_before_deploy_stage(self, deploy_env):
+        runner, _, calls, _ = deploy_env
+        await runner.run_full_evaluation()
+        assert calls == [("teardown", "test_platform", "remote"), ("deploy",), ("health",)]
+        assert runner.results["test_platform"]["US-001"].deploy_healthy is True
+
+    async def test_failed_deploy_is_not_healthy(self, deploy_env):
+        runner, deploy_result, calls, _ = deploy_env
+        deploy_result.success = False
+        await runner.run_full_evaluation()
+        assert runner.results["test_platform"]["US-001"].deploy_healthy is False
+        assert ("health",) not in calls
+
+    async def test_failed_teardown_is_not_healthy(self, deploy_env):
+        runner, _, calls, state = deploy_env
+        state.teardown = False
+        progress: list[str] = []
+        runner.progress_callback = progress.append
+        await runner.run_full_evaluation()
+        assert runner.results["test_platform"]["US-001"].deploy_healthy is False
+        assert ("health",) not in calls
+        assert any("previous deployment" in m for m in progress)
+
+    async def test_no_deploy_stage_is_none(self, deploy_env):
+        runner, _, calls, _ = deploy_env
+        runner.config.stage = "codegen"
+        await runner.run_full_evaluation()
+        assert runner.results["test_platform"]["US-001"].deploy_healthy is None
+        assert calls == []
+
+    async def test_local_mode_is_none(self, deploy_env):
+        runner, deploy_result, _, _ = deploy_env
+        runner.config.deploy_mode = "local"
+        deploy_result.success = False
+        await runner.run_full_evaluation()
+        assert runner.results["test_platform"]["US-001"].deploy_healthy is None
+
+
+class TestTestCounts:
+    async def test_reported_tests_do_not_overwrite_verified(self, runner_setup, monkeypatch):
+        runner, adapter = runner_setup
+        adapter.generate_tests.return_value = TestResult(
+            platform_id="test_platform", stage_name="testing",
+            success=True, tests_run=10, tests_passed=10,
+        )
+        runner.config.verify_workspace = True
+        monkeypatch.setattr(
+            "desmet.adapters._shared.tools.harness_health_check",
+            lambda *a, **k: None,
+        )
+        # runner.py imports it lazily, so patch the source module
+        monkeypatch.setattr(
+            "desmet.harness.verification.verify_execution",
+            lambda *a, **k: SimpleNamespace(
+                artifact_path="a.tar", tests_run=4, tests_passed=1,
+                tests_failed=3, pytest_exit_code=1, criteria_results={},
+            ),
+        )
+        await runner.run_full_evaluation()
+        r = runner.results["test_platform"]["US-001"]
+        assert (r.tests_run, r.tests_passed, r.tests_failed) == (4, 1, 3)
+        assert (r.reported_tests_run, r.reported_tests_passed) == (10, 10)
+
+
+async def test_repeat_index_reaches_result(runner_setup):
+    runner, _ = runner_setup
+    runner.config.repeats = 2
+    await runner.run_full_evaluation()
+    df = runner.store.get_executions(runner._current_run_id)
+    assert sorted(df["repeat_index"]) == [0, 1]

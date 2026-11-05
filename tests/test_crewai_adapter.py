@@ -279,44 +279,6 @@ class TestCrewAIAdapterStructure:
         assert callable(adapter._build_crew)
 
 
-class TestIterationBudget:
-    def test_budget_allocation_default_50(self):
-        from desmet.adapters.multiagent.crewai import _compute_iter_budget
-        planner, executor, reviewer = _compute_iter_budget(50)
-        assert planner == 10
-        assert executor == 30
-        assert reviewer == 10
-
-    def test_budget_allocation_custom_30(self):
-        from desmet.adapters.multiagent.crewai import _compute_iter_budget
-        planner, executor, reviewer = _compute_iter_budget(30)
-        assert planner + executor + reviewer <= 30
-        assert executor > planner
-        assert executor > reviewer
-
-    def test_budget_allocation_minimum(self):
-        from desmet.adapters.multiagent.crewai import _compute_iter_budget
-        planner, executor, reviewer = _compute_iter_budget(10)
-        assert planner >= 1
-        assert executor >= 1
-        assert reviewer >= 1
-
-    def test_budget_allocation_retry(self):
-        """On retry, planner budget is 0 and executor gets the extra allocation."""
-        from desmet.adapters.multiagent.crewai import _compute_iter_budget
-        planner, executor, reviewer = _compute_iter_budget(50, retry=True)
-        assert planner == 0
-        assert reviewer == 10
-        assert executor == 40
-
-    def test_budget_allocation_retry_minimum(self):
-        from desmet.adapters.multiagent.crewai import _compute_iter_budget
-        planner, executor, reviewer = _compute_iter_budget(5, retry=True)
-        assert planner == 0
-        assert executor >= 1
-        assert reviewer >= 1
-
-
 class TestSuccessAfterBudget:
     """Regression: a stage that produced the required artifacts must
     report success even if the iteration counter happened to land at or
@@ -486,6 +448,64 @@ class TestSuccessAfterBudget:
         )
 
 
+async def test_aggregate_usage_fallback_is_not_one_call(monkeypatch, tmp_path, caplog):
+    """When the event bus recorded no per-call usage, the crew's aggregate
+    token_usage keeps its tokens but marks the call count unknown instead
+    of passing as a single LLM call."""
+    import logging
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from desmet.adapters._shared.budget import usage_fallback
+    from desmet.adapters._shared.retry import RetryPolicy
+    from desmet.adapters._shared.tracing import compute_framework_metrics
+    from desmet.harness.context import StageContext
+    from desmet.harness.story import DifficultyLevel, UserStory
+
+    adapter = CrewAIAdapter(config={"model": "test-model"})
+    monkeypatch.setattr(adapter, "_create_llm", lambda ctx: MagicMock())
+
+    def fake_kickoff():
+        adapter._llm_call_count += 6
+        return SimpleNamespace(
+            tasks_output=[],
+            token_usage=SimpleNamespace(prompt_tokens=4000, completion_tokens=700),
+        )
+
+    monkeypatch.setattr(
+        adapter, "_build_crew", lambda *a, **kw: SimpleNamespace(kickoff=fake_kickoff),
+    )
+    policy = RetryPolicy(max_retries=0, stage_name="requirements", workspace=tmp_path)
+    monkeypatch.setattr(policy, "validate", lambda: (True, "ok"))
+    story = UserStory(
+        id="US-001", title="t", description="d",
+        difficulty=DifficultyLevel.BASIC, category="smoke", prompt="p",
+    )
+    context = StageContext(
+        story=story, workspace=tmp_path, platform_id="crewai", model="test-model",
+    )
+    trace = AgentTrace()
+    collector = ObservationCollector(
+        trace,
+        requirements=ObservationRequirements(
+            usage=False, tool_calls=False, llm_duration=False,
+            messages=False, iterations=False,
+        ),
+    )
+    progress = ProgressReporter(callback=None, collector=collector)
+
+    with caplog.at_level(logging.WARNING):
+        await adapter._run_agent(
+            "requirements", "p", None, [], collector, context, policy, progress,
+        )
+
+    assert (trace.total_tokens_input, trace.total_tokens_output) == (4000, 700)
+    assert usage_fallback(trace)
+    assert any("aggregate" in r.getMessage() for r in caplog.records)
+    fm = compute_framework_metrics(trace, max_iterations=50)
+    assert fm["llm_calls"] is None and fm["usage_fallback"] == 1.0
+
+
 def test_event_handlers_register_per_instance():
     """Regression: each adapter instance must register its own handler
     closures, and each closure must capture its own ``self``.
@@ -514,7 +534,10 @@ def test_event_handlers_register_per_instance():
     assert "_event_handlers_registered" in a2.__dict__
 
     # Behavioral check — requires crewai.events to construct and emit a
-    # real event through the shared event bus.
+    # real event through the shared event bus.  google-adk[extensions] pulls
+    # in an older crewai (1.6) whose event bus differs; test the version the
+    # crewai extra pins.
+    pytest.importorskip("crewai", minversion="1.12.2")
     pytest.importorskip("crewai.events")
     from unittest.mock import MagicMock
 
@@ -592,7 +615,8 @@ def test_planner_fallback_records_plan_source():
 
     from desmet.adapters.multiagent.crewai import CrewAIAdapter
 
-    src = inspect.getsource(CrewAIAdapter._run_agent)
+    # The retry loop lives in _run_attempts (called under the budget hook).
+    src = inspect.getsource(CrewAIAdapter._run_attempts)
     assert 'plan_source' in src
     assert 'trace.metadata' in src or 'metadata["plan_source"]' in src or "metadata['plan_source']" in src
     # Must not silently swallow — either logs, records error, or narrows except.

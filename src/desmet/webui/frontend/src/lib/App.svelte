@@ -214,6 +214,7 @@
 
   .main-content {
     flex: 1;
+    min-width: 0; /* let wide, scrollable widgets scroll instead of widening the page */
     margin-left: 200px;
     padding: 32px 40px;
     min-height: 100vh;

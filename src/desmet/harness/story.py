@@ -121,8 +121,8 @@ class StoryResult:
     end_time: datetime | None = None
     wall_clock_seconds: float = 0.0
 
-    # Execution metrics
-    iterations: int = 0
+    # Execution metrics (iterations None: some stage's count is unknown)
+    iterations: int | None = 0
     tool_calls: int = 0
     tokens_input: int = 0
     tokens_output: int = 0
@@ -139,11 +139,24 @@ class StoryResult:
     tests_run: int = 0
     tests_passed: int = 0
     tests_failed: int = 0
+    pytest_exit_code: int | None = None
+    # Harness-side health check after deploy; None in local mode / no deploy.
+    deploy_healthy: bool | None = None
     coverage_delta: float = 0.0
+    # Tests as reported by the platform itself (distinct from harness verification).
+    reported_tests_run: int | None = None
+    reported_tests_passed: int | None = None
+    reported_tests_failed: int | None = None
+
+    # Run context
+    expected_stages: list[str] = field(default_factory=list)
+    execution_mode: str | None = None
+    repeat_index: int = 0
 
     # Artifacts
     output_files: list[str] = field(default_factory=list)
     git_diff: str | None = None
+    artifact_path: str | None = None
     trace_file: str | None = None
     log_file: str | None = None
     langfuse_trace_id: str | None = None
@@ -161,20 +174,20 @@ class StoryResult:
     def success(self) -> bool:
         """Whether the story was successfully completed.
 
-        Requires COMPLETED status *and* all stages to have passed.
+        Requires COMPLETED status, a result for every expected stage, *and*
+        all stages to have passed (``expected_stages`` empty = legacy rows).
         A story whose runner finished without crashing but whose
         individual stages failed (e.g. CrewAI execution timeout)
         is not considered successful.
         """
         if self.status != StoryStatus.COMPLETED:
             return False
-        if self.raw_result and isinstance(self.raw_result, dict):
-            return all(
-                sr.success
-                for sr in self.raw_result.values()
-                if hasattr(sr, "success")
-            )
-        return True
+        stages = self.raw_result if isinstance(self.raw_result, dict) else {}
+        if any(name not in stages for name in self.expected_stages):
+            return False
+        return all(
+            sr.success for sr in stages.values() if hasattr(sr, "success")
+        )
 
     @property
     def criteria_pass_rate(self) -> float:

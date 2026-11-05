@@ -26,6 +26,8 @@ def test_validate_passing_workspace(tmp_path):
         "Non-functional requirements:\n- Performance\n\n"
         "Acceptance criteria:\n- Tests pass\n"
     )
+    (docs / "domain.mermaid").write_text("classDiagram\n  class User\n")
+    (docs / "domain.svg").write_text("<svg xmlns='http://www.w3.org/2000/svg'></svg>")
     policy = RetryPolicy(
         max_retries=3,
         stage_name="requirements",

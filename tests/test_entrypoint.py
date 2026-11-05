@@ -47,6 +47,26 @@ class TestEntrypointModule:
         assert loaded["platform_id"] == "crewai"
         assert loaded["story"]["id"] == "test_story"
 
+    def test_load_context_from_stdin(self, tmp_path, monkeypatch):
+        """``-`` reads the context from stdin (how the host passes it)."""
+        import io
+
+        from desmet.harness.entrypoint import _load_context_data
+
+        ctx = _make_context(tmp_path)
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(ctx.to_dict())))
+        loaded = _load_context_data("-")
+        assert loaded["platform_id"] == "crewai"
+        assert loaded["story"]["id"] == "test_story"
+
+    def test_load_context_from_file(self, tmp_path):
+        from desmet.harness.entrypoint import _load_context_data
+
+        ctx = _make_context(tmp_path)
+        path = tmp_path / "ctx.json"
+        path.write_text(json.dumps(ctx.to_dict()))
+        assert _load_context_data(str(path))["platform_id"] == "crewai"
+
 
 @pytest.fixture(autouse=True)
 def _reset_otel_context():

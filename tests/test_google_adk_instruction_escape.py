@@ -22,6 +22,7 @@ from desmet.adapters.sdk.google_adk import escape_adk_template
 @pytest.fixture
 def inject():
     """Return a sync helper that runs ADK's inject_session_state with an empty state."""
+    pytest.importorskip("google.adk", reason="google-adk not installed")
     from google.adk.agents import Agent
     from google.adk.agents.readonly_context import ReadonlyContext
     from google.adk.runners import Runner

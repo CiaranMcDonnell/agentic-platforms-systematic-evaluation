@@ -18,7 +18,7 @@
     typeof localStorage !== 'undefined' ? (localStorage.getItem(LAST_MODEL_KEY) ?? '') : ''
   );
   let dryRun = $state(false);
-  let deployMode = $state<'local' | 'remote'>('local');
+  let deployMode = $state<'local' | 'remote'>('remote');
   let deployConfigured = $derived(store.config?.deploy_status === 'configured');
   let submitting = $state(false);
   let startError = $state<string | null>(null);

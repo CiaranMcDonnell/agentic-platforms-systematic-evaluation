@@ -161,3 +161,89 @@ class TestLocalDeployMode:
                 action="destroy",
             )
             assert "Error" in result
+
+
+class TestHarnessHealthCheckDeployMode:
+    def test_local_mode_skips_ssh(self, tmp_path, monkeypatch):
+        from desmet.adapters._shared.tools import harness_health_check
+
+        monkeypatch.setenv("DEPLOY_HOST", "h")
+        monkeypatch.setenv("DEPLOY_USER", "u")
+        monkeypatch.setenv("DEPLOY_KEY_PATH", "~/k")
+        monkeypatch.delenv("DESMET_DEPLOY_MODE", raising=False)
+        with patch("desmet.adapters._shared.tools.subprocess.run") as run:
+            assert harness_health_check(tmp_path, "p", "US-001", deploy_mode="local") is None
+        run.assert_not_called()
+
+    def test_remote_mode_curls_health_endpoint(self, tmp_path, monkeypatch):
+        from desmet.adapters._shared.tools import harness_health_check
+
+        monkeypatch.setenv("DEPLOY_HOST", "h")
+        monkeypatch.setenv("DEPLOY_USER", "u")
+        monkeypatch.setenv("DEPLOY_KEY_PATH", "~/k")
+        with patch("desmet.adapters._shared.tools.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0)
+            assert harness_health_check(tmp_path, "p", "US-001", deploy_mode="remote") is True
+        port = _deploy_port("p", "US-001")
+        assert run.call_args[0][0][-1] == f"curl -sf http://localhost:{port}/health"
+
+
+class TestComposeProject:
+    def test_one_project_per_platform(self):
+        # The deploy port is per platform, so the compose project must be
+        # too: a later story's deploy then replaces (and its teardown
+        # removes) whatever an earlier story left on that port.
+        from desmet.adapters._shared.tools import _compose_project
+
+        assert _compose_project("agent_framework") == "desmet-agent_framework"
+        assert _compose_project("CrewAI") == "desmet-crewai"
+
+    def test_restart_writes_platform_project_and_removes_orphans(self, tmp_path):
+        with patch.dict(os.environ, _DEPLOY_ENV), \
+             patch("desmet.adapters._shared.tools.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="abc123", stderr="", returncode=0)
+            _deploy_remote(
+                workspace=tmp_path, platform_id="crewai", story_id="US-010",
+                action="restart",
+            )
+        env = (tmp_path / ".env").read_text()
+        assert "COMPOSE_PROJECT_NAME=desmet-crewai\n" in env
+        up = mock_run.call_args_list[-1][0][0]
+        assert "docker compose up -d --build --remove-orphans" in up
+
+
+class TestHarnessTeardown:
+    def _env(self, monkeypatch):
+        monkeypatch.setenv("DEPLOY_HOST", "h")
+        monkeypatch.setenv("DEPLOY_USER", "u")
+        monkeypatch.setenv("DEPLOY_KEY_PATH", "~/k")
+        monkeypatch.setenv("DEPLOY_BASE_PATH", "/opt/desmet")
+
+    def test_remote_mode_takes_down_platform_project(self, monkeypatch):
+        from desmet.adapters._shared.tools import harness_teardown_deploy
+
+        self._env(monkeypatch)
+        with patch("desmet.adapters._shared.tools.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0)
+            assert harness_teardown_deploy("crewai", deploy_mode="remote") is True
+        argv = run.call_args[0][0]
+        assert argv[0] == "ssh" and "BatchMode=yes" in argv
+        assert argv[-1] == "cd /opt/desmet && docker compose -p desmet-crewai down"
+
+    def test_failure_is_reported(self, monkeypatch):
+        from desmet.adapters._shared.tools import harness_teardown_deploy
+
+        self._env(monkeypatch)
+        with patch("desmet.adapters._shared.tools.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=126)
+            assert harness_teardown_deploy("crewai", deploy_mode="remote") is False
+
+    def test_local_mode_and_unconfigured_skip_ssh(self, monkeypatch):
+        from desmet.adapters._shared.tools import harness_teardown_deploy
+
+        self._env(monkeypatch)
+        with patch("desmet.adapters._shared.tools.subprocess.run") as run:
+            assert harness_teardown_deploy("crewai", deploy_mode="local") is None
+            monkeypatch.delenv("DEPLOY_HOST")
+            assert harness_teardown_deploy("crewai", deploy_mode="remote") is None
+        run.assert_not_called()

@@ -113,6 +113,7 @@ export interface ScoringRubric {
 
 export interface StoryScoreData {
   found: boolean;
+  repeat_indices?: number[];
   scored?: boolean;
   scores?: Record<string, number>;
   notes?: Record<string, string>;
@@ -122,6 +123,8 @@ export interface StoryScoreData {
   success?: boolean;
   trace?: TraceData | null;
   langfuse_trace_id?: string | null;
+  /** False when the local trace is the pair's newest file, not this execution's own. */
+  trace_matched?: boolean;
   langsmith_run_id?: string | null;
   framework_metrics?: Record<string, number | null>;
 }
@@ -197,7 +200,10 @@ export interface StoryDetailData {
 export interface LangfuseObservation {
   id: string;
   name: string;
-  type: 'span' | 'generation' | 'tool';
+  // Lower-cased Langfuse observation type. Frameworks instrumented through
+  // OpenTelemetry also emit 'chain' (LangGraph), 'agent' (CrewAI, ADK) and
+  // 'event'; anything unknown is treated as a span by the viewers.
+  type: 'span' | 'generation' | 'tool' | 'chain' | 'agent' | 'event' | string;
   start_time: string | null;
   end_time: string | null;
   latency_ms: number;
@@ -436,16 +442,146 @@ export const fetchChartJSON = (endpoint: string) =>
 export const fetchRubric = () =>
   request<ScoringRubric>('/api/dashboard/scoring/rubric');
 
+export interface StoryAvailability {
+  /** Repeats of this story in the run (0 = only a trace from another run). */
+  repeats: number;
+  passed: number;
+  scored: number;
+  wall_clock_seconds: number | null;
+  tokens: number | null;
+  cost_usd: number | null;
+  has_trace: boolean;
+  /** Every repeat's own trace file is on disk (else views fall back to the newest). */
+  trace_matched: boolean;
+}
+
+export interface AvailabilityData {
+  run_id: string | null;
+  platforms: Record<string, Record<string, StoryAvailability>>;
+}
+
+export const fetchAvailability = (runId?: string | null) =>
+  request<AvailabilityData>(withRun('/api/dashboard/scoring/availability', runId));
+
 export const fetchScoringMatrix = (runId?: string | null) =>
   request<ScoringMatrixData>(withRun('/api/dashboard/scoring/matrix', runId));
 
-export const fetchStoryScore = (pid: string, sid: string) =>
-  request<StoryScoreData>(withRun(`/api/dashboard/scoring/${pid}/${sid}`));
+export const fetchStoryScore = (pid: string, sid: string, repeatIndex?: number | null) =>
+  request<StoryScoreData>(withRun(
+    `/api/dashboard/scoring/${pid}/${sid}` + (repeatIndex != null ? `?repeat_index=${repeatIndex}` : ''),
+  ));
 
-export const fetchAgentGraph = (pid: string, sid: string) =>
-  request<CommunicationGraph>(`/api/dashboard/graph/${pid}/${sid}`);
+export const fetchAgentGraph = (pid: string, sid: string, repeatIndex = 0) =>
+  request<CommunicationGraph>(withRun(`/api/dashboard/graph/${pid}/${sid}?repeat_index=${repeatIndex}`));
 
-export const submitScore = (data: { platform_id: string; story_id: string; scores: Record<string, number>; notes: Record<string, string> }) =>
+// ── Canonical execution model ───────────────
+
+export type ExecutionRole = 'manager' | 'planner' | 'executor' | 'reviewer' | 'other';
+export type ExecutionSource = 'langfuse' | 'local';
+
+export interface ExecutionStep {
+  id: string;
+  kind: 'llm' | 'tool';
+  name: string;
+  raw_name: string;
+  raw_type: string;
+  start_time: string | null;
+  end_time: string | null;
+  duration_ms: number;
+  tokens_in: number;
+  tokens_out: number;
+  model: string | null;
+  /** Langfuse-priced cost; zero when Langfuse could not price the model. */
+  cost_usd: number;
+  success: boolean | null;
+  error: string | null;
+  input: string | null;
+  output: string | null;
+}
+
+export interface ExecutionTurn {
+  id: string;
+  role: ExecutionRole;
+  raw_name: string;
+  stage_key: string;
+  start_time: string | null;
+  end_time: string | null;
+  duration_ms: number;
+  is_retry: boolean;
+  error: string | null;
+  llm_calls: number;
+  tool_calls: number;
+  tool_failures: number;
+  tokens_in: number;
+  tokens_out: number;
+  tokens: number;
+  cost_usd: number;
+  steps: ExecutionStep[];
+}
+
+export interface ExecutionRoleSummary {
+  turns: number;
+  retries: number;
+  llm_calls: number;
+  tool_calls: number;
+  tool_failures: number;
+  tokens: number;
+  duration_ms: number;
+}
+
+export interface ExecutionStage {
+  key: string;
+  start_time: string | null;
+  end_time: string | null;
+  duration_ms: number;
+  success: boolean | null;
+  error: string | null;
+  /** Sum of turn tokens, or the harness-reported stage total when turns carry none. */
+  tokens: number;
+  /** Sum of step costs, or the harness-reported stage cost when steps are unpriced. */
+  cost_usd: number;
+  summary: Record<string, ExecutionRoleSummary>;
+  turns: ExecutionTurn[];
+}
+
+export interface ExecutionTransition {
+  source: string;
+  target: string;
+  kind: 'sequence' | 'retry' | 'stage';
+}
+
+export interface ExecutionModel {
+  platform_id: string;
+  story_id: string;
+  source: ExecutionSource;
+  attempts: number;
+  stage_order: string[];
+  role_order: ExecutionRole[];
+  summary: ExecutionRoleSummary & {
+    cost_usd: number;
+    roles: ExecutionRole[];
+    by_role: Record<string, ExecutionRoleSummary>;
+  };
+  stages: ExecutionStage[];
+  transitions: ExecutionTransition[];
+  notes: string[];
+  langfuse_trace_id: string | null;
+  /** False when the stage file is the pair's newest, not this execution's own. */
+  trace_matched: boolean;
+}
+
+/** The selected results run's execution for one repeat (default the first). */
+export const fetchExecutionModel = (
+  pid: string,
+  sid: string,
+  source: 'auto' | ExecutionSource = 'auto',
+  repeatIndex = 0,
+) =>
+  request<ExecutionModel>(
+    withRun(`/api/dashboard/execution/${pid}/${sid}?source=${source}&repeat_index=${repeatIndex}`),
+  );
+
+export const submitScore = (data: { platform_id: string; story_id: string; scores: Record<string, number>; notes: Record<string, string>; repeat_index?: number }) =>
   request<{ success: boolean }>(
     withRun('/api/dashboard/scoring/submit'),
     { method: 'POST', body: JSON.stringify(data) },

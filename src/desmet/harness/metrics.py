@@ -86,7 +86,7 @@ class StageMetrics:
 
     success: bool = False
     wall_clock_seconds: float = 0.0
-    iterations: int = 0
+    iterations: int | None = 0  # None = unknown (see StageResult.iterations)
     tool_calls: int = 0
     tokens_input: int = 0
     tokens_output: int = 0
@@ -119,6 +119,11 @@ class StoryMetrics:
     time_efficiency_score: float = 0.0
     autonomy_score: float = 0.0
 
+    # Rubric dimensions that were actually scored (auto or manual).  The
+    # ``*_score`` fields above default to 0.0, which is otherwise
+    # indistinguishable from a genuine score of 0.
+    scored_dimensions: set[str] = field(default_factory=set)
+
     # Automated framework metrics (from StoryResult.framework_metrics)
     framework_metrics: dict[str, float | None] = field(default_factory=dict)
 
@@ -145,6 +150,7 @@ class StoryMetrics:
         ):
             if dimension in score_map:
                 setattr(instance, attr, score_map[dimension])
+                instance.scored_dimensions.add(dimension)
         instance.framework_metrics = getattr(result, "framework_metrics", {}) or {}
         return instance
 
@@ -177,7 +183,7 @@ class StoryMetrics:
         return self._result.wall_clock_seconds
 
     @property
-    def iterations(self) -> int:
+    def iterations(self) -> int | None:
         return self._result.iterations
 
     @property
@@ -239,10 +245,11 @@ class VarianceMetrics:
     success_rate: float
     tool_calls_mean: float
     tool_calls_std: float
-    iterations_mean: float
-    iterations_std: float
+    # None when no repeat has a known iteration count.
+    iterations_mean: float | None
+    iterations_std: float | None
 
-    def to_dict(self) -> dict[str, float]:
+    def to_dict(self) -> dict[str, float | None]:
         return {
             "repeats": self.repeats,
             "wall_clock_mean": round(self.wall_clock_mean, 2),
@@ -254,8 +261,12 @@ class VarianceMetrics:
             "success_rate": round(self.success_rate, 4),
             "tool_calls_mean": round(self.tool_calls_mean, 1),
             "tool_calls_std": round(self.tool_calls_std, 1),
-            "iterations_mean": round(self.iterations_mean, 1),
-            "iterations_std": round(self.iterations_std, 1),
+            "iterations_mean": (
+                round(self.iterations_mean, 1) if self.iterations_mean is not None else None
+            ),
+            "iterations_std": (
+                round(self.iterations_std, 1) if self.iterations_std is not None else None
+            ),
         }
 
 
@@ -284,7 +295,8 @@ def compute_variance_metrics(results: list) -> VarianceMetrics:
     tk = [float(r.tokens_input + r.tokens_output) for r in results]
     co = [r.api_cost_usd for r in results]
     tc = [float(r.tool_calls) for r in results]
-    it = [float(r.iterations) for r in results]
+    # Unknown counts (timed-out stages) are left out, not read as 0.
+    it = [float(r.iterations) for r in results if r.iterations is not None]
     completed = sum(1 for r in results if r.status == StoryStatus.COMPLETED)
 
     return VarianceMetrics(
@@ -298,8 +310,8 @@ def compute_variance_metrics(results: list) -> VarianceMetrics:
         success_rate=completed / n,
         tool_calls_mean=mean(tc),
         tool_calls_std=pstdev(tc),
-        iterations_mean=mean(it),
-        iterations_std=pstdev(it),
+        iterations_mean=mean(it) if it else None,
+        iterations_std=pstdev(it) if it else None,
     )
 
 
@@ -372,13 +384,24 @@ class EvaluationMetrics:
         # Measures: can the framework run all SDLC stages end-to-end?
         # Formula: completion_ratio * 0.5
         #          + avg(pipeline_completeness_score) / 3 * 0.5
-        # Scaled to 1-5.
+        # Scaled to 1-5.  The rubric average covers only stories where the
+        # rubric was scored; if none were, completion_ratio stands alone
+        # rather than an unscored rubric dragging the score to the floor.
         # ------------------------------------------------------------------
         completion_ratio = (
             self.stories_completed / self.stories_total if self.stories_total > 0 else 0.0
         )
-        avg_pipeline_score = sum(m.pipeline_completeness_score for m in self.story_metrics) / n
-        pipeline_raw = completion_ratio * 0.5 + (avg_pipeline_score / 3.0) * 0.5
+        pipeline_scored = [
+            m.pipeline_completeness_score
+            for m in self.story_metrics
+            if "pipeline_completeness" in m.scored_dimensions
+        ]
+        if pipeline_scored:
+            avg_pipeline_score: float | None = sum(pipeline_scored) / len(pipeline_scored)
+            pipeline_raw = completion_ratio * 0.5 + (avg_pipeline_score / 3.0) * 0.5
+        else:
+            avg_pipeline_score = None
+            pipeline_raw = completion_ratio
         pipeline_completeness_score = 1.0 + pipeline_raw * 4.0
 
         self.dimension_scores.append(
@@ -388,18 +411,20 @@ class EvaluationMetrics:
                 metrics={
                     "completion_ratio": completion_ratio,
                     "avg_pipeline_completeness_rubric": avg_pipeline_score,
+                    "rubric_samples": len(pipeline_scored),
                 },
             )
         )
 
         # ------------------------------------------------------------------
         # Efficiency
-        # Measures: framework orchestration overhead (time + tokens + cost).
-        #   time_component  = max(1, 5 - (avg_time_ratio - 1) * 2)
-        #   token_component = max(1, 5 - (avg_tokens / token_budget - 1) * 2)
-        #   cost_component  = max(1, 5 - (avg_cost / cost_budget - 1) * 2)
-        # When cost data is unavailable (all zeros), cost_component is omitted
-        # and efficiency is the average of time + token components only.
+        # Measures: framework orchestration overhead
+        #   (time + tokens + cost + peak memory).
+        #   component = clamp(5 - (avg / budget - 1) * 2, 1, 5)
+        # Every platform is averaged over the same four components so
+        # scores stay comparable.  A component with no data (cost not
+        # reported, no container monitoring) is imputed at the neutral
+        # midpoint and listed in ``missing_components``.
         # ------------------------------------------------------------------
         token_budget = 100_000
         cost_budget = 0.50  # USD per story
@@ -441,17 +466,25 @@ class EvaluationMetrics:
         else:
             resource_component = None
 
-        components = [time_component, token_component]
         if avg_cost_per_story > 0:
             cost_component = min(
                 5.0, max(1.0, 5.0 - (avg_cost_per_story / cost_budget - 1.0) * 2.0)
             )
-            components.append(cost_component)
         else:
             cost_component = None
 
-        if resource_component is not None:
-            components.append(resource_component)
+        neutral_component = 3.0
+        missing_components = [
+            name
+            for name, value in (("cost", cost_component), ("memory", resource_component))
+            if value is None
+        ]
+        components = [
+            time_component,
+            token_component,
+            cost_component if cost_component is not None else neutral_component,
+            resource_component if resource_component is not None else neutral_component,
+        ]
 
         efficiency_score = sum(components) / len(components)
 
@@ -470,6 +503,7 @@ class EvaluationMetrics:
                     "cost_component": cost_component,
                     "resource_component": resource_component,
                     "memory_budget_mb": memory_budget_mb,
+                    "missing_components": missing_components,
                 },
             )
         )
@@ -482,13 +516,13 @@ class EvaluationMetrics:
         # ------------------------------------------------------------------
         all_orchestration_scores: list[float] = []
         for m in self.story_metrics:
-            all_orchestration_scores.extend(
-                [
-                    m.tool_integration_score,
-                    m.error_recovery_score,
-                    m.trace_quality_score,
-                ]
-            )
+            for dim, value in (
+                ("tool_integration", m.tool_integration_score),
+                ("error_recovery", m.error_recovery_score),
+                ("trace_quality", m.trace_quality_score),
+            ):
+                if dim in m.scored_dimensions:
+                    all_orchestration_scores.append(value)
 
         avg_orchestration = (
             sum(all_orchestration_scores) / len(all_orchestration_scores)
@@ -519,14 +553,17 @@ class EvaluationMetrics:
         #   0 interventions maps to 1.0 (best), 4+ maps to 0.0 (worst).
         # Manual signal: rubric_autonomy (0-3) — evaluator's judgement
         #   after reviewing the trace.
-        # When the rubric has been scored (>0), blend 50/50 with the auto
-        # signal.  When the rubric is still at its 0.0 default (unscored),
-        # fall back to the auto signal alone — a clean run with zero
+        # When any story's rubric has been scored (including a genuine 0),
+        # blend 50/50 with the auto signal.  When none has, fall back to the auto signal alone — a clean run with zero
         # interventions should not score bottom just because the manual
         # rubric hasn't been filled in yet.
         # ------------------------------------------------------------------
-        avg_autonomy_rubric = sum(m.autonomy_score for m in self.story_metrics) / n
-        rubric_normalized = avg_autonomy_rubric / 3.0  # 0-1
+        autonomy_scored = [
+            m.autonomy_score for m in self.story_metrics if "autonomy" in m.scored_dimensions
+        ]
+        avg_autonomy_rubric = (
+            sum(autonomy_scored) / len(autonomy_scored) if autonomy_scored else None
+        )
 
         if self.stage_metrics:
             avg_interventions_per_stage = sum(
@@ -540,7 +577,8 @@ class EvaluationMetrics:
 
         auto_normalized = (4.0 - min(4.0, avg_interventions_per_stage)) / 4.0
 
-        if avg_autonomy_rubric > 0:
+        if avg_autonomy_rubric is not None:
+            rubric_normalized = avg_autonomy_rubric / 3.0  # 0-1
             autonomy_raw = rubric_normalized * 0.5 + auto_normalized * 0.5
             blended = True
         else:
@@ -638,7 +676,8 @@ def recompute_platform_likert_from_store(
     ``score_*`` / ``overall_score`` stay stale until this runs.
 
     *story_budgets* maps ``story_id`` to ``time_budget_seconds``.
-    Stories not in the map use 600s (the harness default).
+    A story missing from the map raises ``KeyError(story_id)`` rather than
+    silently normalising against a guessed budget.
     """
     import pandas as _pd
 
@@ -649,6 +688,8 @@ def recompute_platform_likert_from_store(
     if group.empty:
         return {}
 
+    stage_df = store.get_stage_executions(run_id)
+
     em = EvaluationMetrics(platform_id=platform_id, platform_name=platform_id)
 
     for _, row in group.iterrows():
@@ -657,6 +698,16 @@ def recompute_platform_likert_from_store(
             status = StoryStatus(row["status"])
         except (KeyError, ValueError):
             status = StoryStatus.PENDING
+        # Stage outcomes aren't rebuilt here, so a COMPLETED status alone
+        # would read as success.  Newer rows persist the real outcome.
+        stages_passed = row.get("stages_passed")
+        if (
+            status == StoryStatus.COMPLETED
+            and stages_passed is not None
+            and not _pd.isna(stages_passed)
+            and not bool(stages_passed)
+        ):
+            status = StoryStatus.FAILED
 
         result = StoryResult(
             story_id=story_id,
@@ -664,7 +715,7 @@ def recompute_platform_likert_from_store(
             execution_id=str(row["execution_id"]),
             status=status,
             wall_clock_seconds=float(row["wall_clock_seconds"] or 0),
-            iterations=int(row["iterations"] or 0),
+            iterations=None if _pd.isna(row["iterations"]) else int(row["iterations"]),
             tool_calls=int(row["tool_calls"] or 0),
             tokens_input=int(row["tokens_input"] or 0),
             tokens_output=int(row["tokens_output"] or 0),
@@ -693,7 +744,26 @@ def recompute_platform_likert_from_store(
             resource["net_tx_total_bytes"] = int(row["resource_net_tx_bytes"])
         result.resource_metrics = resource
 
-        budget = float(story_budgets.get(story_id, 600))
+        budget = float(story_budgets[story_id])
+
+        # Per-stage rows feed the Autonomy intervention signal, as in the live run.
+        exec_stages = stage_df[stage_df["execution_id"] == result.execution_id]
+        for _, st in exec_stages.iterrows():
+            em.stage_metrics.append(
+                StageMetrics(
+                    story_id=story_id,
+                    platform_id=platform_id,
+                    stage_name=str(st["stage_name"]),
+                    success=bool(st["success"]) if _pd.notna(st["success"]) else False,
+                    wall_clock_seconds=float(st["wall_clock_seconds"] or 0),
+                    iterations=None if _pd.isna(st["iterations"]) else int(st["iterations"]),
+                    tool_calls=int(st["tool_calls"] or 0),
+                    tokens_input=int(st["tokens_input"] or 0),
+                    tokens_output=int(st["tokens_output"] or 0),
+                    human_interventions=int(st["human_interventions"] or 0),
+                )
+            )
+
         em.add_story_metrics(
             StoryMetrics.from_story_result(result, time_budget_seconds=budget)
         )

@@ -14,17 +14,19 @@ itself via ``prepare_stage_context``.
 """
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import structlog
 
+from desmet import llm_config
 from desmet.observability import (
     get_logger,
     langfuse_span,
@@ -32,11 +34,14 @@ from desmet.observability import (
     record_generation,
 )
 from desmet.harness.story_loader import prepare_stage_context
+from desmet.adapters._shared.validation import BASELINE_FILES_NAME
 
 from .adapter import BasePlatformAdapter
 from .auto_rubric import compute_auto_rubric_scores
+from .context import StageContext
+from .manifest import collect_manifest
 from .metrics import MetricsCollector, SetupMetrics, StageMetrics, StoryMetrics
-from .results import CodeResult, StageResult, TestResult
+from .results import CodeResult, StageResult, TestResult, failed_stage_result
 from .store import ResultStore
 from .story import DifficultyLevel, StoryResult, StoryStatus, UserStory
 
@@ -62,6 +67,20 @@ def _force_remove_readonly(func, path, _exc_info):
             pass
 
 
+@contextlib.contextmanager
+def _scoped_env(name: str, value: str):
+    """Set an env var for the duration of the block, then restore it."""
+    previous = os.environ.get(name)
+    os.environ[name] = value
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = previous
+
+
 @dataclass
 class RunnerConfig:
     """Configuration for the evaluation runner."""
@@ -80,6 +99,8 @@ class RunnerConfig:
     # Timeouts
     setup_timeout_seconds: int = 300
     story_timeout_multiplier: float = 1.5  # Multiply story budget by this
+    # Per-stage wall-clock cap; None = the story's stage_ctx.time_budget_seconds
+    stage_timeout_seconds: int | None = None
 
     # Filtering
     platforms: list[str] | None = None  # None = all platforms
@@ -93,7 +114,13 @@ class RunnerConfig:
     dry_run: bool = False
     verbose: bool = False
     save_traces: bool = True
-    deploy_mode: str = "local"  # "local" or "remote"
+    deploy_mode: str = "remote"  # "remote" (intended design) or "local"
+    verify_workspace: bool = True  # archive workspace + run its pytest suite
+    # "container": every stage runs in the platform's Docker image.
+    # "in_process": stages call the adapter directly, never touching Docker.
+    execution_mode: str = "container"
+    # Per-platform override of execution_mode, keyed by platform id
+    platform_execution_modes: dict[str, str] = field(default_factory=dict)
 
 
 class EvaluationRunner:
@@ -121,6 +148,24 @@ class EvaluationRunner:
         self.baseline_repo = baseline_repo
         self.progress_callback = progress_callback
 
+        for pid in {*platforms, *config.platform_execution_modes}:
+            mode = self._execution_mode_for(pid)
+            if mode not in ("container", "in_process"):
+                raise ValueError(f"Unknown execution_mode for {pid}: {mode!r}")
+        from desmet.harness.adapter import ContainerOnlyAdapter
+        stubs = [
+            pid for pid, a in platforms.items()
+            if isinstance(a, ContainerOnlyAdapter)
+            and self._execution_mode_for(pid) == "in_process"
+        ]
+        if stubs:
+            raise ValueError(
+                f"execution_mode='in_process' cannot run container-only adapters: {stubs}"
+            )
+
+        # Platform image build outcome, filled once per platform per run
+        self._built_images: dict[str, bool] = {}
+
         # Setup directories
         self.config.results_dir.mkdir(parents=True, exist_ok=True)
         self.config.logs_dir.mkdir(parents=True, exist_ok=True)
@@ -145,11 +190,10 @@ class EvaluationRunner:
         start_time = datetime.now(timezone.utc)
 
         # Create a persistent run record
-        self._current_run_id = self.store.create_run(
-            model=os.environ.get("DESMET_MODEL"),
-            temperature=float(os.environ.get("DESMET_TEMPERATURE", "0")),
+        self._current_run_id = self.create_run(
             platforms_filter=self.config.platforms,
             stories_filter=self.config.stories,
+            platform_ids=self._filter_platforms(),
         )
 
         # Filter platforms and stories if configured
@@ -185,6 +229,9 @@ class EvaluationRunner:
                     platform_id=platform_id,
                     platform_name=adapter.platform_info.name,
                 )
+
+                if self._execution_mode_for(platform_id) == "container" and not self.config.dry_run:
+                    await self._prepare_platform_image(platform_id)
 
                 # Run each story
                 for story in stories_to_run:
@@ -255,11 +302,10 @@ class EvaluationRunner:
             raise ValueError(f"Unknown story: {story_id}")
 
         adapter = self.platforms[platform_id]
-        self._current_run_id = run_id or self.store.create_run(
-            model=os.environ.get("DESMET_MODEL"),
-            temperature=float(os.environ.get("DESMET_TEMPERATURE", "0")),
+        self._current_run_id = run_id or self.create_run(
             platforms_filter=[platform_id],
             stories_filter=[story_id],
+            platform_ids=[platform_id],
         )
         # Track whether we own the run lifecycle so a shared run isn't
         # finished prematurely by the first platform to complete.
@@ -278,6 +324,8 @@ class EvaluationRunner:
             tags=["single-story"],
         ) as trace:
             try:
+                if self._execution_mode_for(platform_id) == "container" and not self.config.dry_run:
+                    await self._prepare_platform_image(platform_id)
                 repeat_results: list[StoryResult] = []
                 for repeat_idx in range(self.config.repeats):
                     result = await self._run_story(
@@ -369,6 +417,105 @@ class EvaluationRunner:
         ("deploy", "build_and_deploy"),
     ]
 
+    def create_run(
+        self,
+        *,
+        platforms_filter: list[str] | None,
+        stories_filter: list[str] | None,
+        platform_ids: Any,
+    ) -> str:
+        """Create a run row with the resolved model and its full manifest.
+
+        Every run row is created here (including shared runs made by the
+        web API before calling run_single_story), so the manifest is
+        written exactly once per run.
+        """
+        run_id = self.store.create_run(
+            model=llm_config.get_config().model,
+            temperature=float(os.environ.get("DESMET_TEMPERATURE", "0")),
+            platforms_filter=platforms_filter,
+            stories_filter=stories_filter,
+        )
+        repo_root = Path(__file__).resolve().parents[3]
+        self.store.update_run_manifest(
+            run_id, collect_manifest(self.config, repo_root, platform_ids)
+        )
+        return run_id
+
+    def _record_image_digest(self, platform_id: str, digest: str | None) -> None:
+        """Merge the platform's built image digest into the run manifest."""
+        if digest is None:
+            return
+        run = self.store.get_run(self._current_run_id)
+        existing = run.iloc[0]["image_digests"] if len(run) else None
+        digests = json.loads(existing) if isinstance(existing, str) and existing else {}
+        digests[platform_id] = digest
+        self.store.update_run_manifest(self._current_run_id, {"image_digests": digests})
+
+    def _execution_mode_for(self, platform_id: str) -> str:
+        return self.config.platform_execution_modes.get(
+            platform_id, self.config.execution_mode
+        )
+
+    async def _prepare_platform_image(self, platform_id: str) -> bool:
+        """Build the platform image once; later stories reuse the outcome.
+
+        Always rebuilds so source/config changes are picked up.  Runs in a
+        thread so the blocking subprocess doesn't freeze the event loop.
+        """
+        import asyncio as _aio
+        from desmet.harness import container_runner
+        if self.progress_callback:
+            self.progress_callback(f"  Building Docker image for {platform_id}...")
+        ok = await _aio.to_thread(
+            container_runner.build_image,
+            platform_id,
+            progress_callback=self.progress_callback,
+        )
+        self._built_images[platform_id] = bool(ok)
+        if not ok:
+            logger.error("image_build_failed", platform=platform_id)
+            if self.progress_callback:
+                self.progress_callback(
+                    f"  [ERROR] Docker image build failed for {platform_id}; "
+                    f"its stories are recorded as failed"
+                )
+        else:
+            digest = await _aio.to_thread(container_runner.image_digest, platform_id)
+            self._record_image_digest(platform_id, digest)
+        return bool(ok)
+
+    async def _run_stage(
+        self,
+        platform_id: str,
+        adapter: BasePlatformAdapter,
+        stage_key: str,
+        method_name: str,
+        ctx: StageContext,
+        *,
+        timeout_seconds: int,
+    ) -> StageResult:
+        """Run one stage via the configured execution mode (the only switch).
+
+        Both paths share one wall-clock cap and the same timeout result.
+        """
+        from desmet.harness import container_runner
+        if self._execution_mode_for(platform_id) == "container":
+            return await container_runner.run_stage_in_container(
+                platform_id, stage_key, ctx, self.progress_callback,
+                timeout_seconds=timeout_seconds,
+            )
+        try:
+            with _scoped_env("DESMET_DEPLOY_MODE", ctx.deploy_mode):
+                return await asyncio.wait_for(
+                    getattr(adapter, method_name)(ctx), timeout=timeout_seconds,
+                )
+        except asyncio.TimeoutError:
+            # The cancelled adapter's usage is lost: no token lower bound.
+            return container_runner._timed_out_result(
+                platform_id, stage_key, 0, None, timeout_seconds,
+            )
+
     async def _run_story(
         self,
         platform_id: str,
@@ -396,6 +543,8 @@ class EvaluationRunner:
             execution_id=f"{platform_id}_{story.id}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}{suffix}",
             status=StoryStatus.RUNNING,
             start_time=datetime.now(timezone.utc),
+            execution_mode=self._execution_mode_for(platform_id),
+            repeat_index=repeat_index,
         )
 
         structlog.contextvars.bind_contextvars(
@@ -406,6 +555,16 @@ class EvaluationRunner:
         if self.config.dry_run:
             logger.info("dry_run_skip")
             result.status = StoryStatus.SKIPPED
+            structlog.contextvars.unbind_contextvars("story_id", "execution_id")
+            return result
+
+        if (
+            self._execution_mode_for(platform_id) == "container"
+            and not self._built_images.get(platform_id, False)
+        ):
+            result.status = StoryStatus.FAILED
+            result.error_message = f"Docker image build failed for {platform_id}"
+            result.finalize_timing()
             structlog.contextvars.unbind_contextvars("story_id", "execution_id")
             return result
 
@@ -437,6 +596,7 @@ class EvaluationRunner:
                     platform_id=platform_id,
                 )
                 stage_ctx.progress_callback = self.progress_callback
+                stage_ctx.deploy_mode = self.config.deploy_mode
 
                 # Snapshot baseline file paths for post-stage scope auditing
                 _skip = {".git", "__pycache__", ".venv", "venv", "node_modules"}
@@ -448,6 +608,11 @@ class EvaluationRunner:
                             str(Path(_dp, f).relative_to(workspace)).replace("\\", "/")
                         )
                 stage_ctx.metadata["baseline_files"] = sorted(_baseline)
+                # Validators run inside the platform container without the
+                # stage context, so they read the baseline list from here.
+                (workspace / BASELINE_FILES_NAME).write_text(
+                    json.dumps(sorted(_baseline)), encoding="utf-8"
+                )
 
                 # Accumulator for per-stage results
                 stage_results: dict[str, StageResult] = {}
@@ -460,34 +625,39 @@ class EvaluationRunner:
                 else:
                     stages_to_run = self._STAGES
 
+                result.expected_stages = [k for k, _ in stages_to_run]
+
                 # Initialise git remote in workspace for deploy stage
                 self._init_deploy_repo(workspace, platform_id, story.id)
 
-                # Build platform image once per story (always rebuild
-                # so source/config changes are picked up).  Run in a
-                # thread so the blocking subprocess doesn't freeze the
-                # event loop (WebSocket, cancel, etc. stay responsive).
                 import asyncio as _aio
                 from desmet.harness import container_runner
-                if self.progress_callback:
-                    self.progress_callback(
-                        f"  Building Docker image for {platform_id}..."
-                    )
-                build_ok = await _aio.to_thread(
-                    container_runner.build_image,
-                    platform_id,
-                    progress_callback=self.progress_callback,
-                )
-                if not build_ok and not hasattr(adapter, "generate_requirements"):
-                    raise RuntimeError(f"Docker image build failed for {platform_id}")
+
+                # None: no teardown needed (local mode / deploy unconfigured).
+                teardown_ok: bool | None = None
 
                 # Execute selected stages sequentially
                 for stage_key, method_name in stages_to_run:
                     # Grant access to deploy_remote tool for the deploy stage
                     if stage_key == "deploy" and "deploy_remote" not in stage_ctx.allowed_tools:
                         stage_ctx.allowed_tools.append("deploy_remote")
+
                     if stage_key == "deploy":
-                        os.environ["DESMET_DEPLOY_MODE"] = self.config.deploy_mode
+                        # Remove the platform's previous deployment, so neither
+                        # the agent nor the health check can mistake an earlier
+                        # run's service on the port for this run's.
+                        from desmet.adapters._shared.tools import harness_teardown_deploy
+                        teardown_ok = await _aio.to_thread(
+                            harness_teardown_deploy, platform_id, self.config.deploy_mode,
+                        )
+                        if teardown_ok is False:
+                            logger.error("deploy_teardown_failed", platform=platform_id)
+                            if self.progress_callback is not None:
+                                self.progress_callback(
+                                    "  [DEPLOY] ERROR — could not take down the previous "
+                                    "deployment (is desmet-shell on the server up to "
+                                    "date?); deploy health will be recorded as failed"
+                                )
 
                     if self.progress_callback is not None:
                         self.progress_callback(
@@ -500,16 +670,17 @@ class EvaluationRunner:
                             f"stage-{stage_key}",
                             metadata={"platform_id": platform_id, "story_id": story.id},
                         ):
-                            if await _aio.to_thread(container_runner.has_image, platform_id):
-                                stage_result = await container_runner.run_stage_in_container(
-                                    platform_id, stage_key, stage_ctx,
-                                    self.progress_callback,
-                                )
-                            else:
-                                stage_method = getattr(adapter, method_name)
-                                stage_result = await stage_method(stage_ctx)
-                            stage_ctx.add_artifacts(stage_key, stage_result)
+                            stage_result = await self._run_stage(
+                                platform_id, adapter, stage_key, method_name, stage_ctx,
+                                timeout_seconds=(
+                                    self.config.stage_timeout_seconds
+                                    or stage_ctx.time_budget_seconds
+                                ),
+                            )
+                            # Store first: a later error in the bookkeeping
+                            # below must not discard a paid stage result.
                             stage_results[stage_key] = stage_result
+                            stage_ctx.add_artifacts(stage_key, stage_result)
 
                             # Record per-stage metrics
                             self.metrics.record_stage_metrics(
@@ -536,12 +707,14 @@ class EvaluationRunner:
                             if self.progress_callback is not None:
                                 status = "PASSED" if stage_result.success else "FAILED"
                                 total_tokens = stage_result.tokens_input + stage_result.tokens_output
+                                iters = stage_result.iterations
+                                iters_part = "?" if iters is None else str(iters)
                                 cost_part = f", ${stage_result.cost_usd:.4f}" if stage_result.cost_usd > 0 else ""
                                 error_part = f" — {stage_result.error_message}" if stage_result.error_message else ""
                                 self.progress_callback(
                                     f"  [{stage_key.upper()}] {status} — "
                                     f"{stage_result.wall_clock_seconds:.1f}s, "
-                                    f"{stage_result.iterations} iterations, "
+                                    f"{iters_part} iterations, "
                                     f"{stage_result.tool_calls_count} tool calls, "
                                     f"{total_tokens:,} tokens{cost_part}{error_part}"
                                 )
@@ -549,20 +722,78 @@ class EvaluationRunner:
                         logger.error(f"stage_{stage_key}_failed", error=str(e))
                         if self.progress_callback is not None:
                             self.progress_callback(f"  [{stage_key.upper()}] ERROR — {e}")
+                        # Record the failure so the story cannot read as a
+                        # success, unless the stage itself already returned.
+                        stage_results.setdefault(stage_key, failed_stage_result(
+                            platform_id, stage_key, f"{type(e).__name__}: {e}",
+                        ))
                         # Continue -- do NOT block later stages
 
                 # Clean up platform container after story completes
-                from desmet.harness import container_runner
-                await _aio.to_thread(container_runner.stop_container, platform_id, story.id)
+                if self._execution_mode_for(platform_id) == "container":
+                    await _aio.to_thread(container_runner.stop_container, platform_id, story.id)
+
+                # Archive the workspace and run its test suite so the
+                # result records whether the code works, not just whether
+                # the validators' artefacts exist.
+                if self.config.verify_workspace:
+                    from desmet.harness.verification import verify_execution
+                    try:
+                        verification = await _aio.to_thread(
+                            verify_execution,
+                            workspace,
+                            self.config.results_dir / "artifacts" / result.execution_id,
+                            container_runner._BASE_IMAGE,
+                            story.id,
+                            [ac.id for ac in story.acceptance_criteria],
+                        )
+                        result.artifact_path = verification.artifact_path
+                        result.tests_run = verification.tests_run
+                        result.tests_passed = verification.tests_passed
+                        result.tests_failed = verification.tests_failed
+                        result.pytest_exit_code = verification.pytest_exit_code
+                        result.criteria_results = verification.criteria_results
+                        if self.progress_callback is not None:
+                            met = sum(verification.criteria_results.values())
+                            self.progress_callback(
+                                f"  [VERIFY] pytest exit={verification.pytest_exit_code} — "
+                                f"{verification.tests_passed}/{verification.tests_run} passed; "
+                                f"acceptance {met}/{len(verification.criteria_results)} criteria met"
+                            )
+                    except Exception as e:
+                        logger.error("workspace_verification_failed", error=str(e))
+
+                # The deploy validator only checks Dockerfile/compose exist;
+                # confirm the service actually answers.  Only a deploy stage
+                # that passed, after a successful teardown, can be healthy:
+                # otherwise whatever answers is not this run's deployment.
+                if self.config.verify_workspace and "deploy" in stage_results:
+                    from desmet.adapters._shared.tools import harness_health_check
+                    if self.config.deploy_mode == "local":
+                        result.deploy_healthy = None
+                    elif stage_results["deploy"].success and teardown_ok is not False:
+                        result.deploy_healthy = await _aio.to_thread(
+                            harness_health_check, workspace, platform_id, story.id,
+                            self.config.deploy_mode,
+                        )
+                    else:
+                        result.deploy_healthy = False
+                    if self.progress_callback is not None and result.deploy_healthy is not None:
+                        self.progress_callback(
+                            f"  [VERIFY] deploy health check: "
+                            f"{'OK' if result.deploy_healthy else 'FAILED'}"
+                        )
 
                 # Stop eval container before post-processing — Docker
                 # ----- Aggregate results into StoryResult -----
                 result.status = StoryStatus.COMPLETED
                 result.finalize_timing()
 
-                # Sum metrics across all completed stages
-                result.iterations = sum(
-                    sr.iterations for sr in stage_results.values()
+                # Sum metrics across all completed stages.  One unknown
+                # stage count (None) makes the total unknown, not smaller.
+                stage_iters = [sr.iterations for sr in stage_results.values()]
+                result.iterations = (
+                    None if None in stage_iters else sum(stage_iters)
                 )
                 result.tool_calls = sum(
                     sr.tool_calls_count for sr in stage_results.values()
@@ -605,6 +836,20 @@ class EvaluationRunner:
                     overheads = [fm["framework_overhead_ms"] for fm in all_fm
                                  if fm.get("framework_overhead_ms") is not None]
                     agg["framework_overhead_ms"] = sum(overheads) if overheads else None
+                    # Per-stage LLM-call budget: total calls, and which
+                    # stages stopped because the budget ran out.
+                    # An explicit None (timed out / usage fallback) is an
+                    # unknown count, so the total is unknown too.
+                    calls = [fm.get("llm_calls", 0) for fm in all_fm]
+                    agg["llm_calls"] = (
+                        None if None in calls else sum(c or 0 for c in calls)
+                    )
+                    agg["budget_exhausted_stages"] = sum(
+                        fm.get("budget_exhausted") or 0 for fm in all_fm
+                    )
+                    for sname, sr in stage_results.items():
+                        if (sr.framework_metrics or {}).get("budget_exhausted"):
+                            agg[f"budget_exhausted_{sname}"] = 1.0
                     result.framework_metrics = agg
                     # Auto-compute the three trace-derivable rubric
                     # dimensions.  The other two (pipeline_completeness,
@@ -680,9 +925,9 @@ class EvaluationRunner:
 
                 test_result = stage_results.get("testing")
                 if isinstance(test_result, TestResult):
-                    result.tests_run = test_result.tests_run
-                    result.tests_passed = test_result.tests_passed
-                    result.tests_failed = test_result.tests_failed
+                    result.reported_tests_run = test_result.tests_run
+                    result.reported_tests_passed = test_result.tests_passed
+                    result.reported_tests_failed = test_result.tests_failed
 
                 # Store the full stage_results dict as raw_result for
                 # downstream consumers

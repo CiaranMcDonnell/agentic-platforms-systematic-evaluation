@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -27,6 +28,7 @@ OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
 _pricing_cache: dict[str, tuple[float, float]] | None = None
 _cache_lock = threading.Lock()
+_pricing_fetched_at: str | None = None
 
 
 def _fetch_pricing() -> dict[str, tuple[float, float]]:
@@ -56,7 +58,7 @@ def _fetch_pricing() -> dict[str, tuple[float, float]]:
 
 def get_pricing() -> dict[str, tuple[float, float]]:
     """Return the cached pricing dict, fetching on first call."""
-    global _pricing_cache
+    global _pricing_cache, _pricing_fetched_at
     if _pricing_cache is not None:
         return _pricing_cache
     with _cache_lock:
@@ -66,14 +68,16 @@ def get_pricing() -> dict[str, tuple[float, float]]:
         result = _fetch_pricing()
         if result:
             _pricing_cache = result
+            _pricing_fetched_at = datetime.now(timezone.utc).isoformat()
         return result
 
 
 def refresh_pricing() -> None:
     """Force a re-fetch of pricing data."""
-    global _pricing_cache
+    global _pricing_cache, _pricing_fetched_at
     with _cache_lock:
         _pricing_cache = _fetch_pricing()
+        _pricing_fetched_at = datetime.now(timezone.utc).isoformat()
 
 
 # ── Model name resolution ──────────────────────────────────────────────
@@ -114,6 +118,23 @@ def _resolve_model_id(model: str, pricing: dict[str, tuple[float, float]]) -> st
 
 
 # ── Public API ─────────────────────────────────────────────────────────
+
+def pricing_snapshot(model: str) -> dict[str, Any] | None:
+    """Rates in effect for *model* now, or None if pricing/model is unresolved."""
+    pricing = get_pricing()
+    if not pricing:
+        return None
+    resolved = _resolve_model_id(model, pricing)
+    if resolved is None:
+        return None
+    inp_rate, out_rate = pricing[resolved]
+    return {
+        "resolved_model_id": resolved,
+        "input_per_token": inp_rate,
+        "output_per_token": out_rate,
+        "fetched_at": _pricing_fetched_at,
+    }
+
 
 def estimate_cost(
     model: str,

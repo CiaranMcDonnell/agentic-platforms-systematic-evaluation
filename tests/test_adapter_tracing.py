@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from desmet.adapters._shared.tracing import (
     build_stage_result,
     finish_trace,
@@ -523,6 +525,68 @@ class TestBuildStageResult:
         assert result.success is True
 
 
+    def test_mutating_stage_with_no_progress_fails_without_errors(self) -> None:
+        """A codegen stage that neither called a productive tool nor changed
+        the workspace did nothing, even if the validator passed on
+        baseline files and no error was recorded.
+        """
+        trace = start_trace()
+        record_tool_call(trace, "read_file", {"path": "app.py"}, "...")
+        finish_trace(trace)
+
+        result = build_stage_result(
+            StageResult,
+            platform_id="x",
+            stage_name="codegen",
+            trace=trace,
+            success=True,
+            iterations=1,
+            workspace_changed=False,
+        )
+
+        assert result.success is False
+        assert result.completed is False
+        assert "No productive tool call" in result.error_message
+
+    def test_mutating_stage_with_workspace_change_stays_successful(self) -> None:
+        """A changed workspace counts as progress even when the platform's
+        tool-call reporting missed the write.
+        """
+        trace = start_trace()
+        finish_trace(trace)
+
+        result = build_stage_result(
+            StageResult,
+            platform_id="x",
+            stage_name="codegen",
+            trace=trace,
+            success=True,
+            iterations=1,
+            workspace_changed=True,
+        )
+
+        assert result.success is True
+
+    def test_requirements_stage_with_no_progress_stays_successful(self) -> None:
+        """Requirements may be answered in-message, so the error-free
+        no-op rule doesn't apply to it.
+        """
+        trace = start_trace()
+        finish_trace(trace)
+
+        result = build_stage_result(
+            RequirementsResult,
+            platform_id="x",
+            stage_name="requirements",
+            trace=trace,
+            success=True,
+            iterations=1,
+            workspace_changed=False,
+        )
+
+        assert result.success is True
+
+
 # ── TestRecordNodeEvent ─────────────────────────────────────────────────
 
 
@@ -655,3 +719,146 @@ class TestNormalizeUsage:
             output_tokens = 60
 
         assert normalize_usage(U()) == (150, 60)
+
+
+# ── TestIterationsAreLlmCalls ───────────────────────────────────────────
+
+
+def _make_tool_adapter(
+    responses: int, native: int, fail: bool = False, exhaust: bool = False,
+    fallback: bool = False,
+):
+    from desmet.adapters._shared.base import ToolAgentAdapter
+    from desmet.adapters._shared.tools import ToolFormat
+    from desmet.harness.models import PlatformCategory, PlatformInfo, PlatformRuntime
+
+    class Fake(ToolAgentAdapter):
+        TOOL_FORMAT = ToolFormat.LANGCHAIN
+
+        @property
+        def platform_info(self) -> PlatformInfo:
+            return PlatformInfo(
+                name="Fake",
+                id="fake",
+                category=PlatformCategory.MULTI_AGENT_FRAMEWORK,
+                runtime=PlatformRuntime.PYTHON,
+                version="0",
+                vendor="test",
+                description="",
+                documentation_url="",
+                repository_url="",
+            )
+
+        async def initialize(self) -> None:
+            pass
+
+        async def shutdown(self) -> None:
+            pass
+
+        async def health_check(self) -> bool:
+            return True
+
+        async def _run_agent(
+            self, stage, prompt, sys, tools, collector, ctx, policy, progress
+        ):
+            for _ in range(responses):
+                collector.record_llm_response({"prompt_tokens": 10, "completion_tokens": 5})
+            # Adapters report their own count to the collector too.
+            collector.mark_iterations(native)
+            if exhaust:
+                from desmet.adapters._shared.budget import mark_budget_exhausted
+
+                mark_budget_exhausted(collector.trace)
+            if fallback:
+                from desmet.adapters._shared.budget import mark_usage_fallback
+
+                mark_usage_fallback(collector.trace)
+            if fail:
+                raise RuntimeError("boom")
+            return native, True
+
+    return Fake()
+
+
+def _make_stage_context(tmp_path):
+    from desmet.harness.context import StageContext
+    from desmet.harness.story import DifficultyLevel, UserStory
+
+    story = UserStory(
+        id="s1",
+        title="t",
+        description="d",
+        difficulty=DifficultyLevel.BASIC,
+        category="test",
+        prompt="Build something",
+    )
+    return StageContext(story=story, workspace=tmp_path, platform_id="fake")
+
+
+class TestIterationsAreLlmCalls:
+    @pytest.fixture(autouse=True)
+    def _no_tool_factory(self, monkeypatch) -> None:
+        # Framework tool libraries are optional; the fake agent needs no tools.
+        monkeypatch.setattr("desmet.adapters._shared.base.create_tools", lambda *a, **k: [])
+
+    async def test_iterations_are_llm_calls(self, tmp_path) -> None:
+        from desmet.adapters._shared.prompts import build_testing_prompt
+        from desmet.harness.results import TestResult
+
+        adapter = _make_tool_adapter(responses=3, native=99)
+        res = await adapter._execute_stage(
+            "testing", build_testing_prompt, TestResult, _make_stage_context(tmp_path)
+        )
+        assert res.iterations == 3
+        assert res.framework_metrics["native_iterations"] == 99
+        assert res.framework_metrics["llm_calls"] == res.iterations
+
+    async def test_iteration_ratio_uses_llm_calls(self, tmp_path) -> None:
+        from desmet.adapters._shared.prompts import build_testing_prompt
+        from desmet.harness.results import TestResult
+
+        ctx = _make_stage_context(tmp_path)
+        ctx.max_iterations = 10
+        adapter = _make_tool_adapter(responses=3, native=99)
+        res = await adapter._execute_stage("testing", build_testing_prompt, TestResult, ctx)
+        assert res.framework_metrics["iteration_ratio"] == 0.3
+
+    async def test_iterations_on_exception_are_llm_calls(self, tmp_path) -> None:
+        from desmet.adapters._shared.prompts import build_testing_prompt
+        from desmet.harness.results import TestResult
+
+        adapter = _make_tool_adapter(responses=2, native=50, fail=True)
+        res = await adapter._execute_stage(
+            "testing", build_testing_prompt, TestResult, _make_stage_context(tmp_path)
+        )
+        assert res.success is False
+        assert res.iterations == 2
+
+    async def test_exception_path_keeps_framework_metrics(self, tmp_path) -> None:
+        # A stage that raises still spent calls (and maybe its budget);
+        # without framework_metrics they drop out of the execution aggregate.
+        from desmet.adapters._shared.prompts import build_testing_prompt
+        from desmet.harness.results import TestResult
+
+        adapter = _make_tool_adapter(responses=2, native=50, fail=True, exhaust=True)
+        res = await adapter._execute_stage(
+            "testing", build_testing_prompt, TestResult, _make_stage_context(tmp_path)
+        )
+        assert res.success is False
+        assert res.framework_metrics["llm_calls"] == 2.0
+        assert res.framework_metrics["budget_exhausted"] == 1.0
+        assert res.framework_metrics["native_iterations"] is None
+
+    @pytest.mark.parametrize("fail", [False, True])
+    async def test_usage_fallback_leaves_iterations_unknown(self, tmp_path, fail) -> None:
+        from desmet.adapters._shared.prompts import build_testing_prompt
+        from desmet.harness.results import TestResult
+
+        adapter = _make_tool_adapter(responses=1, native=7, fail=fail, fallback=True)
+        res = await adapter._execute_stage(
+            "testing", build_testing_prompt, TestResult, _make_stage_context(tmp_path)
+        )
+        assert res.iterations is None
+        assert res.tokens_input == 10
+        assert res.framework_metrics["llm_calls"] is None
+        assert res.framework_metrics["usage_fallback"] == 1.0

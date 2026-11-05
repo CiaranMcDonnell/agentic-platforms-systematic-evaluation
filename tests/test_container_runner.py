@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from desmet.harness.container_runner import (
     image_name,
@@ -227,6 +227,28 @@ class TestEnsureContainerDeployWiring:
     """
 
     @patch("desmet.harness.container_runner.subprocess.run")
+    def test_container_gets_deploy_mode_from_context(self, mock_run, tmp_path, monkeypatch):
+        import desmet.harness.container_runner as cr
+
+        mock_run.side_effect = lambda cmd, *a, **k: MagicMock(
+            returncode=1 if "inspect" in cmd else 0, stdout="cid", stderr=""
+        )
+        key = tmp_path / "key"
+        key.write_text("k")
+        monkeypatch.setenv("DEPLOY_KEY_PATH", str(key))
+        monkeypatch.setenv("DESMET_DEPLOY_MODE", "remote")  # host env must not win
+
+        cr._ensure_container("langgraph", "US-001", tmp_path, deploy_mode="local")
+
+        argv = next(
+            c.args[0] for c in mock_run.call_args_list
+            if isinstance(c.args[0], list) and c.args[0][:2] == ["docker", "run"]
+        )
+        assert "DESMET_DEPLOY_MODE=local" in argv
+        assert "DESMET_DEPLOY_MODE=remote" not in argv
+        assert not any("/run/secrets/deploy_key" in a for a in argv)
+
+    @patch("desmet.harness.container_runner.subprocess.run")
     def test_deploy_env_vars_passed_through(self, mock_run, tmp_path, monkeypatch):
         """When DEPLOY_HOST/USER/PORT/REPO/BASE_PATH/MODE are set on the
         host, _ensure_container must add ``-e VAR=val`` flags for each.
@@ -248,13 +270,13 @@ class TestEnsureContainerDeployWiring:
 
         for var in (
             "DEPLOY_HOST", "DEPLOY_PORT", "DEPLOY_USER",
-            "DEPLOY_REPO", "DEPLOY_BASE_PATH", "DESMET_DEPLOY_MODE",
+            "DEPLOY_REPO", "DEPLOY_BASE_PATH",
         ):
             monkeypatch.setenv(var, f"value-{var}")
         # No key file → mount path is skipped
         monkeypatch.delenv("DEPLOY_KEY_PATH", raising=False)
 
-        cr._ensure_container("langgraph", "US-001", tmp_path)
+        cr._ensure_container("langgraph", "US-001", tmp_path, deploy_mode="remote")
 
         # Find the docker run invocation
         run_call = next(
@@ -266,7 +288,7 @@ class TestEnsureContainerDeployWiring:
 
         for var in (
             "DEPLOY_HOST", "DEPLOY_PORT", "DEPLOY_USER",
-            "DEPLOY_REPO", "DEPLOY_BASE_PATH", "DESMET_DEPLOY_MODE",
+            "DEPLOY_REPO", "DEPLOY_BASE_PATH",
         ):
             assert f"{var}=value-{var}" in joined_argv, (
                 f"missing {var} in docker run argv: {joined_argv}"
@@ -298,9 +320,8 @@ class TestEnsureContainerDeployWiring:
         key_file = tmp_path / "fake_deploy_key"
         key_file.write_text("not-a-real-key")
         monkeypatch.setenv("DEPLOY_KEY_PATH", str(key_file))
-        monkeypatch.setenv("DESMET_DEPLOY_MODE", "remote")
 
-        cr._ensure_container("langgraph", "US-001", tmp_path)
+        cr._ensure_container("langgraph", "US-001", tmp_path, deploy_mode="remote")
 
         run_call = next(
             c for c in mock_run.call_args_list
@@ -341,9 +362,8 @@ class TestEnsureContainerDeployWiring:
         key_file = tmp_path / "fake_deploy_key"
         key_file.write_text("not-a-real-key")
         monkeypatch.setenv("DEPLOY_KEY_PATH", str(key_file))
-        monkeypatch.setenv("DESMET_DEPLOY_MODE", "local")
 
-        cr._ensure_container("langgraph", "US-001", tmp_path)
+        cr._ensure_container("langgraph", "US-001", tmp_path, deploy_mode="local")
 
         run_call = next(
             c for c in mock_run.call_args_list
@@ -377,9 +397,8 @@ class TestEnsureContainerDeployWiring:
         mock_run.side_effect = fake_run
 
         monkeypatch.setenv("DEPLOY_KEY_PATH", str(tmp_path / "does-not-exist"))
-        monkeypatch.setenv("DESMET_DEPLOY_MODE", "remote")
 
-        cr._ensure_container("langgraph", "US-001", tmp_path)
+        cr._ensure_container("langgraph", "US-001", tmp_path, deploy_mode="remote")
 
         run_call = next(
             c for c in mock_run.call_args_list
@@ -387,3 +406,133 @@ class TestEnsureContainerDeployWiring:
         )
         joined = " ".join(run_call.args[0])
         assert "/run/secrets/deploy_key" not in joined
+
+
+class TestStageTimeout:
+    """A stage that never finishes is killed and reported as a failure."""
+
+    @staticmethod
+    def _hanging_proc():
+        import asyncio
+
+        lines = [b"    tool 3 - write_file -> a.py  (12s, 4,100 tokens)\n",
+                 b"    tool 9 - execute_shell -> ls  (40s, 98,765 tokens)\n"]
+
+        async def readline():
+            if lines:
+                return lines.pop(0)
+            await asyncio.sleep(3600)
+
+        async def read():
+            await asyncio.sleep(3600)
+
+        proc = MagicMock()
+        proc.stderr.readline = readline
+        proc.stdout.read = read
+        proc.stdin.drain = AsyncMock()
+
+        async def wait():
+            return -9
+
+        proc.wait = wait
+        return proc
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_failed_result_with_token_lower_bound(
+        self, tmp_path, monkeypatch
+    ):
+        from desmet.harness import container_runner as cr
+
+        # Priced with the resolved run model, not the raw env var.
+        monkeypatch.delenv("DESMET_MODEL", raising=False)
+        monkeypatch.setenv("DEFAULT_MODEL", "cfg-model")
+
+        context = MagicMock()
+        context.story.id = "US-001"
+        context.workspace = tmp_path
+        context.to_dict.return_value = {}
+        proc = self._hanging_proc()
+        progress: list[str] = []
+
+        async def fake_exec(*args, **kwargs):
+            return proc
+
+        with patch.object(cr, "has_image", return_value=True), \
+                patch.object(cr, "_ensure_container", return_value="c"), \
+                patch.object(cr, "ResourceMonitor") as monitor, \
+                patch.object(cr, "stop_container") as stop, \
+                patch("asyncio.create_subprocess_exec", side_effect=fake_exec), \
+                patch("desmet.cost_calculator.estimate_cost", return_value=0.01) as cost:
+            monitor.return_value.stop.return_value.to_dict.return_value = {}
+            result = await cr.run_stage_in_container(
+                "langgraph", "deploy", context, progress.append, timeout_seconds=1,
+            )
+
+        assert result.success is False
+        assert result.error_message == "Stage timed out after 1s"
+        assert result.tokens_input == 98_765
+        # Calls made before the kill are unknown, not zero.
+        assert result.iterations is None
+        # Highest tool number seen in progress lines: a lower bound, not 0.
+        assert result.tool_calls_count == 9
+        assert result.framework_metrics == {
+            "timed_out": 1.0, "llm_calls": None, "budget_exhausted": 0.0,
+        }
+        cost.assert_called_once_with("cfg-model", input_tokens=98_765)
+        assert result.cost_usd == 0.01
+        proc.kill.assert_called_once()
+        stop.assert_called_once_with("langgraph", "US-001")
+        assert any("TIMEOUT" in line for line in progress)
+
+
+class TestContextOverStdin:
+    """The stage context reaches the container over stdin, never as a file
+    in /workspace where the agent's search_code / read_file found it."""
+
+    @pytest.mark.asyncio
+    async def test_context_piped_and_no_workspace_file(self, tmp_path):
+        import json
+
+        from desmet.harness import container_runner as cr
+
+        (tmp_path / cr.LEGACY_CONTEXT_FILE).write_text("{}")  # stale, older harness
+        context = MagicMock()
+        context.story.id = "US-001"
+        context.workspace = tmp_path
+        context.to_dict.return_value = {"platform_id": "langgraph", "metadata": {}}
+
+        written = bytearray()
+        proc = MagicMock()
+        proc.stdin.write = lambda b: written.extend(b)
+        proc.stdin.drain = AsyncMock()
+
+        async def readline():
+            assert not (tmp_path / cr.LEGACY_CONTEXT_FILE).exists()
+            return b""
+
+        proc.stderr.readline = readline
+        proc.stdout.read = AsyncMock(return_value=json.dumps(
+            {"platform_id": "langgraph", "stage_name": "codegen", "success": True}
+        ).encode())
+        proc.wait = AsyncMock(return_value=0)
+        exec_args: list = []
+
+        async def fake_exec(*args, **kwargs):
+            exec_args.extend(args)
+            assert kwargs.get("stdin") is not None
+            return proc
+
+        with patch.object(cr, "has_image", return_value=True),                 patch.object(cr, "_ensure_container", return_value="c"),                 patch.object(cr, "ResourceMonitor") as monitor,                 patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            monitor.return_value.stop.return_value.to_dict.return_value = {}
+            result = await cr.run_stage_in_container(
+                "langgraph", "codegen", context, None, timeout_seconds=30,
+            )
+
+        assert result.success is True
+        assert exec_args[:3] == ["docker", "exec", "-i"]
+        assert exec_args[-1] == "-"
+        sent = json.loads(bytes(written))
+        assert sent["workspace"] == "/workspace"
+        assert sent["metadata"]["stage_name"] == "codegen"
+        proc.stdin.close.assert_called_once()
+        assert not list(tmp_path.glob(".desmet-context*"))

@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+# Restricted login shell for the DESMET deploy user.
+#
+# sshd runs the login shell as `desmet-shell -c "<command>"`.  Only the
+# command shapes the harness's deploy tool sends are allowed
+# (src/desmet/adapters/_shared/tools.py::_deploy_remote):
+#
+#   git clone -b <branch> <repo> /opt/desmet/<platform>/<story>
+#   cd /opt/desmet/<...> && git fetch|pull origin <branch>
+#   cd /opt/desmet/<...> && docker compose up -d --build --remove-orphans
+#   curl -sf http://localhost:<port>/<path>
+#   cd /opt/desmet && docker compose -p desmet-<platform> down
+#
+# (the last is the harness's teardown before each deploy stage,
+# adapters/_shared/tools.py::harness_teardown_deploy), plus whoami / id /
+# docker ps / ssh -T git@github.com for setup checks.
+#
+# `docker compose up` builds and runs agent-written compose files, and
+# docker-group membership is root-equivalent, so every compose project is
+# checked first: no privileged mode, host namespaces, devices, added
+# capabilities, bind mounts, or files read by compose (build contexts and
+# Dockerfiles, env files, extends / include) outside the project directory.
+# The check needs a Compose version with `docker compose config
+# --no-env-resolution` (otherwise every compose project is refused) and uses PyYAML (python3-yaml) when installed; without it any
+# extends / include is refused.
+set -euo pipefail
+
+BASE=/opt/desmet
+
+deny() { echo "desmet-shell: denied: $*" >&2; exit 126; }
+
+[ "${1:-}" = "-c" ] || deny "interactive login is disabled"
+cmdline="${2:-}"
+[ -n "$cmdline" ] || deny "empty command"
+
+# No shell metacharacters other than the '&&' separator.  Quotes are
+# allowed because the tool shlex-quotes its arguments.
+stripped="${cmdline//&&/}"
+case "$stripped" in
+  *[\;\|\&\$\`\<\>\(\)\{\}\\]*|*$'\n'*) deny "shell metacharacters" ;;
+esac
+[[ "$cmdline" =~ ^[A-Za-z0-9\ _./:@\'\"=+,~%-]+(\&\&[A-Za-z0-9\ _./:@\'\"=+,~%-]+)*$ ]] \
+  || deny "unexpected characters"
+
+under_base() {
+  local p
+  p=$(realpath -m -- "$1")
+  [ "$p" = "$BASE" ] || [[ "$p" == "$BASE"/* ]]
+}
+
+# Reject compose projects that could escape the container onto the host,
+# or make compose read the deploy user's files (e.g. its GitHub SSH key)
+# from outside the project.  Reads `docker compose config --format json
+# --no-env-resolution` on stdin; extends / include are resolved away in
+# that output, so the raw compose files are checked for them.
+COMPOSE_POLICY='
+import json, os, re, sys
+project = os.path.realpath(sys.argv[1])
+cfg = json.load(sys.stdin)
+bad = []
+
+def inside(path, base=project):
+    # Unresolved variables or remote URLs cannot be checked: refuse them.
+    path = str(path)
+    if "$" in path or "://" in path or path.startswith("git@"):
+        return False
+    p = os.path.realpath(os.path.join(base, path))
+    return p == project or p.startswith(project + os.sep)
+
+for name, svc in (cfg.get("services") or {}).items():
+    build = svc.get("build") or {}
+    ctx, dockerfile = build.get("context"), build.get("dockerfile")
+    if ctx is not None:
+        if not inside(ctx):
+            bad.append(f"{name}: build context {ctx}")
+        elif dockerfile and not inside(dockerfile, os.path.join(project, ctx)):
+            bad.append(f"{name}: dockerfile {dockerfile}")
+    extra = build.get("additional_contexts") or {}
+    if isinstance(extra, list):
+        extra = dict(str(e).partition("=")[::2] for e in extra)
+    for cname, value in extra.items():
+        if not str(value).startswith(("docker-image://", "service:")) and not inside(value):
+            bad.append(f"{name}: additional context {cname}={value}")
+    if build.get("ssh"):
+        bad.append(f"{name}: build ssh")
+    for key in ("env_file", "label_file"):
+        for f in svc.get(key) or []:
+            f = f.get("path") if isinstance(f, dict) else f
+            if f and not inside(f):
+                bad.append(f"{name}: {key} {f}")
+    if svc.get("privileged"):
+        bad.append(f"{name}: privileged")
+    for key in ("network_mode", "pid", "ipc", "userns_mode", "uts"):
+        if str(svc.get(key, "")).startswith("host"):
+            bad.append(f"{name}: {key}=host")
+    for key in ("cap_add", "devices", "security_opt", "device_cgroup_rules"):
+        if svc.get(key):
+            bad.append(f"{name}: {key}")
+    for vol in svc.get("volumes") or []:
+        if vol.get("type") == "bind":
+            src = os.path.realpath(vol.get("source", ""))
+            if src != project and not src.startswith(project + os.sep):
+                bad.append(f"{name}: bind mount {src}")
+# Named volumes can bind-mount host paths via driver_opts (type=none,
+# o=bind, device=/), which the per-service check above never sees.
+for vname, vol in (cfg.get("volumes") or {}).items():
+    vol = vol or {}
+    if vol.get("driver_opts") or vol.get("driver") not in (None, "local"):
+        bad.append(f"volume {vname}: driver/driver_opts")
+for kind in ("configs", "secrets"):
+    for cname, c in (cfg.get(kind) or {}).items():
+        f = (c or {}).get("file")
+        if f:
+            src = os.path.realpath(f)
+            if src != project and not src.startswith(project + os.sep):
+                bad.append(f"{kind} {cname}: file {src}")
+# .env can point compose at other compose / env files.
+env_path = os.path.join(project, ".env")
+if os.path.isfile(env_path):
+    with open(env_path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            if re.match(r"\s*(export\s+)?COMPOSE_(FILE|ENV_FILES)\s*=", line):
+                bad.append(".env: " + line.strip().split("=")[0])
+# extends / include, followed through every compose file they pull in.
+try:
+    import yaml
+except ImportError:
+    yaml = None
+todo = [
+    os.path.join(project, f"{pre}{n}.{ext}")
+    for pre in ("", "docker-")
+    for n in ("compose", "compose.override")
+    for ext in ("yaml", "yml")
+]
+seen = set()
+while todo:
+    path = os.path.realpath(todo.pop())
+    if path in seen or not os.path.isfile(path):
+        continue
+    seen.add(path)
+    base = os.path.dirname(path)
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        text = fh.read()
+    try:
+        doc = yaml.safe_load(text) if yaml else None
+    except yaml.YAMLError:
+        doc = None
+    if not isinstance(doc, dict):
+        # Cannot inspect it: refuse any extends / include at all.
+        if re.search(r"\b(extends|include)\b", text):
+            bad.append(f"{path}: unchecked extends/include (needs python3-yaml)")
+        continue
+    refs = []  # (kind, path, is a compose file)
+    for inc in doc.get("include") or []:
+        inc = {"path": inc} if isinstance(inc, str) else (inc or {})
+        for key in ("path", "env_file", "project_directory"):
+            vals = inc.get(key) or []
+            for v in [vals] if isinstance(vals, str) else vals:
+                refs.append((f"include {key}", v, key == "path"))
+    for svc in (doc.get("services") or {}).values():
+        ext = (svc or {}).get("extends") if isinstance(svc, dict) else None
+        if isinstance(ext, dict) and ext.get("file"):
+            refs.append(("extends file", ext["file"], True))
+    for kind, ref, is_compose in refs:
+        if not inside(ref, base):
+            bad.append(f"{kind} {ref}")
+        elif is_compose:
+            todo.append(os.path.join(base, ref))
+if bad:
+    print("compose policy: " + "; ".join(bad), file=sys.stderr)
+    sys.exit(1)
+'
+
+check_compose() {
+  local dir="$1"
+  docker compose --project-directory "$dir" config --format json --no-env-resolution 2>/dev/null \
+    | python3 -c "$COMPOSE_POLICY" "$dir" || deny "compose policy violation in $dir"
+}
+
+cwd="$HOME"
+IFS=$'\n' read -r -d '' -a segments < <(printf '%s\0' "${cmdline//&&/$'\n'}") || true
+
+for seg in "${segments[@]}"; do
+  # Safe: metacharacters were rejected above, so eval only re-splits
+  # words and strips the quoting shlex added.
+  eval "set -- $seg"
+  [ $# -gt 0 ] || continue
+
+  case "$1" in
+    whoami|id)
+      [ $# -eq 1 ] || deny "$1 takes no arguments"
+      "$1" ;;
+
+    cd)
+      [ $# -eq 2 ] && under_base "$2" || deny "cd outside $BASE"
+      cwd=$(realpath -m -- "$2"); cd "$cwd" ;;
+
+    mkdir)
+      [ $# -eq 3 ] && [ "$2" = "-p" ] && under_base "$3" || deny "mkdir outside $BASE"
+      mkdir -p -- "$3" ;;
+
+    git)
+      case "${2:-}" in
+        clone)
+          [ $# -eq 6 ] && [ "$3" = "-b" ] || deny "git clone -b <branch> <repo> <path>"
+          [[ "$5" == git@github.com:* ]] || deny "clone source must be github"
+          under_base "$6" || deny "clone target outside $BASE"
+          git clone -b "$4" -- "$5" "$6" ;;
+        fetch|pull)
+          [ $# -eq 4 ] && [ "$3" = "origin" ] || deny "git $2 origin <branch>"
+          under_base "$cwd" || deny "git outside $BASE"
+          git "$2" origin "$4" ;;
+        status|log)
+          under_base "$cwd" || deny "git outside $BASE"
+          git "$2" ;;
+        *) deny "git ${2:-}" ;;
+      esac ;;
+
+    docker)
+      if [ "${2:-}" = "ps" ] && [ $# -eq 2 ]; then
+        docker ps
+      elif [ "${2:-}" = "compose" ] && [ "${3:-}" = "-p" ]; then
+        # Harness teardown: remove a platform's previous deployment by
+        # project name (label lookup; no compose file is read).
+        [ $# -eq 5 ] && [ "$5" = "down" ] || deny "docker compose -p <project> down"
+        [[ "$4" =~ ^desmet-[a-z0-9_]+$ ]] || deny "compose project must be desmet-<platform>"
+        under_base "$cwd" || deny "docker compose outside $BASE"
+        docker compose -p "$4" down
+      elif [ "${2:-}" = "compose" ]; then
+        under_base "$cwd" || deny "docker compose outside $BASE"
+        case "${3:-}" in
+          up|build|restart|start) check_compose "$cwd" ;;
+          down|ps|logs|stop) ;;
+          *) deny "docker compose ${3:-}" ;;
+        esac
+        shift 2
+        docker compose --project-directory "$cwd" "$@"
+      else
+        deny "docker ${2:-}"
+      fi ;;
+
+    curl)
+      [ $# -eq 3 ] && [ "$2" = "-sf" ] || deny "curl -sf <url>"
+      [[ "$3" =~ ^http://localhost:[0-9]+(/[A-Za-z0-9._~/%-]*)?$ ]] || deny "curl to localhost only"
+      curl -sf --max-time 20 -- "$3" ;;
+
+    ssh)
+      [ "$*" = "ssh -T git@github.com" ] || deny "ssh"
+      ssh -T git@github.com || true ;;
+
+    *) deny "$1" ;;
+  esac
+done

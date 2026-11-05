@@ -24,6 +24,12 @@ from desmet.harness.trace import AgentMessage, AgentTrace, ToolCall
 # the validator may pass purely on baseline-workspace files.
 _PRODUCTIVE_TOOLS = frozenset({"write_file", "execute_shell", "deploy_remote"})
 
+# Stages whose whole purpose is to change the workspace or a remote
+# target. For these, "success" with no evidence of progress is treated
+# as a false positive even when no error was recorded. ``requirements``
+# is excluded because some platforms answer it purely in-message.
+_MUTATING_STAGES = frozenset({"codegen", "testing", "deploy"})
+
 
 # ── Trace lifecycle ─────────────────────────────────────────────────────
 
@@ -90,6 +96,10 @@ def record_usage(
     """
     trace.total_tokens_input += input_tokens
     trace.total_tokens_output += output_tokens
+    if input_tokens or output_tokens:
+        # One model response = one LLM call: the shared unit for the
+        # per-stage budget (see budget.py).
+        trace.metadata["llm_calls"] = trace.metadata.get("llm_calls", 0) + 1
     if cost_usd > 0:
         trace.total_cost_usd += cost_usd
     elif model and (input_tokens or output_tokens):
@@ -262,8 +272,16 @@ def compute_framework_metrics(
     # Tokens per stage
     tokens_per_stage = float(total_tokens)
 
+    # Usage known only as an aggregate (budget.mark_usage_fallback): the
+    # call count, and so the iteration ratio, are unknown.
+    calls_unknown = bool(trace.metadata.get("usage_fallback"))
+
     # Iteration ratio
-    iteration_ratio = trace.total_iterations / max_iterations if max_iterations > 0 else 0.0
+    iteration_ratio: float | None = (
+        trace.total_iterations / max_iterations if max_iterations > 0 else 0.0
+    )
+    if calls_unknown:
+        iteration_ratio = None
 
     # First-action latency
     first_action_latency_ms: float | None = None
@@ -301,9 +319,9 @@ def compute_framework_metrics(
     else:
         framework_overhead_ms = None
 
-    return {
+    metrics: dict[str, float | None] = {
         "tokens_per_stage": tokens_per_stage,
-        "iteration_ratio": round(iteration_ratio, 4),
+        "iteration_ratio": round(iteration_ratio, 4) if iteration_ratio is not None else None,
         "first_action_latency_ms": (
             round(first_action_latency_ms, 1) if first_action_latency_ms is not None else None
         ),
@@ -312,7 +330,14 @@ def compute_framework_metrics(
         "framework_overhead_ms": (
             round(framework_overhead_ms, 1) if framework_overhead_ms is not None else None
         ),
+        # Per-stage LLM-call budget (budget.py): calls used, and 1.0 when
+        # the stage stopped because the budget ran out.
+        "llm_calls": None if calls_unknown else float(trace.metadata.get("llm_calls", 0)),
+        "budget_exhausted": 1.0 if trace.metadata.get("budget_exhausted") else 0.0,
     }
+    if calls_unknown:
+        metrics["usage_fallback"] = 1.0
+    return metrics
 
 
 # ── Result construction ─────────────────────────────────────────────────
@@ -326,6 +351,7 @@ def build_stage_result(
     success: bool,
     iterations: int,
     error_message: str | None = None,
+    workspace_changed: bool | None = None,
     **extra_fields: Any,
 ) -> StageResult:
     """Construct a ``StageResult`` subclass from trace data.
@@ -365,10 +391,24 @@ def build_stage_result(
     # ``read_file`` call — the read passes the empty-list check but the
     # stage produced no test artifacts. Demote instead when no tool call
     # in this stage *mutated* workspace state.
-    made_progress = any(tc.tool_name in _PRODUCTIVE_TOOLS for tc in trace.tool_calls)
-    if success and trace.errors and not made_progress:
+    #
+    # For mutating stages the guard also fires without an error: a
+    # codegen/testing/deploy stage that neither called a productive tool
+    # nor changed the workspace has done nothing, whatever the validator
+    # says. ``workspace_changed`` (from a before/after snapshot) covers
+    # platforms whose tool-call reporting is lossy; when the caller
+    # doesn't supply it we only trust the error-gated rule.
+    made_progress = bool(workspace_changed) or any(
+        tc.tool_name in _PRODUCTIVE_TOOLS for tc in trace.tool_calls
+    )
+    no_op_mutating_stage = stage_name in _MUTATING_STAGES and workspace_changed is not None
+    if success and not made_progress and (trace.errors or no_op_mutating_stage):
         success = False
         completed = False
+        if error_message is None:
+            error_message = (
+                f"No productive tool call or workspace change in {stage_name} stage"
+            )
 
     return result_cls(
         platform_id=platform_id,

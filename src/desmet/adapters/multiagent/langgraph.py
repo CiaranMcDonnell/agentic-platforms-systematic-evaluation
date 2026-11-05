@@ -18,12 +18,18 @@ from typing import Annotated, Any
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
+from langgraph.errors import GraphRecursionError
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from typing_extensions import TypedDict
 
+from desmet.adapters._shared.budget import (
+    budget_exhausted,
+    mark_budget_exhausted,
+    remaining_llm_calls,
+)
 from desmet.adapters._shared.base import ToolAgentAdapter
 from desmet.adapters._shared.planning import ImplementationPlan, build_executor_instructions, format_plan_text, parse_plan_text
 from desmet.adapters._shared.prompts import get_stage_persona, get_sub_persona
@@ -277,7 +283,14 @@ class LangGraphAdapter(ToolAgentAdapter):
                     collector.trace.metadata["plan_source"] = plan_source
                 return {"messages": [response]}
 
-            # Fallback: free-text plan
+            # Fallback: free-text plan.  A structured attempt that returned
+            # a response but no parsed plan was still a paid LLM call (the
+            # wrapper only sees the message returned below): record it.
+            if raw_msg is not None and collector is not None:
+                raw_meta = getattr(raw_msg, "response_metadata", None) or {}
+                collector.record_llm_response(
+                    raw_usage=raw_meta.get("token_usage") or raw_meta.get("usage")
+                )
             if plan_source == "structured":
                 plan_source = "freetext"
             response = await llm.ainvoke(messages)
@@ -314,28 +327,42 @@ class LangGraphAdapter(ToolAgentAdapter):
         return builder.compile()
 
     def _build_reviewer_subgraph(self, llm, tools: list) -> Any:
-        """Single 'review' node: Code Reviewer persona validates workspace."""
+        """review ⇄ tool_node loop: Code Reviewer inspects the workspace.
+
+        Previously a single node with tools bound but no ToolNode, so its
+        tool calls were never executed — unlike the reviewers in the other
+        adapters, which really inspect the workspace.
+        """
         reviewer_persona = get_sub_persona("reviewer")
         llm_with_tools = llm.bind_tools(tools) if tools else llm
+        sys = SystemMessage(
+            content=f"You are a {reviewer_persona.role}. {reviewer_persona.backstory}"
+        )
 
         async def review_node(state: SubgraphState) -> dict:
-            sys = SystemMessage(
-                content=(
-                    f"You are a {reviewer_persona.role}. {reviewer_persona.backstory}"
-                )
-            )
             response = await llm_with_tools.ainvoke([sys] + state["messages"])
             return {"messages": [response]}
+
+        def route_review(state: SubgraphState) -> str:
+            last = state["messages"][-1] if state["messages"] else None
+            if tools and last and getattr(last, "tool_calls", None):
+                return "tool_node"
+            return END
 
         builder = StateGraph(SubgraphState)
         builder.add_node("review", review_node)
         builder.add_edge(START, "review")
-        builder.add_edge("review", END)
+        builder.add_conditional_edges("review", route_review)
+        if tools:
+            builder.add_node("tool_node", ToolNode(tools, handle_tool_errors=True))
+            builder.add_edge("tool_node", "review")
         return builder.compile()
 
     # ── Parent graph builder ───────────────────────────────────────────────
 
-    def _build_graph(self, llm, tools: list, collector=None, policy=None, progress=None) -> Any:
+    def _build_graph(
+        self, llm, tools: list, collector=None, policy=None, progress=None, budget: int | None = None
+    ) -> Any:
         """Build and compile the parent StateGraph with three subgraph nodes.
 
         Returns a compiled StateGraph (not a tuple).
@@ -401,6 +428,12 @@ class LangGraphAdapter(ToolAgentAdapter):
                 "iterations": state.get("iterations", 0) + 1,
             }
 
+        def _remaining(budget: int | None) -> int | None:
+            """LLM calls left in the stage budget; None when not enforced."""
+            if budget is None or collector is None:
+                return None
+            return remaining_llm_calls(collector.trace, budget)
+
         # ── Wrapper: executor ───────────────────────────────────────────
         async def executor_wrapper(state: ParentState, config: RunnableConfig) -> dict:
             stage = state["stage"]
@@ -444,44 +477,67 @@ class LangGraphAdapter(ToolAgentAdapter):
             # waiting on LLM (Ns)..." every 5 seconds — otherwise the
             # UI looks frozen for the whole duration of the call (e.g.
             # Gemini rate-limit retries during the deploy stage).
-            llm_call_count = 0
-            base_stream = executor_sg.astream(
-                {"messages": messages}, config=config, stream_mode="updates",
+            # Shared per-stage LLM-call budget (budget.py).  Each executor
+            # LLM call plus its tool step is two graph steps, so the pass's
+            # recursion_limit is twice the calls the budget has left.
+            remaining = _remaining(budget)
+            if remaining is not None and remaining <= 0:
+                mark_budget_exhausted(collector.trace)
+                return {"validator_passed": False, "retry_count": _max_attempts}
+            sub_config = (
+                {**config, "recursion_limit": 2 * remaining} if remaining is not None else config
             )
-            async for chunk in _aiter_with_heartbeat(
-                base_stream, "executor", progress,
-            ):
-                for node_name, node_update in chunk.items():
-                    if not node_update or not isinstance(node_update, dict):
-                        continue
-                    for msg in node_update.get("messages", []):
-                        _extract_and_record_usage(msg)
 
-                        # Record messages in trace
-                        content = getattr(msg, "content", "")
-                        if content and collector is not None:
-                            collector.record_message(
-                                getattr(msg, "type", "assistant"),
-                                str(content),
-                                metadata={"node": f"executor/{node_name}"},
-                            )
+            llm_call_count = 0
 
-                        # Count LLM calls
-                        if hasattr(msg, "response_metadata") and msg.response_metadata:
-                            llm_call_count += 1
+            async def _stream_executor() -> None:
+                nonlocal llm_call_count
+                base_stream = executor_sg.astream(
+                    {"messages": messages}, config=sub_config, stream_mode="updates",
+                )
+                async for chunk in _aiter_with_heartbeat(
+                    base_stream, "executor", progress,
+                ):
+                    for node_name, node_update in chunk.items():
+                        if not node_update or not isinstance(node_update, dict):
+                            continue
+                        for msg in node_update.get("messages", []):
+                            _extract_and_record_usage(msg)
 
-                        # Record and report tool calls
-                        for tc in getattr(msg, "tool_calls", []):
-                            tc_name = tc.get("name", "unknown")
-                            tc_args = tc.get("args", {})
-                            if collector is not None:
-                                collector.record_tool_execution(tc_name, tc_args, "")
-                            if progress is not None:
-                                progress.tool_call(tc_name, tc_args)
+                            # Record messages in trace
+                            content = getattr(msg, "content", "")
+                            if content and collector is not None:
+                                collector.record_message(
+                                    getattr(msg, "type", "assistant"),
+                                    str(content),
+                                    metadata={"node": f"executor/{node_name}"},
+                                )
 
-                    # Heartbeat for long-running executor loops
-                    if progress is not None and node_name == "executor_node":
-                        progress.heartbeat(llm_call_count, "executor")
+                            # Count LLM calls
+                            if hasattr(msg, "response_metadata") and msg.response_metadata:
+                                llm_call_count += 1
+
+                            # Record and report tool calls
+                            for tc in getattr(msg, "tool_calls", []):
+                                tc_name = tc.get("name", "unknown")
+                                tc_args = tc.get("args", {})
+                                if collector is not None:
+                                    collector.record_tool_execution(tc_name, tc_args, "")
+                                if progress is not None:
+                                    progress.tool_call(tc_name, tc_args)
+
+                        # Heartbeat for long-running executor loops
+                        if progress is not None and node_name == "executor_node":
+                            progress.heartbeat(llm_call_count, "executor")
+
+            exhausted = False
+            try:
+                await _stream_executor()
+            except GraphRecursionError:
+                # recursion_limit is the remaining budget: it is spent.
+                exhausted = True
+                if collector is not None:
+                    mark_budget_exhausted(collector.trace)
 
             passed, feedback = policy.validate() if policy else (False, "")
             new_retry = retry_count + 1
@@ -497,7 +553,8 @@ class LangGraphAdapter(ToolAgentAdapter):
             return {
                 "validator_passed": passed,
                 "last_validator_feedback": feedback,
-                "retry_count": new_retry,
+                # A spent budget ends the stage: no further attempts.
+                "retry_count": _max_attempts if exhausted else new_retry,
                 "iterations": state.get("iterations", 0) + max(llm_call_count, 1),
             }
 
@@ -521,8 +578,30 @@ class LangGraphAdapter(ToolAgentAdapter):
                 )
             ]
 
+            remaining = _remaining(budget)
+            if remaining is not None and remaining <= 0:
+                mark_budget_exhausted(collector.trace)
+                return {}
+            sub_config = (
+                {**config, "recursion_limit": 2 * remaining} if remaining is not None else config
+            )
+            # Stream updates (as the executor does) rather than ainvoke, so
+            # the messages produced before a GraphRecursionError survive it
+            # and their tokens / LLM calls are recorded below.
+            reviewer_msgs: list[BaseMessage] = []
             reviewer_t0 = time.monotonic()
-            result = await reviewer_sg.ainvoke({"messages": messages}, config=config)
+            try:
+                async for chunk in reviewer_sg.astream(
+                    {"messages": messages}, config=sub_config, stream_mode="updates",
+                ):
+                    for node_update in chunk.values():
+                        if isinstance(node_update, dict):
+                            reviewer_msgs.extend(node_update.get("messages", []))
+            except GraphRecursionError:
+                # recursion_limit is the remaining budget: it is spent.
+                if collector is not None:
+                    mark_budget_exhausted(collector.trace)
+            result = {"messages": reviewer_msgs}
             reviewer_duration = (time.monotonic() - reviewer_t0) * 1000
 
             # Fold the reviewer wall-clock duration into the FIRST per-message
@@ -531,12 +610,22 @@ class LangGraphAdapter(ToolAgentAdapter):
             # (duration_ms=0.0). This avoids double-counting duration in
             # _llm_duration_total_ms, which was biasing Efficiency metrics.
             first = True
+            llm_call_count = 0
             for msg in result.get("messages", []):
                 _extract_and_record_usage(
                     msg,
                     duration_ms=reviewer_duration if first else 0.0,
                 )
                 first = False
+                if getattr(msg, "response_metadata", None):
+                    llm_call_count += 1
+                for tc in getattr(msg, "tool_calls", []):
+                    tc_name = tc.get("name", "unknown")
+                    tc_args = tc.get("args", {})
+                    if collector is not None:
+                        collector.record_tool_execution(tc_name, tc_args, "")
+                    if progress is not None:
+                        progress.tool_call(tc_name, tc_args)
 
             # Edge case: reviewer produced 0 messages (e.g., subgraph errored).
             # Still record the wall-clock so _llm_duration_total_ms isn't under-counted.
@@ -555,17 +644,29 @@ class LangGraphAdapter(ToolAgentAdapter):
             if progress is not None:
                 progress.agent_status("reviewer", "done")
 
-            return {
-                "iterations": state.get("iterations", 0) + 1,
-            }
+            update: dict = {"iterations": state.get("iterations", 0) + max(llm_call_count, 1)}
+            # Hand the reviewer's verdict to the next executor attempt, as the
+            # other adapters' reviewers feed their manager/next loop.
+            review_text = str(getattr(last_msg, "content", "") or "") if last_msg else ""
+            if review_text and not state.get("validator_passed"):
+                update["last_validator_feedback"] = (
+                    f"{state.get('last_validator_feedback', '')}\n\nReviewer: {review_text}"
+                ).strip()
+            return update
 
         # ── Conditional edge after reviewer ─────────────────────────────
-        _max_retries = policy.max_retries if policy else 3
+        # retry_count counts completed executor passes.  Allow the same
+        # number of attempts as the other adapters (RetryPolicy.total_attempts,
+        # i.e. 1 + max_retries); comparing against max_retries gave LangGraph
+        # one attempt fewer.
+        _max_attempts = policy.total_attempts() if policy else 4
 
         def route_after_reviewer(state: ParentState) -> str:
             if state.get("validator_passed"):
                 return END
-            if state.get("retry_count", 0) >= _max_retries:
+            if collector is not None and budget_exhausted(collector.trace):
+                return END
+            if state.get("retry_count", 0) >= _max_attempts:
                 return END
             return "executor"
 
@@ -606,7 +707,10 @@ class LangGraphAdapter(ToolAgentAdapter):
         self._last_langsmith_run_id = None
 
         # Build parent graph with collector closure for token recording
-        graph = self._build_graph(self._llm, tools, collector=collector, policy=policy, progress=progress)
+        graph = self._build_graph(
+            self._llm, tools, collector=collector, policy=policy, progress=progress,
+            budget=context.max_iterations,
+        )
 
         collector.record_message("user", prompt)
 
@@ -663,10 +767,10 @@ class LangGraphAdapter(ToolAgentAdapter):
                         _, feedback = policy.validate()
                         progress.validation_failed(retry, policy.total_attempts(), feedback)
 
-            if (
-                not validation_succeeded
-                and final_state.get("iterations", 0) >= context.max_iterations
-            ):
+            # The shared LLM-call budget (enforced inside the wrappers) ends
+            # the stage; ``iterations`` is not the same unit, so it no
+            # longer cuts the run short.
+            if not validation_succeeded and budget_exhausted(collector.trace):
                 break
 
         collector.mark_iterations(final_state.get("iterations", iteration))
