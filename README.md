@@ -2,6 +2,8 @@
 
 A DESMET-based evaluation framework for comparing 9 agentic platforms across a standardized software development pipeline. All platforms run the same model against the same tasks, isolating what each framework contributes independently of LLM performance.
 
+[![Read the paper](https://img.shields.io/badge/Read%20the%20paper-DESMET%20Agentic%20Platforms-blue?style=for-the-badge)](https://mcdonnell.io/DESMET_Agentic_Platforms)
+
 ## Platforms
 
 | Category | Platforms |
