@@ -31,6 +31,10 @@ _BASE_IMAGE = f"desmet-eval-base:{_IMAGE_TAG}"
 
 _STAGE_NAMES = {"requirements", "codegen", "testing", "deploy"}
 
+# Workspace context file written by harness versions before the context
+# moved to stdin; removed from reused workspaces so agents cannot read it.
+LEGACY_CONTEXT_FILE = ".desmet-context.json"
+
 # Progress lines end with "(<elapsed>s, <cumulative> tokens)"; on timeout
 # the last value is the only token count we have for the killed stage.
 _PROGRESS_TOKENS_RE = re.compile(r"\(\s*\d+s,\s*([\d,]+) tokens\)")
@@ -613,15 +617,20 @@ async def run_stage_in_container(
     monitor = ResourceMonitor(container, poll_interval=2.0)
     monitor.start()
 
-    # Write context JSON to workspace.
-    # The host workspace is mounted at /workspace inside the container,
-    # so rewrite the path so adapter tools resolve files correctly.
+    # Context JSON goes to the entrypoint over stdin, never to a file:
+    # a .desmet-context.json in /workspace (one line, ~0.5 MB of earlier
+    # stage outputs) was found by the agents' search_code / read_file and
+    # bloated their prompts by up to ~200k tokens.  The host workspace is
+    # mounted at /workspace, so rewrite the path for the adapter tools.
     ctx_data = context.to_dict()
     ctx_data["workspace"] = "/workspace"
     ctx_data.setdefault("metadata", {})["stage_name"] = stage_name
-    ctx_file = context.workspace / ".desmet-context.json"
-    with open(ctx_file, "w") as f:
-        json.dump(ctx_data, f)
+    ctx_bytes = json.dumps(ctx_data).encode("utf-8")
+    # Left behind by harness versions that wrote the context file.
+    try:
+        (context.workspace / LEGACY_CONTEXT_FILE).unlink(missing_ok=True)
+    except OSError:
+        pass
 
     # Run entrypoint via docker exec, streaming stderr.
     # Pass the host's current OTel span context as TRACEPARENT so that
@@ -633,12 +642,14 @@ async def run_stage_in_container(
     proc = await asyncio.create_subprocess_exec(
         "docker",
         "exec",
+        "-i",
         *trace_env_flags,
         container,
         "/app/.venv/bin/python",
         "-m",
         "desmet.harness.entrypoint",
-        "/workspace/.desmet-context.json",
+        "-",
+        stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=env,
@@ -665,6 +676,14 @@ async def run_stage_in_container(
                 progress_callback(text)
 
     async def _collect() -> bytes:
+        try:
+            proc.stdin.write(ctx_bytes)
+            await proc.stdin.drain()
+            proc.stdin.close()
+        except (BrokenPipeError, ConnectionResetError):
+            # docker exec died before reading; its stderr/exit code
+            # reach the normal failed-result path below.
+            pass
         out = await proc.stdout.read()
         await stderr_task
         await proc.wait()
@@ -681,10 +700,6 @@ async def run_stage_in_container(
         # Killing `docker exec` leaves the agent running inside the
         # container; removing the container stops it.
         stop_container(platform_id, story_id)
-        try:
-            ctx_file.unlink(missing_ok=True)
-        except OSError:
-            pass
         if progress_callback:
             progress_callback(
                 f"  [{stage_name.upper()}] TIMEOUT after {timeout_seconds}s "
@@ -701,20 +716,9 @@ async def run_stage_in_container(
         await proc.wait()
         stderr_task.cancel()
         stop_container(platform_id, story_id)
-        # Clean up context file before re-raising
-        try:
-            ctx_file.unlink(missing_ok=True)
-        except OSError:
-            pass
         raise
 
     resource_summary = monitor.stop()
-
-    # Clean up context file
-    try:
-        ctx_file.unlink(missing_ok=True)
-    except OSError:
-        pass
 
     # Parse result — extract the JSON object from stdout, ignoring any
     # stray output (library warnings, print statements) before/after it.

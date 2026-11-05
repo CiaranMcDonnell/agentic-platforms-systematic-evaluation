@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from desmet.harness.container_runner import (
     image_name,
@@ -429,6 +429,7 @@ class TestStageTimeout:
         proc = MagicMock()
         proc.stderr.readline = readline
         proc.stdout.read = read
+        proc.stdin.drain = AsyncMock()
 
         async def wait():
             return -9
@@ -482,3 +483,56 @@ class TestStageTimeout:
         proc.kill.assert_called_once()
         stop.assert_called_once_with("langgraph", "US-001")
         assert any("TIMEOUT" in line for line in progress)
+
+
+class TestContextOverStdin:
+    """The stage context reaches the container over stdin, never as a file
+    in /workspace where the agent's search_code / read_file found it."""
+
+    @pytest.mark.asyncio
+    async def test_context_piped_and_no_workspace_file(self, tmp_path):
+        import json
+
+        from desmet.harness import container_runner as cr
+
+        (tmp_path / cr.LEGACY_CONTEXT_FILE).write_text("{}")  # stale, older harness
+        context = MagicMock()
+        context.story.id = "US-001"
+        context.workspace = tmp_path
+        context.to_dict.return_value = {"platform_id": "langgraph", "metadata": {}}
+
+        written = bytearray()
+        proc = MagicMock()
+        proc.stdin.write = lambda b: written.extend(b)
+        proc.stdin.drain = AsyncMock()
+
+        async def readline():
+            assert not (tmp_path / cr.LEGACY_CONTEXT_FILE).exists()
+            return b""
+
+        proc.stderr.readline = readline
+        proc.stdout.read = AsyncMock(return_value=json.dumps(
+            {"platform_id": "langgraph", "stage_name": "codegen", "success": True}
+        ).encode())
+        proc.wait = AsyncMock(return_value=0)
+        exec_args: list = []
+
+        async def fake_exec(*args, **kwargs):
+            exec_args.extend(args)
+            assert kwargs.get("stdin") is not None
+            return proc
+
+        with patch.object(cr, "has_image", return_value=True),                 patch.object(cr, "_ensure_container", return_value="c"),                 patch.object(cr, "ResourceMonitor") as monitor,                 patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            monitor.return_value.stop.return_value.to_dict.return_value = {}
+            result = await cr.run_stage_in_container(
+                "langgraph", "codegen", context, None, timeout_seconds=30,
+            )
+
+        assert result.success is True
+        assert exec_args[:3] == ["docker", "exec", "-i"]
+        assert exec_args[-1] == "-"
+        sent = json.loads(bytes(written))
+        assert sent["workspace"] == "/workspace"
+        assert sent["metadata"]["stage_name"] == "codegen"
+        proc.stdin.close.assert_called_once()
+        assert not list(tmp_path.glob(".desmet-context*"))

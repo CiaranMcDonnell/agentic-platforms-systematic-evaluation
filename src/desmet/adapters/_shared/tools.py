@@ -579,8 +579,22 @@ def _execute_shell(workspace: Path, command: str, *, stage: str | None = None) -
         return f"Error: {exc}"
 
 
+#: Harness bookkeeping in the workspace (.desmet-baseline-files.json,
+#: .desmet_acceptance/, .desmet_pytest.xml ...) is not the agent's code.
+_HARNESS_FILE_PREFIX = ".desmet"
+
+#: Longest matched line search_code returns.  Minified / single-line files
+#: (SVG, JSON) otherwise return the whole file as one "line": a 660k-char
+#: match bloated every later prompt by ~200k tokens in the 2026-10-28 smoke run.
+_SEARCH_MAX_LINE_CHARS = 300
+
+
 def _search_code(workspace: Path, pattern: str, path: str = ".") -> str:
-    """Search files for lines matching *pattern*, capped at 100 results."""
+    """Search files for lines matching *pattern*, capped at 100 results.
+
+    Each matched line is cut to ``_SEARCH_MAX_LINE_CHARS`` and the
+    harness's ``.desmet*`` files are skipped.
+    """
     loop_err = _check_loop(str(workspace), "search_code", f"{pattern}:{path}")
     if loop_err:
         return loop_err
@@ -599,13 +613,19 @@ def _search_code(workspace: Path, pattern: str, path: str = ".") -> str:
     matches: list[str] = []
     workspace_resolved = workspace.resolve()
 
-    # Walk the tree, skipping common non-text directories and large files
+    # Walk the tree, skipping common non-text directories, large files and
+    # the harness's own .desmet* bookkeeping files.
     skip_dirs = {".git", "node_modules", "__pycache__", "venv", ".venv"}
     max_file_size = 1_048_576  # 1 MB
 
     for dirpath, dirnames, filenames in os.walk(full_path):
-        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in skip_dirs and not d.startswith(_HARNESS_FILE_PREFIX)
+        ]
         for filename in sorted(filenames):
+            if filename.startswith(_HARNESS_FILE_PREFIX):
+                continue
             filepath = Path(dirpath) / filename
             try:
                 if filepath.stat().st_size > max_file_size:
@@ -616,6 +636,11 @@ def _search_code(workspace: Path, pattern: str, path: str = ".") -> str:
             for lineno, line in enumerate(text.splitlines(), start=1):
                 if compiled.search(line):
                     relpath = filepath.relative_to(workspace_resolved)
+                    if len(line) > _SEARCH_MAX_LINE_CHARS:
+                        line = (
+                            line[:_SEARCH_MAX_LINE_CHARS]
+                            + f" ...(line truncated, {len(line)} chars)"
+                        )
                     matches.append(f"{relpath}:{lineno}: {line}")
                     if len(matches) >= 100:
                         return "\n".join(matches)

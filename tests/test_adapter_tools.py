@@ -442,6 +442,28 @@ class TestCreateToolsCallable:
         result = search(pattern="some data", path="subdir")
         assert "data.txt" in result
 
+    def test_search_code_truncates_long_lines(self, workspace):
+        """A single-line file (minified JSON, SVG) must not come back whole:
+        a 660k-char match bloated every later prompt in the smoke run."""
+        (workspace / "blob.json").write_text('{"x": "' + "a" * 50_000 + ' needle"}')
+        search = create_tools(workspace, ["search_code"])[0]
+        result = search(pattern="needle")
+        assert "blob.json:1:" in result
+        assert "line truncated" in result
+        assert len(result) < 1_000
+
+    def test_search_code_skips_harness_files(self, workspace):
+        """The harness's .desmet* bookkeeping is not the agent's code."""
+        (workspace / ".desmet-context.json").write_text('{"needle": 1}')
+        (workspace / ".desmet-baseline-files.json").write_text('["needle.py"]')
+        (workspace / ".desmet_acceptance").mkdir()
+        (workspace / ".desmet_acceptance" / "test_ac.py").write_text("needle = 1\n")
+        (workspace / "real.py").write_text("needle = 2\n")
+        search = create_tools(workspace, ["search_code"])[0]
+        result = search(pattern="needle")
+        assert "real.py" in result
+        assert ".desmet" not in result
+
     def test_execute_shell_runs_command(self, workspace):
         tools = create_tools(workspace, ["execute_shell"])
         shell = tools[0]
